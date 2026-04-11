@@ -1,0 +1,14 @@
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+.specify/
+.venv/
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
+.env
+references/
+specs/
+tests/

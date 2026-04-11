@@ -1,0 +1,458 @@
+"""Unit tests for analysis service orchestration and validation."""
+
+from __future__ import annotations
+
+from datetime import date
+from types import SimpleNamespace
+from unittest import mock
+
+import pytest
+import xarray as xr
+from pydantic import ValidationError
+
+from google_meridian_mcp_server.domain.errors import (
+    DatasetNotAvailableError,
+    InvalidOutputTypeError,
+    MissingModelDataError,
+)
+from google_meridian_mcp_server.domain.filters import AnalysisFilters, normalize_filters
+from google_meridian_mcp_server.persistence.cache import ResultCache
+from google_meridian_mcp_server.services.analysis_service import AnalysisService
+
+
+class _StubCatalog:
+    def __init__(self, model):
+        self._model = model
+
+    def resolve(self, model_id: str):
+        assert model_id == "m1"
+        return self._model
+
+    def get_interrogator(self, model_id: str):
+        assert model_id == "m1"
+        from google_meridian_mcp_server.meridian.interrogator import (
+            MeridianInterrogator,
+        )
+
+        return MeridianInterrogator(self._model)
+
+
+def _build_training_model():
+    kpi = xr.DataArray(
+        [[10.0, 12.0]],
+        coords={"geo": ["us"], "time": ["2024-01-01", "2024-01-08"]},
+        dims=("geo", "time"),
+    )
+    media_spend = xr.DataArray(
+        [[[1.0, 2.0], [3.0, 4.0]]],
+        coords={
+            "geo": ["us"],
+            "time": ["2024-01-01", "2024-01-08"],
+            "channel": ["search", "tv"],
+        },
+        dims=("geo", "time", "channel"),
+    )
+    return SimpleNamespace(
+        input_data=SimpleNamespace(
+            kpi=kpi,
+            media_spend=media_spend,
+            controls=None,
+        )
+    )
+
+
+def _build_analysis_service() -> AnalysisService:
+    return AnalysisService(
+        catalog=_StubCatalog(_build_training_model()),
+        result_cache=ResultCache(enabled=False, ttl_seconds=None),
+    )
+
+
+class TestNormalizeFilters:
+    def test_empty_input_returns_defaults(self):
+        f = normalize_filters(None)
+        assert f.aggregate_geos is True
+        assert f.aggregate_times is True
+        assert f.geos == []
+        assert f.channels == []
+
+    def test_passes_through_valid_fields(self):
+        raw = {
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "geos": ["us", "uk"],
+            "channels": ["tv", "search"],
+            "aggregate_geos": False,
+            "aggregate_times": False,
+            "include_non_paid": True,
+            "use_kpi": True,
+        }
+        f = normalize_filters(raw)
+        assert f.start_date == date(2024, 1, 1)
+        assert f.end_date == date(2024, 12, 31)
+        assert f.geos == ["us", "uk"]
+        assert f.channels == ["tv", "search"]
+        assert f.aggregate_geos is False
+        assert f.aggregate_times is False
+        assert f.include_non_paid is True
+        assert f.use_kpi is True
+
+    def test_null_lists_become_empty(self):
+        f = normalize_filters({"geos": None, "channels": None})
+        assert f.geos == []
+        assert f.channels == []
+
+    def test_deduplicates_and_trims_filter_lists(self):
+        f = normalize_filters({"channels": [" tv ", "search", "tv", ""]})
+        assert f.channels == ["tv", "search"]
+
+    def test_rejects_unknown_filter_fields(self):
+        with pytest.raises(ValidationError):
+            normalize_filters({"unexpected": True})
+
+    def test_rejects_invalid_date_ranges(self):
+        with pytest.raises(ValidationError):
+            normalize_filters(
+                {
+                    "start_date": "2024-12-31",
+                    "end_date": "2024-01-01",
+                }
+            )
+
+    def test_rejects_non_list_channel_filters(self):
+        with pytest.raises(TypeError):
+            normalize_filters({"channels": "search"})
+
+    def test_rejects_non_string_filter_values(self):
+        with pytest.raises(TypeError):
+            normalize_filters({"geos": ["us", 3]})
+
+
+class TestInvalidOutputType:
+    def test_error_includes_valid_types(self):
+        err = InvalidOutputTypeError("bad_type", ["roi", "cpik"])
+        assert err.error_code == "invalid_output_type"
+        assert "bad_type" in str(err)
+        assert err.details["valid_types"] == ["roi", "cpik"]
+
+
+class TestAnalysisFiltersImmutability:
+    def test_frozen_dataclass(self):
+        f = AnalysisFilters(start_date="2024-01-01")
+        with pytest.raises(ValidationError):
+            f.start_date = "2025-01-01"
+
+
+class TestTrainingDataSelection:
+    def test_get_training_data_merges_multiple_selected_datasets(self):
+        result = _build_analysis_service().get_training_data(
+            "m1", ["kpi", "media_spend"], None
+        )
+
+        assert result["datasets"] == ["kpi", "media_spend"]
+        assert "dataset" not in result
+        assert result["row_count"] == 4
+        assert result["result_metadata"] == {
+            "format": "tabular",
+            "columns": ["geo", "time", "channel", "kpi", "media_spend"],
+            "dimensions": ["geo", "time", "channel"],
+            "measures": ["kpi", "media_spend"],
+        }
+        assert {"geo", "time", "channel", "kpi", "media_spend"} <= set(
+            result["data"][0]
+        )
+
+    def test_get_training_data_deduplicates_dataset_selection(self):
+        result = _build_analysis_service().get_training_data("m1", ["kpi", "kpi"], None)
+
+        assert result["dataset"] == "kpi"
+        assert result["datasets"] == ["kpi"]
+        assert result["row_count"] == 2
+        assert result["result_metadata"] == {
+            "format": "tabular",
+            "columns": ["geo", "time", "kpi"],
+            "dimensions": ["geo", "time"],
+            "measures": ["kpi"],
+        }
+
+    def test_get_training_data_rejects_unknown_dataset(self):
+        with pytest.raises(DatasetNotAvailableError):
+            _build_analysis_service().get_training_data("m1", ["unknown"], None)
+
+
+class TestModelOverview:
+    def test_get_model_overview_exposes_model_setup_and_tool_options(self):
+        time = xr.DataArray(
+            ["2024-01-01", "2024-01-08"],
+            coords={"time": ["2024-01-01", "2024-01-08"]},
+            dims=("time",),
+        )
+        geo = xr.DataArray(["us", "ca"], coords={"geo": ["us", "ca"]}, dims=("geo",))
+        population = xr.DataArray(
+            [100, 200], coords={"geo": ["us", "ca"]}, dims=("geo",)
+        )
+        media_channel = xr.DataArray(
+            ["search", "tv"],
+            coords={"media_channel": ["search", "tv"]},
+            dims=("media_channel",),
+        )
+        rf_channel = xr.DataArray(
+            ["youtube"],
+            coords={"rf_channel": ["youtube"]},
+            dims=("rf_channel",),
+        )
+        non_media_channel = xr.DataArray(
+            ["promo"],
+            coords={"non_media_channel": ["promo"]},
+            dims=("non_media_channel",),
+        )
+        organic_media_channel = xr.DataArray(
+            ["email"],
+            coords={"organic_media_channel": ["email"]},
+            dims=("organic_media_channel",),
+        )
+        organic_rf_channel = xr.DataArray(
+            ["podcast"],
+            coords={"organic_rf_channel": ["podcast"]},
+            dims=("organic_rf_channel",),
+        )
+        control_variable = xr.DataArray(
+            ["price"],
+            coords={"control_variable": ["price"]},
+            dims=("control_variable",),
+        )
+        kpi = xr.DataArray(
+            [[10.0, 12.0]],
+            coords={"geo": ["us"], "time": ["2024-01-01", "2024-01-08"]},
+            dims=("geo", "time"),
+        )
+
+        model = SimpleNamespace(
+            is_national=False,
+            input_data=SimpleNamespace(
+                time=time,
+                geo=geo,
+                population=population,
+                media_channel=media_channel,
+                rf_channel=rf_channel,
+                non_media_channel=non_media_channel,
+                organic_media_channel=organic_media_channel,
+                organic_rf_channel=organic_rf_channel,
+                control_variable=control_variable,
+                kpi=kpi,
+                revenue_per_kpi=object(),
+                media=object(),
+                media_spend=object(),
+                reach=object(),
+                frequency=object(),
+                rf_spend=object(),
+                organic_media=object(),
+                organic_reach=object(),
+                organic_frequency=object(),
+                non_media_treatments=object(),
+                controls=object(),
+            ),
+        )
+        service = AnalysisService(
+            catalog=_StubCatalog(model),
+            result_cache=ResultCache(enabled=False, ttl_seconds=None),
+        )
+
+        result = service.get_model_overview("m1")
+
+        assert result["model_id"] == "m1"
+        assert result["model_type"] == "geo"
+        assert result["time"] == {
+            "start": "2024-01-01",
+            "end": "2024-01-08",
+            "count": 2,
+            "values": ["2024-01-01", "2024-01-08"],
+        }
+        assert result["geo_names"] == ["ca", "us"]
+        assert result["total_population"] == 300
+        assert result["media_channels"] == ["search", "tv"]
+        assert result["rf_channels"] == ["youtube"]
+        assert result["total_channels"] == 3
+        assert result["data_inputs"]["organic_media"] == ["email"]
+        assert result["data_inputs"]["organic_rf_media"] == ["podcast"]
+        assert result["data_schema"]["rf_media"]["spend"] == ["youtube_rf_spend"]
+        assert "search_spend" in result["input_column_names"]
+        assert "youtube_frequency" in result["input_column_names"]
+        assert result["available_training_datasets"] == [
+            "kpi",
+            "revenue_per_kpi",
+            "population",
+            "media",
+            "media_spend",
+            "reach",
+            "frequency",
+            "rf_spend",
+            "organic_media",
+            "organic_reach",
+            "organic_frequency",
+            "non_media_treatments",
+            "controls",
+        ]
+        assert result["metric_views"] == ["kpi", "revenue"]
+        assert result["available_tool_options"]["get_channel_summary"] == {
+            "output_type": [
+                "baseline_summary_metrics",
+                "paid_summary_metrics",
+                "roi",
+                "cpik",
+                "marginal_roi",
+                "marginal_cpik",
+            ]
+        }
+        assert result["available_tool_options"]["get_adstock_decay"] == {
+            "output_type": ["adstock_decay", "alpha_summary"]
+        }
+        assert result["result_metadata"] == {
+            "format": "object",
+            "sections": [
+                "time",
+                "geos",
+                "data_inputs",
+                "data_schema",
+                "available_training_datasets",
+                "available_tool_options",
+            ],
+            "summary_fields": [
+                "model_id",
+                "model_type",
+                "is_national",
+                "geo_count",
+                "total_population",
+                "total_channels",
+                "metric_views",
+                "has_revenue_per_kpi",
+            ],
+            "collection_counts": {
+                "time.values": 2,
+                "geos": 2,
+                "input_column_names": len(result["input_column_names"]),
+                "available_training_datasets": 13,
+            },
+        }
+
+
+class _DispatchFacade:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def __getattr__(self, name: str):
+        if name.startswith("get_"):
+            return self._make(name)
+        raise AttributeError(name)
+
+    def _make(self, name: str):
+        def _method(filters):
+            self.calls.append(name)
+            return [{"method": name, "filters": filters.model_dump(mode="json")}]
+
+        return _method
+
+
+class _DispatchCatalog:
+    def __init__(self, facade, interrogator=None):
+        self.facade = facade
+        self.interrogator = interrogator or facade
+        self.get_facade = mock.Mock(return_value=facade)
+        self.get_interrogator = mock.Mock(return_value=self.interrogator)
+
+
+class TestAnalysisServiceDispatch:
+    @pytest.mark.parametrize(
+        ("method_name", "output_type", "expected_method"),
+        [
+            ("get_channel_summary", "roi", "get_roi"),
+            ("get_contribution", "contribution_metrics", "get_contribution_metrics"),
+            ("get_adstock_decay", "alpha_summary", "get_alpha_summary"),
+            (
+                "get_response_curves",
+                "response_curve_summary",
+                "get_response_curve_summary",
+            ),
+        ],
+    )
+    def test_dispatches_to_expected_facade_method(
+        self, method_name: str, output_type: str, expected_method: str
+    ):
+        facade = _DispatchFacade()
+        service = AnalysisService(
+            catalog=_DispatchCatalog(facade),
+            result_cache=ResultCache(enabled=False, ttl_seconds=None),
+        )
+
+        result = getattr(service, method_name)("m1", output_type, {"channels": ["tv"]})
+
+        assert facade.calls == [expected_method]
+        assert result["output_type"] == output_type
+        assert result["result_metadata"]["format"] == "tabular"
+        assert result["data"][0]["method"] == expected_method
+        assert result["data"][0]["filters"]["channels"] == ["tv"]
+
+    @pytest.mark.parametrize(
+        ("method_name", "output_type"),
+        [
+            ("get_channel_summary", "roi"),
+            ("get_contribution", "contribution_metrics"),
+            ("get_adstock_decay", "alpha_summary"),
+            ("get_response_curves", "response_curve_summary"),
+        ],
+    )
+    def test_wraps_facade_exceptions_as_missing_model_data(
+        self, method_name: str, output_type: str
+    ):
+        failing_methods = {
+            "get_channel_summary": "get_roi",
+            "get_contribution": "get_contribution_metrics",
+            "get_adstock_decay": "get_alpha_summary",
+            "get_response_curves": "get_response_curve_summary",
+        }
+        catalog = _DispatchCatalog(_DispatchFacade())
+        service = AnalysisService(
+            catalog=catalog,
+            result_cache=ResultCache(enabled=False, ttl_seconds=None),
+        )
+        catalog.get_facade.return_value = SimpleNamespace(
+            **{
+                failing_methods[method_name]: mock.Mock(
+                    side_effect=RuntimeError("missing rows")
+                )
+            }
+        )
+
+        with pytest.raises(MissingModelDataError, match="missing rows"):
+            getattr(service, method_name)("m1", output_type, None)
+
+
+class TestAnalysisServiceCaching:
+    def test_cached_short_circuits_without_computing(self):
+        cache = mock.Mock()
+        cache.get.return_value = {"cached": True}
+        service = AnalysisService(catalog=mock.Mock(), result_cache=cache)
+        compute = mock.Mock(side_effect=AssertionError("should not run"))
+
+        result = service._cached("tool", "m1", {"a": 1}, compute)
+
+        assert result == {"cached": True}
+        compute.assert_not_called()
+        cache.put.assert_not_called()
+
+    def test_get_model_overview_uses_cache_on_subsequent_calls(self):
+        interrogator = mock.Mock()
+        interrogator.get_model_overview.return_value = {
+            "model_type": "geo",
+            "available_training_datasets": ["kpi"],
+        }
+        service = AnalysisService(
+            catalog=_DispatchCatalog(facade=mock.Mock(), interrogator=interrogator),
+            result_cache=ResultCache(enabled=True, ttl_seconds=None),
+        )
+
+        first = service.get_model_overview("m1")
+        second = service.get_model_overview("m1")
+
+        assert first == second
+        interrogator.get_model_overview.assert_called_once()
