@@ -300,33 +300,7 @@ class TestModelOverview:
         assert result["available_tool_options"]["get_adstock_decay"] == {
             "output_type": ["adstock_decay", "alpha_summary"]
         }
-        assert result["result_metadata"] == {
-            "format": "object",
-            "sections": [
-                "time",
-                "geos",
-                "data_inputs",
-                "data_schema",
-                "available_training_datasets",
-                "available_tool_options",
-            ],
-            "summary_fields": [
-                "model_id",
-                "model_type",
-                "is_national",
-                "geo_count",
-                "total_population",
-                "total_channels",
-                "metric_views",
-                "has_revenue_per_kpi",
-            ],
-            "collection_counts": {
-                "time.values": 2,
-                "geos": 2,
-                "input_column_names": len(result["input_column_names"]),
-                "available_training_datasets": 13,
-            },
-        }
+        assert "result_metadata" not in result
 
 
 class _DispatchFacade:

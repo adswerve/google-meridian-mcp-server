@@ -97,48 +97,6 @@ class AnalysisService:
         return columns
 
     @staticmethod
-    def _build_overview_result_metadata(result: dict[str, Any]) -> dict[str, Any]:
-        sections = [
-            key
-            for key in (
-                "time",
-                "geos",
-                "data_inputs",
-                "data_schema",
-                "available_training_datasets",
-                "available_tool_options",
-            )
-            if key in result
-        ]
-        summary_fields = [
-            key
-            for key in (
-                "model_id",
-                "model_type",
-                "is_national",
-                "geo_count",
-                "total_population",
-                "total_channels",
-                "metric_views",
-                "has_revenue_per_kpi",
-            )
-            if key in result
-        ]
-        return {
-            "format": "object",
-            "sections": sections,
-            "summary_fields": summary_fields,
-            "collection_counts": {
-                "time.values": result.get("time", {}).get("count", 0),
-                "geos": len(result.get("geos", [])),
-                "input_column_names": len(result.get("input_column_names", [])),
-                "available_training_datasets": len(
-                    result.get("available_training_datasets", [])
-                ),
-            },
-        }
-
-    @staticmethod
     def _normalize_dataset_selection(
         model_id: str, dataset: str | Sequence[str]
     ) -> list[str]:
@@ -264,7 +222,6 @@ class AnalysisService:
                 },
             }
             result = {"model_id": model_id, **overview}
-            result["result_metadata"] = self._build_overview_result_metadata(result)
             return result
 
         return self._cached("get_model_overview", model_id, {}, _compute)
