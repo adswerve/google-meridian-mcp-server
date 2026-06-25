@@ -19,8 +19,7 @@ Thumbs.db
 /tmp/
 
 .github/
-.specify/
-specs/
 references/
+.superpowers/
 uv.lock
 .vscode/
