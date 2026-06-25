@@ -14,10 +14,10 @@ contribution outputs, adstock decay outputs, and response curves.
 
 ### 1. Create a Python environment
 
-Meridian currently targets Python 3.11 or 3.12.
+Meridian currently targets Python 3.12+.
 
 ```bash
-python3.11 -m venv .venv
+python3.12   -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
@@ -25,7 +25,7 @@ python -m pip install --upgrade pip
 ### 2. Install the project
 
 ```bash
-python -m pip install -e .[dev]
+pip install -e ".[dev]"
 ```
 
 ### 3. Configure `.env`
@@ -74,10 +74,21 @@ python -m google_meridian_mcp_server.server
 For interactive Inspector testing, the repository includes `fastmcp.json`, so from the project root you can run:
 
 ```bash
-fastmcp dev inspector ./src/google_meridian_mcp_server/server.py --with-editable .
+fastmcp dev inspector / npx @modelcontextprotocol/inspector
 ```
 
 The external config value remains `streamable-http`. Internally, the current FastMCP runtime is started with its HTTP transport and binds to `MCP_HOST` and `PORT` or `MCP_PORT`.
+
+`fastmcp dev inspector` does not use your activated `.venv` or Conda environment directly. FastMCP launches Inspector servers through a `uv run` subprocess, so inspector-specific dependencies must be declared in `fastmcp.json` or passed with CLI flags such as `--project`, `--with-editable`, and `--with`.
+
+For this repository, the most reliable way to test with your already-working local environment is to start the server yourself:
+
+```bash
+source .venv/bin/activate
+python -m google_meridian_mcp_server.server
+```
+
+Then open the MCP Inspector separately and connect it to `http://localhost:8000/mcp` over HTTP instead of using `fastmcp dev inspector`.
 
 ## Tool Surface
 
@@ -94,10 +105,11 @@ The current MCP surface includes:
 Every tool is annotated as read-only and uses typed parameters with documented validation metadata
 so the generated schema is stricter and easier for agents to call correctly.
 
-Tool responses are canonical JSON payloads. For row-oriented analysis tools, the response includes
-`model_id`, `row_count`, `data`, any selector fields such as `output_type` or `datasets`, and a
-`result_metadata` block that lists the detected columns, dimensions, and measures for the returned
-rows.
+Tool responses are canonical JSON payloads. The row-oriented analysis tools return a compact
+**columnar** envelope: `model_id`, a selector field (`output_type` for analysis tools, or
+`datasets`/`dataset` for training data), `columns` (the ordered column names), `rows` (a list of
+positional value lists, one per row), and `row_count`. There is no `data` key and no
+`result_metadata` block. Measure floats are rounded to 6 significant figures.
 
 `get_model_overview` returns the model's time range, geo scope, channel/input groups, flattened data schema, and the supported dataset/output-type values for the other analysis tools.
 
