@@ -97,7 +97,7 @@ The overview tool should tell an agent:
 - Tabular tools return a columnar envelope: `model_id`, `output_type` (or `datasets`/`dataset`), `columns`, `rows`, `row_count`. No `data` key, no `result_metadata`.
 - Measure floats are rounded to 6 significant figures.
 - `get_model_overview` returns a nested object with `available_tool_options`; it has no `result_metadata`.
-- `list_models` returns a list of `{id, display_name, format, last_modified}` objects.
+- `list_models` returns a list of serialized `ModelCatalogEntry` objects, keyed `model_id`, `display_name`, `model_format`, `source_backend`, `source_path`, `last_modified`, `status`, `etag_or_fingerprint`, `metadata`.
 - Grouped analysis tools return posterior-only rows; no `distribution` column.
 - `get_channel_summary` baseline summaries come from Meridian's analyzer baseline API, not `MediaSummary`.
 - `marginal_roi` is sourced from Meridian's `mroi` output.
