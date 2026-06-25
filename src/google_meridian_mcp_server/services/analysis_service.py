@@ -81,6 +81,9 @@ class AnalysisService:
 
     @staticmethod
     def _round_measure(value: Any) -> Any:
+        # Cells are scalars by the time they reach here (dataset_mapper
+        # normalizes measures to scalars), so rounding is intentionally
+        # shallow: bools and ints pass through, floats round to 6 sig figs.
         if isinstance(value, bool):
             return value
         if isinstance(value, float):

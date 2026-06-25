@@ -424,3 +424,29 @@ class TestAnalysisServiceCaching:
 
         assert first == second
         interrogator.get_model_overview.assert_called_once()
+
+
+class TestRoundMeasure:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (1.23456789, 1.23457),
+            (0.000123456789, 0.000123457),
+            (1234567.0, 1234570.0),
+            (-2.0 / 3.0, -0.666667),
+            (True, True),
+            (False, False),
+            (42, 42),
+            ("text", "text"),
+            (None, None),
+        ],
+    )
+    def test_rounds_floats_to_six_significant_figures(self, value, expected):
+        result = AnalysisService._round_measure(value)
+        assert result == expected
+        assert type(result) is type(expected)
+
+    def test_bool_is_not_rounded_as_float(self):
+        # bool is a subclass of int/float; it must pass through untouched.
+        assert AnalysisService._round_measure(True) is True
+        assert AnalysisService._round_measure(False) is False
