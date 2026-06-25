@@ -50,109 +50,28 @@ and persistence helpers so agents can inspect models and request structured outp
 - `DISCOVERY_TTL_SECONDS` must be positive.
 
 ## Common Commands
-- `python -m pip install -e .[dev]`
-- `python -m google_meridian_mcp_server.server`
-- `pytest`
-- `ruff check src tests`
-- `ruff format src tests`
+- `uv run python -m google_meridian_mcp_server.server`
+- `uv run pytest`
+- `uv run ruff check src tests`
+- `uv run ruff format src tests`
 
 ## Module Map
-### `domain/models.py`
-- Defines transport, backend, model-format, and status enums.
-- `RuntimeConfig` is the central validated runtime object.
-- Validation happens in `RuntimeConfig.__post_init__`.
-- `ModelCatalogEntry` is the canonical model discovery record.
-
-### `domain/filters.py`
-- Defines the MCP-visible filter schema with Pydantic.
-- Normalizes channel and geo lists.
-- Deduplicates user-provided string lists while preserving order.
-- Rejects unknown fields with `extra="forbid"`.
-- Holds the output-type literal definitions shared by the tool layer.
-
-### `domain/errors.py`
-- Central error hierarchy for stable error codes and payload details.
-- The transport layer depends on these classes for consistent error shaping.
-
-### `persistence/base.py`
-- Holds shared path and naming helpers.
-- `build_model_id` strips file suffixes and collapses nested `model.binpb` layouts.
-- `build_display_name` converts stable ids to human-readable names.
-- `build_cache_path` maps provider-relative paths into the local cache tree.
-
-### `persistence/local_provider.py`
-- Walks a local models directory recursively.
-- Supports `.binpb` and `.pkl`.
-- Emits `ModelCatalogEntry` instances from filesystem metadata.
-- `materialize()` is effectively a local existence check.
-
-### `persistence/gcs_provider.py`
-- Lazily creates the Google Cloud Storage client.
-- Separates authentication failures from generic backend failures.
-- Converts blob names into stable relative paths and model ids.
-- Downloads remote models into the local materialization cache.
-
-### `persistence/cache.py`
-- `DiscoveryCache` wraps provider discovery with a TTL.
-- `MaterializationCache` delegates to the provider with a standard cache root.
-- `ResultCache` is an optional in-memory cache keyed by tool, model, and params.
-
-### `meridian/loader.py`
-- Auto-detects `.binpb` vs `.pkl`.
-- Loads Meridian models through Meridian's serde APIs.
-- This is the only place that should switch on model file extension.
-
-### `meridian/catalog.py`
-- Bridges discovered entries to loaded Meridian objects.
-- Caches fully loaded models for the process lifetime.
-- Caches `AnalyzerFacade` instances separately from raw models.
-- `get_interrogator()` currently returns the cached facade because the facade subclasses `MeridianInterrogator`.
-
-### `meridian/dataset_mapper.py`
-- Converts xarray datasets and data arrays into JSON-safe row dicts.
-- Merges multiple training datasets on shared dimension columns.
-- Preserves requested dataset ordering in the final response.
-- Normalizes numpy and pandas scalar types into Python values.
-
-### `meridian/interrogator.py`
-- Owns model metadata extraction.
-- Builds the `get_model_overview()` payload.
-- Computes input schemas, channel lists, dataset availability, and flattened input column names.
-- Builds a wide dataframe view of model inputs for downstream helpers.
-- Handles paid media, RF media, organic media, organic RF, controls, non-media treatments, KPI, revenue per KPI, and population.
-
-### `meridian/analyzer_facade.py`
-- Wraps Meridian `Analyzer` and `MediaSummary`.
-- Serves as the execution layer for analysis-service dispatch.
-- Contains grouped summary methods, contribution methods, adstock helpers, and response-curve helpers.
-- Includes carryover and saturation helpers ported from the showcase app.
-- Uses a filtered `MediaSummary` wrapper so geo/time-aware summary requests match the selected slice.
-- Normalizes grouped outputs to posterior-only payloads before transport serialization.
-
-### `services/model_catalog_service.py`
-- Serializes `ModelCatalogEntry` objects into JSON-safe dicts.
-- Converts `last_modified` to ISO-8601 strings.
-
-### `services/analysis_service.py`
-- Normalizes filters before touching Meridian-specific code.
-- Deduplicates requested training datasets.
-- Validates output types for grouped analysis tools.
-- Reshapes lower-level exceptions into `MissingModelDataError`.
-- Adds stable `available_tool_options` to model overview responses.
-- Owns result-cache integration for analysis requests.
-- Exposes the public adstock tool name as `get_adstock_decay`.
-
-### `transport/tools.py`
-- Registers FastMCP tools.
-- Applies read-only annotations consistently.
-- Converts domain errors into a standard error payload.
-- Keeps request schemas close to the public tool surface.
-
-### `server.py`
-- Creates shared runtime objects during lifespan startup.
-- Chooses the provider implementation from config.
-- Exposes `create_server()`, module-level `mcp`, and `run_server()`.
-- `run_server()` switches between stdio and HTTP transport.
+- **domain/models.py** — enums, `RuntimeConfig`, `ModelCatalogEntry`.
+- **domain/filters.py** — MCP filter schema; normalizes channels/geos; defines output-type literals.
+- **domain/errors.py** — error hierarchy with stable codes and payload details.
+- **persistence/base.py** — shared path helpers: `build_model_id`, `build_display_name`, `build_cache_path`.
+- **persistence/local_provider.py** — walks local directory; emits `ModelCatalogEntry` from filesystem metadata.
+- **persistence/gcs_provider.py** — GCS client; converts blob names to stable ids; downloads to local cache.
+- **persistence/cache.py** — `DiscoveryCache`, `MaterializationCache`, `ResultCache` (TTL-keyed in-memory).
+- **meridian/loader.py** — auto-detects `.binpb` vs `.pkl`; loads through Meridian serde APIs.
+- **meridian/catalog.py** — bridges entries to loaded Meridian objects; memoizes models and facades.
+- **meridian/dataset_mapper.py** — converts xarray datasets to JSON-safe row dicts; merges on shared dims.
+- **meridian/interrogator.py** — model metadata extraction; builds `get_model_overview` payload.
+- **meridian/analyzer_facade.py** — wraps `Analyzer` and `MediaSummary`; executes analysis; normalizes to posterior-only payloads.
+- **services/model_catalog_service.py** — serializes `ModelCatalogEntry`; converts timestamps to ISO-8601.
+- **services/analysis_service.py** — filter normalization; dispatch; result-cache integration; model-overview shaping.
+- **transport/tools.py** — registers FastMCP tools; converts domain errors to standard error payload.
+- **server.py** — lifespan startup; provider selection; `create_server()`, `mcp`, `run_server()`.
 
 ## Current Tool Surface
 - `list_models`
@@ -175,27 +94,21 @@ The overview tool should tell an agent:
 - which output types are valid for the other MCP tools
 
 ## Current Analysis Behavior
-- Grouped analysis tools should return posterior-only rows.
-- Prior rows should not be exposed through the MCP surface.
-- The serialized result rows should not include a `distribution` field.
+- Tabular tools return a columnar envelope: `model_id`, `output_type` (or `datasets`/`dataset`), `columns`, `rows`, `row_count`. No `data` key, no `result_metadata`.
+- Measure floats are rounded to 6 significant figures.
+- `get_model_overview` returns a nested object with `available_tool_options`; it has no `result_metadata`.
+- `list_models` returns a list of `{id, display_name, format, last_modified}` objects.
+- Grouped analysis tools return posterior-only rows; no `distribution` column.
 - `get_channel_summary` baseline summaries come from Meridian's analyzer baseline API, not `MediaSummary`.
 - `marginal_roi` is sourced from Meridian's `mroi` output.
 - `marginal_cpik` is derived from posterior `mroi` values and must keep CI bounds ordered after inversion.
-- `get_adstock_decay` is the public tool name; keep older `get_response_dynamics` references out of docs and transport contracts.
 - `get_response_curves` should return numeric curve rows, not channel metadata placeholders.
 - `response_curve_summary` should return numeric summary rows with `channel`, `spend`, `spend_multiplier`, `mean`, `ci_lo`, and `ci_hi`.
 
 ## Current Test Coverage
-- `tests/unit/test_config_and_persistence.py` covers runtime config validation, persistence helpers, and GCS provider behavior.
-- `tests/unit/test_catalog_and_loader.py` covers loader suffix handling and catalog memoization.
-- `tests/unit/test_interrogator.py` covers overview metadata and wide-input extraction branches.
-- `tests/unit/test_analysis_service.py` covers filter normalization, dataset selection, cache usage, dispatch, and model-overview shaping.
-- `tests/unit/test_analyzer_facade.py` covers posterior-only shaping, baseline summary routing, marginal ROI / CPKI handling, adstock outputs, response-curve outputs, carryover, and saturation paths.
-- `tests/unit/test_transport_tools.py` covers registered FastMCP tool wrappers and standard error payloads.
-- `tests/unit/test_server.py` covers provider selection and stdio vs HTTP startup behavior.
-- `tests/unit/test_model_catalog_service.py` and `tests/unit/test_result_cache.py` cover catalog serialization and in-memory result caching.
-- `tests/integration/test_model_providers.py` and `tests/integration/test_cached_analysis.py` cover provider and cache integration behavior.
-- Contract tests pin supported enums and public tool-surface expectations.
+- **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache.
+- **integration/** — provider filesystem behavior and cache interaction.
+- **contract/** — supported enums and public tool-surface expectations.
 
 ## Editing Guidance
 - Reuse `MeridianInterrogator` for shared model metadata and data extraction.
@@ -211,3 +124,10 @@ The overview tool should tell an agent:
 - Keep integration tests for provider filesystem behavior and cache interaction.
 - Use contract tests for external shapes and documented enums.
 - When adding a new analysis branch, add at least one happy path and one error path test.
+
+## Working Guidelines
+- Think before coding: state assumptions; if multiple interpretations exist, surface them; ask when unclear.
+- Simplicity first: minimum code that solves the problem; no speculative abstractions, flags, or error handling for impossible cases.
+- Surgical changes: touch only what the task requires; match existing style; don't refactor or reformat adjacent code; mention unrelated dead code instead of deleting it.
+- Remove only the orphans your own change creates (now-unused imports/vars).
+- Goal-driven execution: turn each task into a verifiable check (write/adjust a test, then make it pass); loop until `uv run pytest` and `uv run ruff check src tests` are green.
