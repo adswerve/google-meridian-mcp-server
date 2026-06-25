@@ -63,19 +63,29 @@ class AnalysisService:
         datasets: list[str] | None = None,
         output_type: str | None = None,
     ) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "model_id": model_id,
-            "row_count": len(rows),
-            "data": rows,
-            "result_metadata": AnalysisService._build_tabular_result_metadata(rows),
-        }
+        columns = AnalysisService._ordered_columns(rows)
+        result: dict[str, Any] = {"model_id": model_id}
+        if output_type is not None:
+            result["output_type"] = output_type
         if dataset is not None:
             result["dataset"] = dataset
         if datasets is not None:
             result["datasets"] = datasets
-        if output_type is not None:
-            result["output_type"] = output_type
+        result["columns"] = columns
+        result["rows"] = [
+            [AnalysisService._round_measure(row.get(column)) for column in columns]
+            for row in rows
+        ]
+        result["row_count"] = len(rows)
         return result
+
+    @staticmethod
+    def _round_measure(value: Any) -> Any:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, float):
+            return float(f"{value:.6g}")
+        return value
 
     @staticmethod
     def _ordered_columns(rows: list[dict[str, Any]]) -> list[str]:
@@ -85,34 +95,6 @@ class AnalysisService:
                 if column not in columns:
                     columns.append(column)
         return columns
-
-    @staticmethod
-    def _is_measure_value(value: Any) -> bool:
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-    @classmethod
-    def _build_tabular_result_metadata(
-        cls, rows: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        columns = cls._ordered_columns(rows)
-        dimensions: list[str] = []
-        measures: list[str] = []
-
-        for column in columns:
-            values = [
-                row[column] for row in rows if column in row and row[column] is not None
-            ]
-            if values and all(cls._is_measure_value(value) for value in values):
-                measures.append(column)
-            else:
-                dimensions.append(column)
-
-        return {
-            "format": "tabular",
-            "columns": columns,
-            "dimensions": dimensions,
-            "measures": measures,
-        }
 
     @staticmethod
     def _build_overview_result_metadata(result: dict[str, Any]) -> dict[str, Any]:

@@ -151,16 +151,12 @@ class TestTrainingDataSelection:
 
         assert result["datasets"] == ["kpi", "media_spend"]
         assert "dataset" not in result
+        assert "result_metadata" not in result
+        assert "data" not in result
         assert result["row_count"] == 4
-        assert result["result_metadata"] == {
-            "format": "tabular",
-            "columns": ["geo", "time", "channel", "kpi", "media_spend"],
-            "dimensions": ["geo", "time", "channel"],
-            "measures": ["kpi", "media_spend"],
-        }
-        assert {"geo", "time", "channel", "kpi", "media_spend"} <= set(
-            result["data"][0]
-        )
+        assert result["columns"] == ["geo", "time", "channel", "kpi", "media_spend"]
+        assert len(result["rows"]) == 4
+        assert all(len(row) == len(result["columns"]) for row in result["rows"])
 
     def test_get_training_data_deduplicates_dataset_selection(self):
         result = _build_analysis_service().get_training_data("m1", ["kpi", "kpi"], None)
@@ -168,12 +164,9 @@ class TestTrainingDataSelection:
         assert result["dataset"] == "kpi"
         assert result["datasets"] == ["kpi"]
         assert result["row_count"] == 2
-        assert result["result_metadata"] == {
-            "format": "tabular",
-            "columns": ["geo", "time", "kpi"],
-            "dimensions": ["geo", "time"],
-            "measures": ["kpi"],
-        }
+        assert result["columns"] == ["geo", "time", "kpi"]
+        assert "result_metadata" not in result
+        assert len(result["rows"]) == 2
 
     def test_get_training_data_rejects_unknown_dataset(self):
         with pytest.raises(DatasetNotAvailableError):
@@ -388,9 +381,10 @@ class TestAnalysisServiceDispatch:
 
         assert facade.calls == [expected_method]
         assert result["output_type"] == output_type
-        assert result["result_metadata"]["format"] == "tabular"
-        assert result["data"][0]["method"] == expected_method
-        assert result["data"][0]["filters"]["channels"] == ["tv"]
+        assert "result_metadata" not in result
+        assert result["columns"] == ["method", "filters"]
+        assert result["rows"][0][0] == expected_method
+        assert result["rows"][0][1]["channels"] == ["tv"]
 
     @pytest.mark.parametrize(
         ("method_name", "output_type"),
