@@ -284,14 +284,6 @@ class AnalysisService:
             },
         )
 
-    def get_response_dynamics(
-        self,
-        model_id: str,
-        output_type: str,
-        filters: AnalysisFilters | dict | None,
-    ) -> dict[str, Any]:
-        return self.get_adstock_decay(model_id, output_type, filters)
-
     def get_response_curves(
         self,
         model_id: str,
