@@ -21,7 +21,9 @@ Do a thorough review-and-cleanup pass on the google-meridian-mcp-server reposito
 - Only 47 files are git-tracked. `.specify/`, `specs/`, `.github/`, `references/`,
   `.vscode/` are all gitignored and untracked (local-only).
 - `references/` is a 33 MB local clone of the Meridian source (kept as reference).
-- No local model exists: `.env` uses `PERSISTENCE_BACKEND=gcs` and
+- `.env` uses `PERSISTENCE_BACKEND=gcs`, bucket `adswerve-meridian-models`,
+  prefix `rover`. GCS ADC is available and the bucket holds six real fitted models
+  (`2026_Q2_v01`, `v11d`, `v12-L6M`, `v12`, `v13`, `v14` — each `model.binpb`).
   `LOCAL_MODELS_ROOT` is commented out.
 
 ## Decisions
@@ -167,23 +169,28 @@ in Workstream F (synthetic model) rather than only by fakes.
 
 ## Workstream F — Live adversarial MCP verification
 
-The decisive verification step: run the real server and exercise it as a client.
+The decisive verification step: run the real server and exercise it as a client,
+against **both backends**, using real fitted models.
 
-### Synthetic model fixture
+### GCS backend run (primary — uses current `.env`)
 
-Because no real model is available, generate a tiny **fitted** Meridian model:
+- Use the repo `.env` as-is: `PERSISTENCE_BACKEND=gcs`,
+  `adswerve-meridian-models/rover`, with ADC for auth.
+- Drives every tool against a real fitted model (e.g. `v14`), so outputs carry a
+  real posterior — this is also what truly validates the Meridian 1.7.0 bump.
 
-- Small dims (e.g. 2-3 geos, ~50 weeks, 2-3 paid channels, optional 1 control).
-- Minimal sampling (1 chain, small `n_draws`/burnin) so it fits in a minute or two
-  on CPU — enough to populate a posterior so every tool returns real numbers.
-- Serialize to `.binpb` via `meridian_serde`, place under a temp
-  `LOCAL_MODELS_ROOT`. Build script lives under `scripts/` (or the scratchpad) and
-  is reusable; not shipped as a runtime dependency.
+### Local backend run
 
-### Live client run
+- No synthetic MCMC fit needed: download one real `model.binpb` from GCS into a temp
+  `LOCAL_MODELS_ROOT` (e.g. `models/v14/model.binpb`), then run with
+  `PERSISTENCE_BACKEND=local` pointing at it.
+- Confirms the local provider's discovery + materialization path and that both
+  backends yield the same columnar shape.
 
-- Start the server (in-memory FastMCP client against the app, or stdio transport)
-  with `PERSISTENCE_BACKEND=local` pointing at the fixture.
+### Live client run (both backends)
+
+- Start the server in-process via a FastMCP `Client` against the app object (no
+  network port needed), or over stdio.
 - Call every tool happy-path and assert the columnar shape + sane values:
   `list_models` -> `get_model_overview` -> `get_training_data` ->
   `get_channel_summary` (each output_type) -> `get_contribution` ->
@@ -209,7 +216,8 @@ Per workstream and at the end:
 - `uv run pytest` — all green (assertions updated for columnar).
 - `uv run ruff check src tests` — clean.
 - `AGENTS.md` line count < 250.
-- Live adversarial MCP session passes happy-path + adversarial checks.
+- Live adversarial MCP session passes happy-path + adversarial checks on **both**
+  the GCS backend (real `.env`) and the local backend (downloaded real model).
 
 ## Out of scope
 
