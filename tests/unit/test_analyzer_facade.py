@@ -226,6 +226,45 @@ def test_apply_saturation_forwards_use_kpi_and_interpolates():
     ]
 
 
+def test_media_summary_defaults_to_kpi_when_no_revenue():
+    """With no revenue_per_kpi in the model, _get_media_summary must pass use_kpi=True."""
+    input_data = SimpleNamespace(
+        revenue_per_kpi=None,
+        rf_channel=None,
+        media_channel=None,
+        non_media_channel=None,
+        organic_media_channel=None,
+        organic_rf_channel=None,
+        control_variable=None,
+    )
+    facade = AnalyzerFacade(SimpleNamespace(input_data=input_data))
+
+    captured = {}
+
+    class _FakeMediaSummary:
+        def __init__(self, *args, **kwargs):
+            captured["use_kpi"] = kwargs.get("use_kpi")
+
+    visualizer_module = ModuleType("meridian.analysis.visualizer")
+    visualizer_module.MediaSummary = _FakeMediaSummary
+    analysis_module = ModuleType("meridian.analysis")
+    analysis_module.visualizer = visualizer_module
+    meridian_module = ModuleType("meridian")
+    meridian_module.analysis = analysis_module
+
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "meridian": meridian_module,
+            "meridian.analysis": analysis_module,
+            "meridian.analysis.visualizer": visualizer_module,
+        },
+    ):
+        facade._get_media_summary(AnalysisFilters())
+
+    assert captured["use_kpi"] is True
+
+
 def test_media_summary_is_cached_by_use_kpi_and_confidence_level():
     media_summary_ctor = mock.Mock()
 
@@ -253,7 +292,7 @@ def test_media_summary_is_cached_by_use_kpi_and_confidence_level():
         first = facade._get_media_summary(AnalysisFilters(), confidence_level=0.9)
         second = facade._get_media_summary(AnalysisFilters(), confidence_level=0.9)
         third = facade._get_media_summary(
-            AnalysisFilters(use_kpi=True), confidence_level=0.9
+            AnalysisFilters(use_kpi=False), confidence_level=0.9
         )
 
     assert first is second

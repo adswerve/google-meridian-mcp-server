@@ -82,7 +82,7 @@ class AnalyzerFacade(MeridianInterrogator):
         confidence_level: float = 0.9,
     ):
         filters = filters or AnalysisFilters()
-        use_kpi = bool(filters.use_kpi)
+        use_kpi = self.resolve_use_kpi(filters)
         selected_geos = tuple(filters.geos)
         selected_times = tuple(self._expand_selected_times(filters) or ())
         key = (use_kpi, confidence_level, selected_geos, selected_times)
@@ -143,7 +143,7 @@ class AnalyzerFacade(MeridianInterrogator):
             selected_geos=self._selected_geos(filters),
             selected_times=self._expand_selected_times(filters),
             aggregate_times=filters.aggregate_times,
-            use_kpi=bool(filters.use_kpi),
+            use_kpi=self.resolve_use_kpi(filters),
         )
         return self._records_from_output(ds)
 
@@ -380,7 +380,7 @@ class AnalyzerFacade(MeridianInterrogator):
         ds = self._get_analyzer().response_curves(
             selected_geos=self._selected_geos(filters),
             selected_times=self._expand_selected_times(filters),
-            use_kpi=bool(filters.use_kpi),
+            use_kpi=self.resolve_use_kpi(filters),
         )
         return self._records_from_output(ds, channels=filters.channels)
 
@@ -388,7 +388,7 @@ class AnalyzerFacade(MeridianInterrogator):
         ds = self._get_analyzer().response_curves(
             selected_geos=self._selected_geos(filters),
             selected_times=self._expand_selected_times(filters),
-            use_kpi=bool(filters.use_kpi),
+            use_kpi=self.resolve_use_kpi(filters),
         )
         ds = self._filter_channels(ds, filters.channels)
         df = (
