@@ -81,6 +81,9 @@ and persistence helpers so agents can inspect models and request structured outp
 - `get_contribution`
 - `get_adstock_decay`
 - `get_response_curves`
+- `get_model_fit`
+- `get_reach_frequency`
+- `get_channel_data`
 
 ## Model Overview Expectations
 The overview tool should tell an agent:
@@ -104,6 +107,11 @@ The overview tool should tell an agent:
 - `marginal_cpik` is derived from posterior `mroi` values and must keep CI bounds ordered after inversion.
 - `get_response_curves` should return numeric curve rows, not channel metadata placeholders.
 - `response_curve_summary` should return numeric summary rows with `channel`, `spend`, `spend_multiplier`, `mean`, `ci_lo`, and `ci_hi`.
+- `roi` and `marginal_roi` raise `metric_not_supported` for models without revenue (`revenue_per_kpi is None`); `cpik`/`marginal_cpik` are valid for all models.
+- `get_model_overview.available_tool_options` is dynamic: it omits `roi`/`marginal_roi` for no-revenue models and lists `get_reach_frequency` only for models with reach & frequency channels.
+- The facade resolves `use_kpi` from the model's revenue capability when the caller does not set it (no-revenue models default to KPI mode).
+- `get_training_data` applies date/geo/channel filters to the merged rows; the dead `aggregate_geos` filter field has been removed.
+- `get_model_fit` returns expected/actual/baseline/residual over time (geo-aggregated). `get_reach_frequency` returns optimal-frequency ROI curves (RF-only, else `metric_not_supported`). `get_channel_data` returns a per-channel long table across all channel types.
 
 ## Current Test Coverage
 - **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache.

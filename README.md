@@ -101,6 +101,9 @@ The current MCP surface includes:
 - `get_contribution`
 - `get_adstock_decay`
 - `get_response_curves`
+- `get_model_fit`
+- `get_reach_frequency`
+- `get_channel_data`
 
 Every tool is annotated as read-only and uses typed parameters with documented validation metadata
 so the generated schema is stricter and easier for agents to call correctly.
@@ -139,20 +142,46 @@ and the transport payloads do not include a `distribution` field.
 - `response_curve_summary`, which returns numeric summarized rows keyed by channel, spend, and
   spend multiplier with `mean`, `ci_lo`, and `ci_hi`
 
+`get_model_fit` returns expected vs actual outcome values alongside baseline and residual series,
+aggregated across geos, so agents can assess time-series model accuracy.
+
+`get_reach_frequency` returns optimal-frequency ROI curves for reach & frequency channels; it
+raises `metric_not_supported` on models that have no RF channels.
+
+`get_channel_data` returns a per-channel long table covering all channel types (paid media, RF,
+organic, non-media), useful for inspecting raw spend and impression inputs.
+
+Note: `roi` and `marginal_roi` output types are only available for revenue models (those with a
+non-null `revenue_per_kpi`). On KPI-only models, requesting these metrics raises
+`metric_not_supported`. `cpik` and `marginal_cpik` are valid for all model types.
+
 ## Quality Checks
 
 Run tests:
 
 ```bash
-pytest
+uv run pytest
 ```
 
 Run Ruff:
 
 ```bash
-ruff check src tests
-ruff format src tests
+uv run ruff check src tests scripts
+uv run ruff format src tests scripts
 ```
+
+### Live validation
+
+Build dummy models for every variant and validate every tool live against an
+in-process MCP client (national vs geo, revenue vs KPI, with adversarial
+error-path checks):
+
+```bash
+uv run python -m scripts.validation.live_validate
+```
+
+This generates gitignored fixtures under `models/_validation/` on first run and
+exits non-zero on any mismatch.
 
 ## GCS Notes
 
