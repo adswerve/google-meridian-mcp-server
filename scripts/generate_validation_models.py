@@ -40,6 +40,10 @@ class VariantSpec:
     n_geos: int
     with_rf: bool
 
+    def factory_has_revenue(self) -> bool:
+        # revenue and kpi_rpk variants carry revenue_per_kpi; kpi_only does not.
+        return self.factory in ("revenue", "kpi_rpk")
+
 
 VARIANTS: list[VariantSpec] = [
     VariantSpec("national-revenue", "revenue", 1, True),
