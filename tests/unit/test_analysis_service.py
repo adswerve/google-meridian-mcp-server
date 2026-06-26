@@ -455,6 +455,46 @@ class TestAnalysisServiceCaching:
         interrogator.get_model_overview.assert_called_once()
 
 
+class _OverviewCatalog:
+    def __init__(self, overview):
+        self._overview = overview
+
+    class _Interrogator:
+        def __init__(self, overview):
+            self._overview = overview
+
+        def get_model_overview(self):
+            return dict(self._overview)
+
+    def get_interrogator(self, model_id):
+        return self._Interrogator(self._overview)
+
+
+def _base_overview(has_revenue, rf_channels):
+    return {
+        "available_training_datasets": ["kpi", "media", "media_spend"],
+        "has_revenue_per_kpi": has_revenue,
+        "rf_channels": rf_channels,
+    }
+
+
+def test_overview_prunes_roi_for_no_revenue_model():
+    catalog = _OverviewCatalog(_base_overview(has_revenue=False, rf_channels=["yt"]))
+    service = AnalysisService(catalog=catalog)
+    overview = service.get_model_overview("kpi-only")
+    types = overview["available_tool_options"]["get_channel_summary"]["output_type"]
+    assert "roi" not in types and "marginal_roi" not in types
+    assert "cpik" in types and "marginal_cpik" in types
+
+
+def test_overview_keeps_roi_for_revenue_model():
+    catalog = _OverviewCatalog(_base_overview(has_revenue=True, rf_channels=[]))
+    service = AnalysisService(catalog=catalog)
+    overview = service.get_model_overview("rev")
+    types = overview["available_tool_options"]["get_channel_summary"]["output_type"]
+    assert "roi" in types and "marginal_roi" in types
+
+
 class TestRoundMeasure:
     @pytest.mark.parametrize(
         "value,expected",

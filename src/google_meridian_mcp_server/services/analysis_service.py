@@ -209,12 +209,18 @@ class AnalysisService:
             except Exception as exc:
                 raise MissingModelDataError(model_id, str(exc)) from exc
 
+            has_revenue = overview.get("has_revenue_per_kpi", False)
+            channel_summary_types = [
+                output_type
+                for output_type in CHANNEL_SUMMARY_TYPE_ORDER
+                if has_revenue or output_type not in REVENUE_ONLY_CHANNEL_SUMMARY_TYPES
+            ]
             overview["available_tool_options"] = {
                 "get_training_data": {
                     "dataset": overview["available_training_datasets"],
                 },
                 "get_channel_summary": {
-                    "output_type": list(CHANNEL_SUMMARY_TYPE_ORDER),
+                    "output_type": channel_summary_types,
                 },
                 "get_contribution": {
                     "output_type": list(CONTRIBUTION_TYPE_ORDER),
