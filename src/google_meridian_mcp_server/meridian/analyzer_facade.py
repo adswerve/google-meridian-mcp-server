@@ -408,6 +408,35 @@ class AnalyzerFacade(MeridianInterrogator):
         df.columns.name = None
         return dataset_to_records(df)
 
+    # -- Reach & frequency methods ---------------------------------------------
+
+    def get_reach_frequency(self, filters: AnalysisFilters) -> list[dict]:
+        ds = self._get_analyzer().optimal_freq(
+            selected_geos=self._selected_geos(filters),
+            selected_times=self._expand_selected_times(filters),
+            use_kpi=self.resolve_use_kpi(filters),
+            confidence_level=0.9,
+        )
+        roi = ds["roi"].to_dataframe(name="roi").reset_index()
+        roi_wide = (
+            roi.pivot(index=["rf_channel", "frequency"], columns="metric", values="roi")
+            .reset_index()
+            .rename(columns={"mean": "roi"})
+        )
+        optimal = ds["optimal_frequency"].to_dataframe(
+            name="optimal_frequency"
+        ).reset_index()
+        if "metric" in optimal.columns:
+            optimal = optimal[optimal["metric"] == "mean"].drop(columns="metric")
+        merged = roi_wide.merge(optimal, on="rf_channel").rename(
+            columns={"rf_channel": "channel"}
+        )
+        ordered = ["channel", "frequency", "roi", "ci_lo", "ci_hi", "optimal_frequency"]
+        merged = merged.reindex(columns=[c for c in ordered if c in merged.columns])
+        if filters.channels:
+            merged = merged[merged["channel"].isin(filters.channels)].copy()
+        return dataset_to_records(merged)
+
     # -- Model fit methods ------------------------------------------------------
 
     def get_model_fit(self, filters: AnalysisFilters) -> list[dict]:

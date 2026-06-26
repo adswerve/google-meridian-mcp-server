@@ -244,6 +244,32 @@ def register_tools(mcp: FastMCP) -> None:
             return _error_response(error)
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_reach_frequency(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'geo-revenue').",
+            ),
+        ],
+        ctx: Context,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters to restrict by date range, geos, or RF channels.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Get optimal-frequency analysis for reach & frequency channels: expected ROI across weekly frequency levels plus the optimal frequency per channel. Only available for models with reach & frequency data."""
+        try:
+            return _analysis_service(ctx).get_reach_frequency(
+                model_id,
+                normalize_filters(filters),
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     async def get_model_fit(
         model_id: Annotated[
             str,

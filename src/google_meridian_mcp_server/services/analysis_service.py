@@ -241,6 +241,8 @@ class AnalysisService:
                 },
                 "get_model_fit": {},
             }
+            if overview.get("rf_channels"):
+                overview["available_tool_options"]["get_reach_frequency"] = {}
             result = {"model_id": model_id, **overview}
             return result
 
@@ -329,6 +331,29 @@ class AnalysisService:
                 "response_curve_summary": "get_response_curve_summary",
             },
         )
+
+    def get_reach_frequency(
+        self, model_id: str, filters: AnalysisFilters | dict | None
+    ) -> dict[str, Any]:
+        interrogator = self._catalog.get_interrogator(model_id)
+        if not interrogator.has_rf_channels():
+            raise MetricNotSupportedError(
+                model_id,
+                "reach_frequency",
+                "model has no reach & frequency channels",
+            )
+        normalized_filters = normalize_filters(filters)
+        params = {"filters": self._filter_key(normalized_filters)}
+
+        def _compute() -> dict[str, Any]:
+            facade = self._catalog.get_facade(model_id)
+            try:
+                rows = facade.get_reach_frequency(normalized_filters)
+            except Exception as exc:
+                raise MissingModelDataError(model_id, str(exc)) from exc
+            return self._build_result(model_id=model_id, rows=rows)
+
+        return self._cached("get_reach_frequency", model_id, params, _compute)
 
     def get_model_fit(
         self, model_id: str, filters: AnalysisFilters | dict | None

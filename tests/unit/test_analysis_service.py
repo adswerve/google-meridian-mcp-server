@@ -540,6 +540,48 @@ def test_get_model_fit_returns_columnar(monkeypatch):
     assert "data" not in result and "result_metadata" not in result
 
 
+class _RFCatalog:
+    def __init__(self, has_rf, rows):
+        self._has_rf = has_rf
+        self._rows = rows
+
+    class _Facade:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def get_reach_frequency(self, filters):
+            return self._rows
+
+    class _Interrogator:
+        def __init__(self, has_rf):
+            self._has_rf = has_rf
+
+        def has_rf_channels(self):
+            return self._has_rf
+
+    def get_facade(self, model_id):
+        return self._Facade(self._rows)
+
+    def get_interrogator(self, model_id):
+        return self._Interrogator(self._has_rf)
+
+
+def test_reach_frequency_columnar_when_rf_present():
+    rows = [{"channel": "yt", "frequency": 1.0, "roi": 2.0, "ci_lo": 1.5,
+             "ci_hi": 2.5, "optimal_frequency": 3.0}]
+    service = AnalysisService(catalog=_RFCatalog(has_rf=True, rows=rows))
+    result = service.get_reach_frequency("m", None)
+    assert result["row_count"] == 1
+    assert "optimal_frequency" in result["columns"]
+
+
+def test_reach_frequency_errors_without_rf():
+    service = AnalysisService(catalog=_RFCatalog(has_rf=False, rows=[]))
+    with pytest.raises(MetricNotSupportedError) as exc:
+        service.get_reach_frequency("m", None)
+    assert exc.value.details["reason"].startswith("model has no reach")
+
+
 class TestRoundMeasure:
     @pytest.mark.parametrize(
         "value,expected",
