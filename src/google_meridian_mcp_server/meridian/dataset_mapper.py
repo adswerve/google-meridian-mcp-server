@@ -3,10 +3,66 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+_TIME_COLUMNS = ("time", "media_time")
+_CHANNEL_SUFFIX = "_channel"
+
+
+def _row_time(row: dict) -> date | None:
+    for column in _TIME_COLUMNS:
+        value = row.get(column)
+        if value is not None:
+            return pd.Timestamp(value).date()
+    return None
+
+
+def _row_channels(row: dict) -> list[str]:
+    names: list[str] = []
+    for key, value in row.items():
+        if value is None:
+            continue
+        if key == "channel" or key.endswith(_CHANNEL_SUFFIX):
+            names.append(str(value))
+    return names
+
+
+def filter_records(
+    records: list[dict],
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    geos: Sequence[str] = (),
+    channels: Sequence[str] = (),
+) -> list[dict]:
+    """Filter row dicts by date range, geo, and channel where those dims exist.
+
+    A row is kept unless it carries the relevant dimension and falls outside the
+    requested selection. Rows lacking a dimension are unaffected by that filter.
+    """
+    geo_set = {str(value) for value in geos}
+    channel_set = {str(value) for value in channels}
+    out: list[dict] = []
+    for row in records:
+        if geo_set and "geo" in row and str(row["geo"]) not in geo_set:
+            continue
+        if channel_set:
+            row_channels = _row_channels(row)
+            if row_channels and not (set(row_channels) & channel_set):
+                continue
+        if start_date or end_date:
+            row_date = _row_time(row)
+            if row_date is not None:
+                if start_date and row_date < start_date:
+                    continue
+                if end_date and row_date > end_date:
+                    continue
+        out.append(row)
+    return out
 
 TRAINING_DATASETS = (
     "kpi",

@@ -495,6 +495,25 @@ def test_overview_keeps_roi_for_revenue_model():
     assert "roi" in types and "marginal_roi" in types
 
 
+def test_training_data_applies_geo_filter(monkeypatch):
+    import google_meridian_mcp_server.services.analysis_service as svc
+
+    rows = [
+        {"geo": "us", "time": "2023-01-01T00:00:00", "kpi": 1.0},
+        {"geo": "ca", "time": "2023-01-01T00:00:00", "kpi": 2.0},
+    ]
+    monkeypatch.setattr(svc, "extract_training_datasets", lambda mmm, datasets: rows)
+
+    class _Catalog:
+        def resolve(self, model_id):
+            return object()
+
+    service = svc.AnalysisService(catalog=_Catalog())
+    result = service.get_training_data("m", ["kpi"], {"geos": ["us"]})
+    assert result["row_count"] == 1
+    assert result["rows"][0][result["columns"].index("geo")] == "us"
+
+
 class TestRoundMeasure:
     @pytest.mark.parametrize(
         "value,expected",

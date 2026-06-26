@@ -17,6 +17,7 @@ from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.meridian.dataset_mapper import (
     TRAINING_DATASETS,
     extract_training_datasets,
+    filter_records,
 )
 from google_meridian_mcp_server.persistence.cache import ResultCache
 
@@ -193,6 +194,13 @@ class AnalysisService:
                 )
             except Exception as exc:
                 raise MissingModelDataError(model_id, str(exc)) from exc
+            rows = filter_records(
+                rows,
+                start_date=normalized_filters.start_date,
+                end_date=normalized_filters.end_date,
+                geos=normalized_filters.geos,
+                channels=normalized_filters.channels,
+            )
             return self._build_result(
                 model_id=model_id,
                 dataset=datasets[0] if len(datasets) == 1 else None,
