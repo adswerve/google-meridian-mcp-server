@@ -636,3 +636,117 @@ class TestRoundMeasure:
         # bool is a subclass of int/float; it must pass through untouched.
         assert AnalysisService._round_measure(True) is True
         assert AnalysisService._round_measure(False) is False
+
+
+class _FakeScenarioFacade:
+    def __init__(self, *, has_revenue=True, base_spend=100.0, outcomes=None):
+        self._has_revenue = has_revenue
+        self._base_spend = base_spend
+        self._outcomes = outcomes or [
+            {"mean": 400.0, "ci_lo": 350.0, "ci_hi": 450.0},
+            {"mean": 460.0, "ci_lo": 400.0, "ci_hi": 520.0},
+        ]
+        self.spend_response_calls = []
+
+    def get_data_inputs(self):
+        return {"media": ["search", "tv"], "rf_media": ["youtube"]}
+
+    def resolve_use_kpi(self, filters):
+        return not self._has_revenue
+
+    def resolve_base_spend(self, channel, filters):
+        return self._base_spend
+
+    def spend_response(self, channel, spend_points, filters):
+        self.spend_response_calls.append(list(spend_points))
+        return self._outcomes
+
+
+class _FakeScenarioCatalog:
+    def __init__(self, facade):
+        self._facade = facade
+
+    def get_facade(self, model_id):
+        return self._facade
+
+
+def _scenario_service(facade, *, cache_enabled=False) -> AnalysisService:
+    return AnalysisService(
+        catalog=_FakeScenarioCatalog(facade),
+        result_cache=ResultCache(enabled=cache_enabled, ttl_seconds=None),
+    )
+
+
+def test_spend_scenario_revenue_mode_computes_roi_family():
+    facade = _FakeScenarioFacade(has_revenue=True, base_spend=100.0)
+    result = _scenario_service(facade).get_spend_scenario(
+        "m1", "search", 20.0, None, None
+    )
+    assert result["outcome_mode"] == "revenue"
+    assert result["channel_type"] == "paid_media"
+    assert result["base_spend"] == 100.0
+    assert result["new_spend"] == 120.0
+    assert result["efficiency"] == 4.0
+    assert result["marginal_efficiency"] == 3.0
+    assert result["efficiency_at_new"] == pytest.approx(3.83333, rel=1e-4)
+    assert result["expected_outcome_increase"] == 60.0
+    assert result["base_outcome"] == {"mean": 400.0, "ci_lo": 350.0, "ci_hi": 450.0}
+    assert facade.spend_response_calls == [[100.0, 120.0]]
+
+
+def test_spend_scenario_kpi_mode_computes_cpik_family():
+    facade = _FakeScenarioFacade(has_revenue=False, base_spend=100.0)
+    result = _scenario_service(facade).get_spend_scenario(
+        "m1", "search", 20.0, None, None
+    )
+    assert result["outcome_mode"] == "kpi"
+    assert result["efficiency"] == 0.25
+    assert result["marginal_efficiency"] == pytest.approx(0.333333, rel=1e-4)
+    assert result["efficiency_at_new"] == pytest.approx(0.26087, rel=1e-4)
+
+
+def test_spend_scenario_uses_provided_base_spend():
+    facade = _FakeScenarioFacade(has_revenue=True, base_spend=999.0)
+    result = _scenario_service(facade).get_spend_scenario(
+        "m1", "search", 20.0, 50.0, None
+    )
+    assert result["base_spend"] == 50.0
+    assert result["new_spend"] == 70.0
+    assert facade.spend_response_calls == [[50.0, 70.0]]
+
+
+def test_spend_scenario_rejects_unknown_channel():
+    facade = _FakeScenarioFacade()
+    with pytest.raises(MissingModelDataError):
+        _scenario_service(facade).get_spend_scenario("m1", "nope", 20.0, None, None)
+
+
+def test_spend_scenario_rejects_non_positive_base_spend():
+    facade = _FakeScenarioFacade()
+    with pytest.raises(MissingModelDataError):
+        _scenario_service(facade).get_spend_scenario("m1", "search", 20.0, 0.0, None)
+
+
+def test_spend_scenario_zero_lift_yields_null_efficiency():
+    facade = _FakeScenarioFacade(
+        has_revenue=False,
+        base_spend=100.0,
+        outcomes=[
+            {"mean": 0.0, "ci_lo": 0.0, "ci_hi": 0.0},
+            {"mean": 0.0, "ci_lo": 0.0, "ci_hi": 0.0},
+        ],
+    )
+    result = _scenario_service(facade).get_spend_scenario(
+        "m1", "search", 20.0, None, None
+    )
+    assert result["efficiency"] is None
+    assert result["marginal_efficiency"] is None
+
+
+def test_spend_scenario_caches_result():
+    facade = _FakeScenarioFacade(has_revenue=True)
+    service = _scenario_service(facade, cache_enabled=True)
+    first = service.get_spend_scenario("m1", "search", 20.0, None, None)
+    second = service.get_spend_scenario("m1", "search", 20.0, None, None)
+    assert first == second
+    assert len(facade.spend_response_calls) == 1

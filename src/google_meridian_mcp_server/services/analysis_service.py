@@ -95,6 +95,12 @@ class AnalysisService:
         return value
 
     @staticmethod
+    def _safe_ratio(numerator: float, denominator: float) -> float | None:
+        if not denominator:
+            return None
+        return numerator / denominator
+
+    @staticmethod
     def _ordered_columns(rows: list[dict[str, Any]]) -> list[str]:
         columns: list[str] = []
         for row in rows:
@@ -394,3 +400,116 @@ class AnalysisService:
             return self._build_result(model_id=model_id, rows=rows)
 
         return self._cached("get_model_fit", model_id, params, _compute)
+
+    def get_spend_scenario(
+        self,
+        model_id: str,
+        channel: str,
+        spend_increase: float,
+        base_spend: float | None,
+        filters: AnalysisFilters | dict | None,
+    ) -> dict[str, Any]:
+        normalized_filters = normalize_filters(filters)
+        facade = self._catalog.get_facade(model_id)
+
+        data_inputs = facade.get_data_inputs()
+        if channel in data_inputs["media"]:
+            channel_type = "paid_media"
+        elif channel in data_inputs["rf_media"]:
+            channel_type = "rf"
+        else:
+            raise MissingModelDataError(
+                model_id,
+                f"channel '{channel}' is not a paid media or RF channel",
+            )
+
+        if base_spend is not None and base_spend <= 0:
+            raise MissingModelDataError(
+                model_id, "base_spend must be a positive number"
+            )
+
+        outcome_mode = "kpi" if facade.resolve_use_kpi(normalized_filters) else "revenue"
+        params = {
+            "channel": channel,
+            "spend_increase": spend_increase,
+            "base_spend": base_spend,
+            "filters": self._filter_key(normalized_filters),
+        }
+
+        def _compute() -> dict[str, Any]:
+            try:
+                resolved_base = (
+                    base_spend
+                    if base_spend is not None
+                    else facade.resolve_base_spend(channel, normalized_filters)
+                )
+                new_spend = resolved_base + spend_increase
+                outcomes = facade.spend_response(
+                    channel, [resolved_base, new_spend], normalized_filters
+                )
+            except Exception as exc:
+                raise MissingModelDataError(model_id, str(exc)) from exc
+
+            return self._build_spend_scenario(
+                model_id=model_id,
+                channel=channel,
+                channel_type=channel_type,
+                outcome_mode=outcome_mode,
+                base_spend=resolved_base,
+                spend_increase=spend_increase,
+                new_spend=new_spend,
+                base_outcome=outcomes[0],
+                new_outcome=outcomes[1],
+            )
+
+        return self._cached("get_spend_scenario", model_id, params, _compute)
+
+    def _build_spend_scenario(
+        self,
+        *,
+        model_id: str,
+        channel: str,
+        channel_type: str,
+        outcome_mode: str,
+        base_spend: float,
+        spend_increase: float,
+        new_spend: float,
+        base_outcome: dict[str, Any],
+        new_outcome: dict[str, Any],
+    ) -> dict[str, Any]:
+        b = base_outcome["mean"]
+        n = new_outcome["mean"]
+        delta = n - b
+        if outcome_mode == "revenue":
+            efficiency = self._safe_ratio(b, base_spend)
+            marginal_efficiency = self._safe_ratio(delta, spend_increase)
+            efficiency_at_new = self._safe_ratio(n, new_spend)
+        else:
+            efficiency = self._safe_ratio(base_spend, b)
+            marginal_efficiency = self._safe_ratio(spend_increase, delta)
+            efficiency_at_new = self._safe_ratio(new_spend, n)
+
+        summary = {
+            "model_id": model_id,
+            "channel": channel,
+            "channel_type": channel_type,
+            "outcome_mode": outcome_mode,
+            "base_spend": base_spend,
+            "spend_increase": spend_increase,
+            "new_spend": new_spend,
+            "spend_increase_pct": self._safe_ratio(100.0 * spend_increase, base_spend),
+            "base_outcome": base_outcome,
+            "new_outcome": new_outcome,
+            "expected_outcome_increase": delta,
+            "expected_outcome_increase_pct": self._safe_ratio(100.0 * delta, b),
+            "efficiency": efficiency,
+            "marginal_efficiency": marginal_efficiency,
+            "efficiency_at_new": efficiency_at_new,
+        }
+        return {key: self._round_value(value) for key, value in summary.items()}
+
+    @classmethod
+    def _round_value(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: cls._round_value(inner) for key, inner in value.items()}
+        return cls._round_measure(value)
