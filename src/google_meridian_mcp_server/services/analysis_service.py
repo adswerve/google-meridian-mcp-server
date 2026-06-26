@@ -16,6 +16,7 @@ from google_meridian_mcp_server.domain.filters import AnalysisFilters, normalize
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.meridian.dataset_mapper import (
     TRAINING_DATASETS,
+    extract_channel_data,
     extract_training_datasets,
     filter_records,
 )
@@ -210,6 +211,28 @@ class AnalysisService:
 
         return self._cached("get_training_data", model_id, params, _compute)
 
+    def get_channel_data(
+        self, model_id: str, filters: AnalysisFilters | dict | None
+    ) -> dict[str, Any]:
+        normalized_filters = normalize_filters(filters)
+        params = {"filters": self._filter_key(normalized_filters)}
+
+        def _compute() -> dict[str, Any]:
+            try:
+                rows = extract_channel_data(self._catalog.resolve(model_id))
+            except Exception as exc:
+                raise MissingModelDataError(model_id, str(exc)) from exc
+            rows = filter_records(
+                rows,
+                start_date=normalized_filters.start_date,
+                end_date=normalized_filters.end_date,
+                geos=normalized_filters.geos,
+                channels=normalized_filters.channels,
+            )
+            return self._build_result(model_id=model_id, rows=rows)
+
+        return self._cached("get_channel_data", model_id, params, _compute)
+
     def get_model_overview(self, model_id: str) -> dict[str, Any]:
         def _compute() -> dict[str, Any]:
             try:
@@ -239,6 +262,7 @@ class AnalysisService:
                 "get_response_curves": {
                     "output_type": list(RESPONSE_CURVE_TYPE_ORDER),
                 },
+                "get_channel_data": {},
                 "get_model_fit": {},
             }
             if overview.get("rf_channels"):

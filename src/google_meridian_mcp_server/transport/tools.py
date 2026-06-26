@@ -101,7 +101,7 @@ def register_tools(mcp: FastMCP) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Retrieve the raw training data the model was fitted on. Specify one or more dataset keys to get a merged table of observations. Use this to inspect actual media spend, KPI values, or control variables over time and geography."""
+        """Retrieve raw input datasets by name (e.g. 'media_spend', 'kpi', 'controls', 'population') merged into one table — including non-channel series. Use when you want a specific dataset as stored. To investigate a channel's full picture across types, use get_channel_data instead."""
         try:
             return _analysis_service(ctx).get_training_data(
                 model_id,
@@ -263,6 +263,32 @@ def register_tools(mcp: FastMCP) -> None:
         """Get optimal-frequency analysis for reach & frequency channels: expected ROI across weekly frequency levels plus the optimal frequency per channel. Only available for models with reach & frequency data."""
         try:
             return _analysis_service(ctx).get_reach_frequency(
+                model_id,
+                normalize_filters(filters),
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_channel_data(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'geo-revenue').",
+            ),
+        ],
+        ctx: Context,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters to restrict by date range, geos, or channels.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Everything about a channel in one table — spend, impressions, reach/frequency — across all channel types (paid media, RF, organic, non-media). Use to investigate one or more channels directly. For raw datasets by name (including non-channel series like KPI or controls), use get_training_data instead."""
+        try:
+            return _analysis_service(ctx).get_channel_data(
                 model_id,
                 normalize_filters(filters),
             )
