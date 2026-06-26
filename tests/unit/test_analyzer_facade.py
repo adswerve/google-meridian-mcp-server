@@ -226,6 +226,45 @@ def test_apply_saturation_forwards_use_kpi_and_interpolates():
     ]
 
 
+def test_media_summary_defaults_to_kpi_when_no_revenue():
+    """With no revenue_per_kpi in the model, _get_media_summary must pass use_kpi=True."""
+    input_data = SimpleNamespace(
+        revenue_per_kpi=None,
+        rf_channel=None,
+        media_channel=None,
+        non_media_channel=None,
+        organic_media_channel=None,
+        organic_rf_channel=None,
+        control_variable=None,
+    )
+    facade = AnalyzerFacade(SimpleNamespace(input_data=input_data))
+
+    captured = {}
+
+    class _FakeMediaSummary:
+        def __init__(self, *args, **kwargs):
+            captured["use_kpi"] = kwargs.get("use_kpi")
+
+    visualizer_module = ModuleType("meridian.analysis.visualizer")
+    visualizer_module.MediaSummary = _FakeMediaSummary
+    analysis_module = ModuleType("meridian.analysis")
+    analysis_module.visualizer = visualizer_module
+    meridian_module = ModuleType("meridian")
+    meridian_module.analysis = analysis_module
+
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "meridian": meridian_module,
+            "meridian.analysis": analysis_module,
+            "meridian.analysis.visualizer": visualizer_module,
+        },
+    ):
+        facade._get_media_summary(AnalysisFilters())
+
+    assert captured["use_kpi"] is True
+
+
 def test_media_summary_is_cached_by_use_kpi_and_confidence_level():
     media_summary_ctor = mock.Mock()
 
@@ -253,7 +292,7 @@ def test_media_summary_is_cached_by_use_kpi_and_confidence_level():
         first = facade._get_media_summary(AnalysisFilters(), confidence_level=0.9)
         second = facade._get_media_summary(AnalysisFilters(), confidence_level=0.9)
         third = facade._get_media_summary(
-            AnalysisFilters(use_kpi=True), confidence_level=0.9
+            AnalysisFilters(use_kpi=False), confidence_level=0.9
         )
 
     assert first is second
@@ -604,3 +643,53 @@ def test_apply_saturation_rejects_non_positive_mean_spend():
 
     with pytest.raises(ValueError, match="must have a positive mean spend"):
         facade.apply_saturation("search", [1.0])
+
+
+def test_resolve_base_spend_returns_average_spend_per_time_unit():
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(rf_channel=None))
+    )
+    facade.get_data = mock.Mock(
+        return_value=pd.DataFrame(
+            {"search_spend": [100.0, 200.0, 300.0]},
+            index=pd.Index(["2024-01-01", "2024-01-08", "2024-01-15"], name="time"),
+        )
+    )
+
+    assert facade.resolve_base_spend("search", AnalysisFilters()) == 200.0
+
+
+def test_resolve_base_spend_raises_when_spend_column_missing():
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(rf_channel=None))
+    )
+    facade.get_data = mock.Mock(
+        return_value=pd.DataFrame(
+            {"tv_spend": [1.0]},
+            index=pd.Index(["2024-01-01"], name="time"),
+        )
+    )
+
+    with pytest.raises(ValueError):
+        facade.resolve_base_spend("search", AnalysisFilters())
+
+
+def test_spend_response_zips_apply_saturation_arrays_in_order():
+    facade = AnalyzerFacade(SimpleNamespace(input_data=SimpleNamespace()))
+    facade.resolve_use_kpi = mock.Mock(return_value=False)
+    facade.apply_saturation = mock.Mock(
+        return_value=(
+            np.array([10.0, 12.0]),
+            np.array([9.0, 11.0]),
+            np.array([11.0, 13.0]),
+        )
+    )
+
+    rows = facade.spend_response("search", [100.0, 120.0], AnalysisFilters())
+
+    assert rows == [
+        {"mean": 10.0, "ci_lo": 9.0, "ci_hi": 11.0},
+        {"mean": 12.0, "ci_lo": 11.0, "ci_hi": 13.0},
+    ]
+    assert facade.apply_saturation.call_args.kwargs["use_kpi"] is False
+    assert facade.apply_saturation.call_args.args[1] == [100.0, 120.0]

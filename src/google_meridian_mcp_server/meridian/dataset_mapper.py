@@ -3,10 +3,66 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+_TIME_COLUMNS = ("time", "media_time")
+_CHANNEL_SUFFIX = "_channel"
+
+
+def _row_time(row: dict) -> date | None:
+    for column in _TIME_COLUMNS:
+        value = row.get(column)
+        if value is not None:
+            return pd.Timestamp(value).date()
+    return None
+
+
+def _row_channels(row: dict) -> list[str]:
+    names: list[str] = []
+    for key, value in row.items():
+        if value is None:
+            continue
+        if key == "channel" or key.endswith(_CHANNEL_SUFFIX):
+            names.append(str(value))
+    return names
+
+
+def filter_records(
+    records: list[dict],
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    geos: Sequence[str] = (),
+    channels: Sequence[str] = (),
+) -> list[dict]:
+    """Filter row dicts by date range, geo, and channel where those dims exist.
+
+    A row is kept unless it carries the relevant dimension and falls outside the
+    requested selection. Rows lacking a dimension are unaffected by that filter.
+    """
+    geo_set = {str(value) for value in geos}
+    channel_set = {str(value) for value in channels}
+    out: list[dict] = []
+    for row in records:
+        if geo_set and "geo" in row and str(row["geo"]) not in geo_set:
+            continue
+        if channel_set:
+            row_channels = _row_channels(row)
+            if row_channels and not (set(row_channels) & channel_set):
+                continue
+        if start_date or end_date:
+            row_date = _row_time(row)
+            if row_date is not None:
+                if start_date and row_date < start_date:
+                    continue
+                if end_date and row_date > end_date:
+                    continue
+        out.append(row)
+    return out
 
 TRAINING_DATASETS = (
     "kpi",
@@ -107,8 +163,9 @@ def dataset_to_records(ds: Any, var_name: str | None = None) -> list[dict]:
 
 def _df_to_records(df: pd.DataFrame) -> list[dict]:
     """Convert DataFrame to JSON-safe list of dicts."""
-    # Replace NaN with None for JSON serialization
-    df = df.where(df.notna(), other=None)
+    # Replace NaN with None for JSON serialization. Cast to object first so
+    # that numeric columns (which can't store Python None) are converted too.
+    df = df.astype(object).where(df.notna(), other=None)
     records = df.to_dict(orient="records")
     # Ensure numpy types are converted to Python types
     clean = []
@@ -130,3 +187,70 @@ def _to_python(v: Any) -> Any:
     if isinstance(v, pd.Timestamp):
         return v.isoformat()
     return v
+
+
+_CHANNEL_DATA_COLUMNS = [
+    "channel",
+    "channel_type",
+    "geo",
+    "time",
+    "impressions",
+    "spend",
+    "reach",
+    "frequency",
+    "rf_spend",
+    "value",
+]
+
+# (channel_type, channel_coord, [(array_attr, value_column), ...])
+_CHANNEL_DATA_SOURCES = [
+    ("paid_media", "media_channel", [("media", "impressions"), ("media_spend", "spend")]),
+    ("rf", "rf_channel", [("reach", "reach"), ("frequency", "frequency"), ("rf_spend", "rf_spend")]),
+    ("organic_media", "organic_media_channel", [("organic_media", "impressions")]),
+    ("organic_rf", "organic_rf_channel", [("organic_reach", "reach"), ("organic_frequency", "frequency")]),
+    ("non_media", "non_media_channel", [("non_media_treatments", "value")]),
+]
+
+
+def _channel_long_frame(array: Any, channel_coord: str, value_column: str) -> pd.DataFrame | None:
+    if array is None:
+        return None
+    frame = array.to_dataframe(name=value_column).reset_index()
+    if channel_coord not in frame.columns:
+        return None
+    frame = frame.rename(columns={channel_coord: "channel"})
+    if "media_time" in frame.columns:
+        frame = frame.rename(columns={"media_time": "time"})
+    keep = [c for c in ("channel", "geo", "time", value_column) if c in frame.columns]
+    return frame[keep]
+
+
+def extract_channel_data(mmm: Any) -> list[dict]:
+    """Extract every channel-keyed input as one unified long table."""
+    input_data = mmm.input_data
+    type_frames: list[pd.DataFrame] = []
+
+    for channel_type, channel_coord, sources in _CHANNEL_DATA_SOURCES:
+        merged: pd.DataFrame | None = None
+        for array_attr, value_column in sources:
+            frame = _channel_long_frame(
+                getattr(input_data, array_attr, None), channel_coord, value_column
+            )
+            if frame is None:
+                continue
+            if merged is None:
+                merged = frame
+            else:
+                join_keys = [c for c in merged.columns if c in frame.columns and c not in (value_column,)]
+                merged = merged.merge(frame, how="outer", on=join_keys)
+        if merged is None:
+            continue
+        merged["channel_type"] = channel_type
+        type_frames.append(merged)
+
+    if not type_frames:
+        return []
+
+    combined = pd.concat(type_frames, ignore_index=True, sort=False)
+    combined = combined.reindex(columns=_CHANNEL_DATA_COLUMNS)
+    return _df_to_records(combined)

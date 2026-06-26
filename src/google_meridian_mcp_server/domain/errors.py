@@ -72,3 +72,19 @@ class DatasetNotAvailableError(MeridianMcpError):
             message=f"Dataset '{dataset}' is not available for model '{model_id}'.",
             details={"model_id": model_id, "dataset": dataset},
         )
+
+
+class MetricNotSupportedError(MeridianMcpError):
+    def __init__(self, model_id: str, output_type: str, reason: str):
+        super().__init__(
+            error_code="metric_not_supported",
+            message=(
+                f"Metric '{output_type}' is not supported for model "
+                f"'{model_id}': {reason}"
+            ),
+            details={
+                "model_id": model_id,
+                "output_type": output_type,
+                "reason": reason,
+            },
+        )

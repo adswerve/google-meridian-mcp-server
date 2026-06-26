@@ -9,13 +9,16 @@ from typing import Any
 from google_meridian_mcp_server.domain.errors import (
     DatasetNotAvailableError,
     InvalidOutputTypeError,
+    MetricNotSupportedError,
     MissingModelDataError,
 )
 from google_meridian_mcp_server.domain.filters import AnalysisFilters, normalize_filters
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.meridian.dataset_mapper import (
     TRAINING_DATASETS,
+    extract_channel_data,
     extract_training_datasets,
+    filter_records,
 )
 from google_meridian_mcp_server.persistence.cache import ResultCache
 
@@ -30,6 +33,7 @@ CHANNEL_SUMMARY_TYPE_ORDER = (
     "marginal_cpik",
 )
 CHANNEL_SUMMARY_TYPES = frozenset(CHANNEL_SUMMARY_TYPE_ORDER)
+REVENUE_ONLY_CHANNEL_SUMMARY_TYPES = frozenset({"roi", "marginal_roi"})
 
 CONTRIBUTION_TYPE_ORDER = ("contribution_metrics", "contribution_metrics_by_time")
 CONTRIBUTION_TYPES = frozenset(CONTRIBUTION_TYPE_ORDER)
@@ -63,19 +67,38 @@ class AnalysisService:
         datasets: list[str] | None = None,
         output_type: str | None = None,
     ) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "model_id": model_id,
-            "row_count": len(rows),
-            "data": rows,
-            "result_metadata": AnalysisService._build_tabular_result_metadata(rows),
-        }
+        columns = AnalysisService._ordered_columns(rows)
+        result: dict[str, Any] = {"model_id": model_id}
+        if output_type is not None:
+            result["output_type"] = output_type
         if dataset is not None:
             result["dataset"] = dataset
         if datasets is not None:
             result["datasets"] = datasets
-        if output_type is not None:
-            result["output_type"] = output_type
+        result["columns"] = columns
+        result["rows"] = [
+            [AnalysisService._round_measure(row.get(column)) for column in columns]
+            for row in rows
+        ]
+        result["row_count"] = len(rows)
         return result
+
+    @staticmethod
+    def _round_measure(value: Any) -> Any:
+        # Cells are scalars by the time they reach here (dataset_mapper
+        # normalizes measures to scalars), so rounding is intentionally
+        # shallow: bools and ints pass through, floats round to 6 sig figs.
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, float):
+            return float(f"{value:.6g}")
+        return value
+
+    @staticmethod
+    def _safe_ratio(numerator: float, denominator: float) -> float | None:
+        if not denominator:
+            return None
+        return numerator / denominator
 
     @staticmethod
     def _ordered_columns(rows: list[dict[str, Any]]) -> list[str]:
@@ -85,76 +108,6 @@ class AnalysisService:
                 if column not in columns:
                     columns.append(column)
         return columns
-
-    @staticmethod
-    def _is_measure_value(value: Any) -> bool:
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-    @classmethod
-    def _build_tabular_result_metadata(
-        cls, rows: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        columns = cls._ordered_columns(rows)
-        dimensions: list[str] = []
-        measures: list[str] = []
-
-        for column in columns:
-            values = [
-                row[column] for row in rows if column in row and row[column] is not None
-            ]
-            if values and all(cls._is_measure_value(value) for value in values):
-                measures.append(column)
-            else:
-                dimensions.append(column)
-
-        return {
-            "format": "tabular",
-            "columns": columns,
-            "dimensions": dimensions,
-            "measures": measures,
-        }
-
-    @staticmethod
-    def _build_overview_result_metadata(result: dict[str, Any]) -> dict[str, Any]:
-        sections = [
-            key
-            for key in (
-                "time",
-                "geos",
-                "data_inputs",
-                "data_schema",
-                "available_training_datasets",
-                "available_tool_options",
-            )
-            if key in result
-        ]
-        summary_fields = [
-            key
-            for key in (
-                "model_id",
-                "model_type",
-                "is_national",
-                "geo_count",
-                "total_population",
-                "total_channels",
-                "metric_views",
-                "has_revenue_per_kpi",
-            )
-            if key in result
-        ]
-        return {
-            "format": "object",
-            "sections": sections,
-            "summary_fields": summary_fields,
-            "collection_counts": {
-                "time.values": result.get("time", {}).get("count", 0),
-                "geos": len(result.get("geos", [])),
-                "input_column_names": len(result.get("input_column_names", [])),
-                "available_training_datasets": len(
-                    result.get("available_training_datasets", [])
-                ),
-            },
-        }
 
     @staticmethod
     def _normalize_dataset_selection(
@@ -248,6 +201,13 @@ class AnalysisService:
                 )
             except Exception as exc:
                 raise MissingModelDataError(model_id, str(exc)) from exc
+            rows = filter_records(
+                rows,
+                start_date=normalized_filters.start_date,
+                end_date=normalized_filters.end_date,
+                geos=normalized_filters.geos,
+                channels=normalized_filters.channels,
+            )
             return self._build_result(
                 model_id=model_id,
                 dataset=datasets[0] if len(datasets) == 1 else None,
@@ -257,6 +217,28 @@ class AnalysisService:
 
         return self._cached("get_training_data", model_id, params, _compute)
 
+    def get_channel_data(
+        self, model_id: str, filters: AnalysisFilters | dict | None
+    ) -> dict[str, Any]:
+        normalized_filters = normalize_filters(filters)
+        params = {"filters": self._filter_key(normalized_filters)}
+
+        def _compute() -> dict[str, Any]:
+            try:
+                rows = extract_channel_data(self._catalog.resolve(model_id))
+            except Exception as exc:
+                raise MissingModelDataError(model_id, str(exc)) from exc
+            rows = filter_records(
+                rows,
+                start_date=normalized_filters.start_date,
+                end_date=normalized_filters.end_date,
+                geos=normalized_filters.geos,
+                channels=normalized_filters.channels,
+            )
+            return self._build_result(model_id=model_id, rows=rows)
+
+        return self._cached("get_channel_data", model_id, params, _compute)
+
     def get_model_overview(self, model_id: str) -> dict[str, Any]:
         def _compute() -> dict[str, Any]:
             try:
@@ -264,12 +246,18 @@ class AnalysisService:
             except Exception as exc:
                 raise MissingModelDataError(model_id, str(exc)) from exc
 
+            has_revenue = overview.get("has_revenue_per_kpi", False)
+            channel_summary_types = [
+                output_type
+                for output_type in CHANNEL_SUMMARY_TYPE_ORDER
+                if has_revenue or output_type not in REVENUE_ONLY_CHANNEL_SUMMARY_TYPES
+            ]
             overview["available_tool_options"] = {
                 "get_training_data": {
                     "dataset": overview["available_training_datasets"],
                 },
                 "get_channel_summary": {
-                    "output_type": list(CHANNEL_SUMMARY_TYPE_ORDER),
+                    "output_type": channel_summary_types,
                 },
                 "get_contribution": {
                     "output_type": list(CONTRIBUTION_TYPE_ORDER),
@@ -280,9 +268,16 @@ class AnalysisService:
                 "get_response_curves": {
                     "output_type": list(RESPONSE_CURVE_TYPE_ORDER),
                 },
+                "get_channel_data": {},
+                "get_model_fit": {},
+                "get_spend_scenario": {
+                    "channel": overview.get("media_channels", [])
+                    + overview.get("rf_channels", []),
+                },
             }
+            if overview.get("rf_channels"):
+                overview["available_tool_options"]["get_reach_frequency"] = {}
             result = {"model_id": model_id, **overview}
-            result["result_metadata"] = self._build_overview_result_metadata(result)
             return result
 
         return self._cached("get_model_overview", model_id, {}, _compute)
@@ -293,6 +288,14 @@ class AnalysisService:
         output_type: str,
         filters: AnalysisFilters | dict | None,
     ) -> dict[str, Any]:
+        if output_type in REVENUE_ONLY_CHANNEL_SUMMARY_TYPES:
+            interrogator = self._catalog.get_interrogator(model_id)
+            if not interrogator.has_revenue_per_kpi():
+                raise MetricNotSupportedError(
+                    model_id,
+                    output_type,
+                    "model has no revenue_per_kpi; ROI metrics require revenue",
+                )
         return self._run_facade_query(
             tool_name="get_channel_summary",
             model_id=model_id,
@@ -345,14 +348,6 @@ class AnalysisService:
             },
         )
 
-    def get_response_dynamics(
-        self,
-        model_id: str,
-        output_type: str,
-        filters: AnalysisFilters | dict | None,
-    ) -> dict[str, Any]:
-        return self.get_adstock_decay(model_id, output_type, filters)
-
     def get_response_curves(
         self,
         model_id: str,
@@ -370,3 +365,157 @@ class AnalysisService:
                 "response_curve_summary": "get_response_curve_summary",
             },
         )
+
+    def get_reach_frequency(
+        self, model_id: str, filters: AnalysisFilters | dict | None
+    ) -> dict[str, Any]:
+        interrogator = self._catalog.get_interrogator(model_id)
+        if not interrogator.has_rf_channels():
+            raise MetricNotSupportedError(
+                model_id,
+                "reach_frequency",
+                "model has no reach & frequency channels",
+            )
+        normalized_filters = normalize_filters(filters)
+        params = {"filters": self._filter_key(normalized_filters)}
+
+        def _compute() -> dict[str, Any]:
+            facade = self._catalog.get_facade(model_id)
+            try:
+                rows = facade.get_reach_frequency(normalized_filters)
+            except Exception as exc:
+                raise MissingModelDataError(model_id, str(exc)) from exc
+            return self._build_result(model_id=model_id, rows=rows)
+
+        return self._cached("get_reach_frequency", model_id, params, _compute)
+
+    def get_model_fit(
+        self, model_id: str, filters: AnalysisFilters | dict | None
+    ) -> dict[str, Any]:
+        normalized_filters = normalize_filters(filters)
+        params = {"filters": self._filter_key(normalized_filters)}
+
+        def _compute() -> dict[str, Any]:
+            facade = self._catalog.get_facade(model_id)
+            try:
+                rows = facade.get_model_fit(normalized_filters)
+            except Exception as exc:
+                raise MissingModelDataError(model_id, str(exc)) from exc
+            return self._build_result(model_id=model_id, rows=rows)
+
+        return self._cached("get_model_fit", model_id, params, _compute)
+
+    def get_spend_scenario(
+        self,
+        model_id: str,
+        channel: str,
+        spend_increase: float,
+        base_spend: float | None,
+        filters: AnalysisFilters | dict | None,
+    ) -> dict[str, Any]:
+        normalized_filters = normalize_filters(filters)
+        facade = self._catalog.get_facade(model_id)
+
+        data_inputs = facade.get_data_inputs()
+        if channel in data_inputs["media"]:
+            channel_type = "paid_media"
+        elif channel in data_inputs["rf_media"]:
+            channel_type = "rf"
+        else:
+            raise MissingModelDataError(
+                model_id,
+                f"channel '{channel}' is not a paid media or RF channel",
+            )
+
+        if base_spend is not None and base_spend <= 0:
+            raise MissingModelDataError(
+                model_id, "base_spend must be a positive number"
+            )
+
+        outcome_mode = (
+            "kpi" if facade.resolve_use_kpi(normalized_filters) else "revenue"
+        )
+        params = {
+            "channel": channel,
+            "spend_increase": spend_increase,
+            "base_spend": base_spend,
+            "filters": self._filter_key(normalized_filters),
+        }
+
+        def _compute() -> dict[str, Any]:
+            try:
+                resolved_base = (
+                    base_spend
+                    if base_spend is not None
+                    else facade.resolve_base_spend(channel, normalized_filters)
+                )
+                new_spend = resolved_base + spend_increase
+                outcomes = facade.spend_response(
+                    channel, [resolved_base, new_spend], normalized_filters
+                )
+            except Exception as exc:
+                raise MissingModelDataError(model_id, str(exc)) from exc
+
+            return self._build_spend_scenario(
+                model_id=model_id,
+                channel=channel,
+                channel_type=channel_type,
+                outcome_mode=outcome_mode,
+                base_spend=resolved_base,
+                spend_increase=spend_increase,
+                new_spend=new_spend,
+                base_outcome=outcomes[0],
+                new_outcome=outcomes[1],
+            )
+
+        return self._cached("get_spend_scenario", model_id, params, _compute)
+
+    def _build_spend_scenario(
+        self,
+        *,
+        model_id: str,
+        channel: str,
+        channel_type: str,
+        outcome_mode: str,
+        base_spend: float,
+        spend_increase: float,
+        new_spend: float,
+        base_outcome: dict[str, Any],
+        new_outcome: dict[str, Any],
+    ) -> dict[str, Any]:
+        b = base_outcome["mean"]
+        n = new_outcome["mean"]
+        delta = n - b
+        if outcome_mode == "revenue":
+            efficiency = self._safe_ratio(b, base_spend)
+            marginal_efficiency = self._safe_ratio(delta, spend_increase)
+            efficiency_at_new = self._safe_ratio(n, new_spend)
+        else:
+            efficiency = self._safe_ratio(base_spend, b)
+            marginal_efficiency = self._safe_ratio(spend_increase, delta)
+            efficiency_at_new = self._safe_ratio(new_spend, n)
+
+        summary = {
+            "model_id": model_id,
+            "channel": channel,
+            "channel_type": channel_type,
+            "outcome_mode": outcome_mode,
+            "base_spend": base_spend,
+            "spend_increase": spend_increase,
+            "new_spend": new_spend,
+            "spend_increase_pct": self._safe_ratio(100.0 * spend_increase, base_spend),
+            "base_outcome": base_outcome,
+            "new_outcome": new_outcome,
+            "expected_outcome_increase": delta,
+            "expected_outcome_increase_pct": self._safe_ratio(100.0 * delta, b),
+            "efficiency": efficiency,
+            "marginal_efficiency": marginal_efficiency,
+            "efficiency_at_new": efficiency_at_new,
+        }
+        return {key: self._round_value(value) for key, value in summary.items()}
+
+    @classmethod
+    def _round_value(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: cls._round_value(inner) for key, inner in value.items()}
+        return cls._round_measure(value)

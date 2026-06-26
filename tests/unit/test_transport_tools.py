@@ -5,11 +5,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from google_meridian_mcp_server.domain.errors import (
     BackendUnavailableError,
     ModelNotFoundError,
 )
+from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.transport import tools as tools_module
 
 
@@ -75,7 +77,6 @@ async def test_register_tools_exposes_successful_handlers(
             "end_date": None,
             "geos": [],
             "channels": [],
-            "aggregate_geos": True,
             "aggregate_times": True,
             "include_non_paid": None,
             "use_kpi": None,
@@ -129,3 +130,37 @@ async def test_tool_wrappers_return_standard_error_payloads(
         "message": "Model 'missing' is not available in the configured backend.",
         "details": {"model_id": "missing", "backend": "unknown"},
     }
+
+
+def test_aggregate_geos_is_no_longer_accepted():
+    with pytest.raises(ValidationError):
+        AnalysisFilters(aggregate_geos=False)
+
+
+@pytest.mark.asyncio
+async def test_register_tools_exposes_get_spend_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mcp = _FakeFastMCP()
+    captured = {}
+
+    def _get_spend_scenario(model_id, channel, spend_increase, base_spend, filters):
+        captured["args"] = (model_id, channel, spend_increase, base_spend)
+        captured["filters"] = filters
+        return {"model_id": model_id, "channel": channel, "outcome_mode": "revenue"}
+
+    analysis_service = SimpleNamespace(get_spend_scenario=_get_spend_scenario)
+    monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
+
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    result = await mcp.tools["get_spend_scenario"]("m1", "search", 1000.0, ctx)
+
+    assert result == {
+        "model_id": "m1",
+        "channel": "search",
+        "outcome_mode": "revenue",
+    }
+    assert captured["args"] == ("m1", "search", 1000.0, None)
+    assert isinstance(captured["filters"], AnalysisFilters)
