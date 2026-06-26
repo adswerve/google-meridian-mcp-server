@@ -270,6 +270,9 @@ class AnalysisService:
                 },
                 "get_channel_data": {},
                 "get_model_fit": {},
+                "get_spend_scenario": {
+                    "channel": overview.get("media_channels", []) + overview.get("rf_channels", []),
+                },
             }
             if overview.get("rf_channels"):
                 overview["available_tool_options"]["get_reach_frequency"] = {}

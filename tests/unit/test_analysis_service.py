@@ -750,3 +750,29 @@ def test_spend_scenario_caches_result():
     second = service.get_spend_scenario("m1", "search", 20.0, None, None)
     assert first == second
     assert len(facade.spend_response_calls) == 1
+
+
+class _FakeOverviewCatalog:
+    def __init__(self, overview):
+        self._overview = overview
+
+    def get_interrogator(self, model_id):
+        snapshot = dict(self._overview)
+        return SimpleNamespace(get_model_overview=lambda: snapshot)
+
+
+def test_overview_advertises_spend_scenario_channels():
+    overview = {
+        "available_training_datasets": ["media_spend"],
+        "has_revenue_per_kpi": True,
+        "media_channels": ["search", "tv"],
+        "rf_channels": ["youtube"],
+    }
+    service = AnalysisService(
+        catalog=_FakeOverviewCatalog(overview),
+        result_cache=ResultCache(enabled=False, ttl_seconds=None),
+    )
+    result = service.get_model_overview("m1")
+    assert result["available_tool_options"]["get_spend_scenario"] == {
+        "channel": ["search", "tv", "youtube"]
+    }
