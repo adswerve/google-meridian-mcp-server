@@ -101,7 +101,7 @@ def register_tools(mcp: FastMCP) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Retrieve the raw training data the model was fitted on. Specify one or more dataset keys to get a merged table of observations. Use this to inspect actual media spend, KPI values, or control variables over time and geography."""
+        """Retrieve raw input datasets by name (e.g. 'media_spend', 'kpi', 'controls', 'population') merged into one table — including non-channel series. Use when you want a specific dataset as stored. To investigate a channel's full picture across types, use get_channel_data instead."""
         try:
             return _analysis_service(ctx).get_training_data(
                 model_id,
@@ -238,6 +238,134 @@ def register_tools(mcp: FastMCP) -> None:
             return _analysis_service(ctx).get_response_curves(
                 model_id,
                 output_type,
+                normalize_filters(filters),
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_reach_frequency(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'geo-revenue').",
+            ),
+        ],
+        ctx: Context,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters to restrict by date range, geos, or RF channels.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Get optimal-frequency analysis for reach & frequency channels: expected ROI across weekly frequency levels plus the optimal frequency per channel. Only available for models with reach & frequency data."""
+        try:
+            return _analysis_service(ctx).get_reach_frequency(
+                model_id,
+                normalize_filters(filters),
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_channel_data(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'geo-revenue').",
+            ),
+        ],
+        ctx: Context,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters to restrict by date range, geos, or channels.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Everything about a channel in one table — spend, impressions, reach/frequency — across all channel types (paid media, RF, organic, non-media). Use to investigate one or more channels directly. For raw datasets by name (including non-channel series like KPI or controls), use get_training_data instead."""
+        try:
+            return _analysis_service(ctx).get_channel_data(
+                model_id,
+                normalize_filters(filters),
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_model_fit(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'geo-revenue').",
+            ),
+        ],
+        ctx: Context,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters. Only start_date/end_date apply here; results are aggregated across all geos.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Get model fit over time: expected vs actual outcome, baseline, and residual (actual - expected) per time period, with confidence intervals. Use this to judge how well the model tracks observed outcomes."""
+        try:
+            return _analysis_service(ctx).get_model_fit(
+                model_id,
+                normalize_filters(filters),
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_spend_scenario(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'geo-revenue').",
+            ),
+        ],
+        channel: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="A single paid-media or RF channel to simulate. Valid values are in get_model_overview 'available_tool_options.get_spend_scenario.channel'.",
+            ),
+        ],
+        spend_increase: Annotated[
+            float,
+            Field(
+                ge=0,
+                description="Extra spend PER TIME UNIT to add on top of base spend. Use 0 to get base-only efficiency.",
+            ),
+        ],
+        ctx: Context,
+        base_spend: Annotated[
+            float | None,
+            Field(
+                gt=0,
+                description="Base spend PER TIME UNIT for the channel. Omit to default to the channel's historical average over the selected date/geo slice.",
+            ),
+        ] = None,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters: start_date/end_date/geos slice the model; use_kpi selects the efficiency family (defaults to the model's capability).",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Simulate adding spend to one channel: returns expected outcome lift and efficiency (ROI/mROI for revenue models, CPIK/mCPIK otherwise) at the base and increased spend levels. Spend is PER TIME UNIT. Use this to answer 'what happens to ROI if I add $X per week to search?'."""
+        try:
+            return _analysis_service(ctx).get_spend_scenario(
+                model_id,
+                channel,
+                spend_increase,
+                base_spend,
                 normalize_filters(filters),
             )
         except MeridianMcpError as error:

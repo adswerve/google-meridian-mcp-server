@@ -7,20 +7,20 @@ name = "google-meridian-mcp-server"
 version = "0.1.0"
 description = "FastMCP server exposing Google Meridian MMM analysis to agents"
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.15"
 dependencies = [
-    "fastmcp>=3.2.0,<4",
-    "google-meridian[schema]==1.5.3",
-    "google-cloud-storage>=3.3.0,<4",
-    "pydantic>=2.10,<3",
+    "fastmcp>=3.4,<4",
+    "google-meridian[schema]==1.7.0",
+    "google-cloud-storage>=3.12,<4",
+    "pydantic>=2.13,<3",
     "python-dotenv>=1.2.1,<2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
+    "pytest>=9",
     "pytest-asyncio>=0.23",
-    "ruff>=0.11,<1",
+    "ruff>=0.15,<1",
 ]
 
 [tool.setuptools.packages.find]
@@ -29,13 +29,13 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+pythonpath = ["."]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 88
 include = ["pyproject.toml", "src/**/*.py", "tests/**/*.py"]
 extend-exclude = [
-    ".specify",
     "references",
     "src/google_meridian_mcp_server.egg-info",
 ]

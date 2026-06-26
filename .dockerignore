@@ -2,7 +2,6 @@
 .github/
 .pytest_cache/
 .ruff_cache/
-.specify/
 .venv/
 .vscode/
 __pycache__/
@@ -10,5 +9,4 @@ __pycache__/
 *.pyo
 .env
 references/
-specs/
 tests/

@@ -8,7 +8,42 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
+
+
+def _interrogator(*, revenue, rf_channels):
+    input_data = SimpleNamespace(
+        revenue_per_kpi=object() if revenue else None,
+        rf_channel=(__import__("numpy").array(rf_channels) if rf_channels else None),
+        media_channel=None,
+        non_media_channel=None,
+        organic_media_channel=None,
+        organic_rf_channel=None,
+        control_variable=None,
+    )
+    return MeridianInterrogator(SimpleNamespace(input_data=input_data))
+
+
+def test_has_revenue_per_kpi_reflects_input_data():
+    assert _interrogator(revenue=True, rf_channels=[]).has_revenue_per_kpi() is True
+    assert _interrogator(revenue=False, rf_channels=[]).has_revenue_per_kpi() is False
+
+
+def test_has_rf_channels_reflects_rf_coord():
+    assert _interrogator(revenue=True, rf_channels=["yt"]).has_rf_channels() is True
+    assert _interrogator(revenue=True, rf_channels=[]).has_rf_channels() is False
+
+
+def test_resolve_use_kpi_defaults_from_revenue_capability():
+    revenue = _interrogator(revenue=True, rf_channels=[])
+    kpi_only = _interrogator(revenue=False, rf_channels=[])
+    # No explicit use_kpi -> revenue model queries revenue (False), kpi-only queries kpi (True).
+    assert revenue.resolve_use_kpi(AnalysisFilters()) is False
+    assert kpi_only.resolve_use_kpi(AnalysisFilters()) is True
+    # Explicit use_kpi is honored.
+    assert revenue.resolve_use_kpi(AnalysisFilters(use_kpi=True)) is True
+    assert kpi_only.resolve_use_kpi(AnalysisFilters(use_kpi=False)) is False
 
 
 def _build_full_model(is_national=False):

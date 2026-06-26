@@ -61,10 +61,6 @@ class AnalysisFilters(BaseModel):
         default_factory=list,
         description="Channel names to include (e.g. ['search', 'tv']). Omit or pass [] to include all channels. Valid values are listed in the get_model_overview response under 'data_inputs'.",
     )
-    aggregate_geos: bool = Field(
-        default=True,
-        description="If true (default), aggregate results across all selected geos into a single row per time period. Set to false to get per-geo breakdowns.",
-    )
     aggregate_times: bool = Field(
         default=True,
         description="If true (default), aggregate results across the full time range. Set to false to get per-period rows. Only meaningful for tools that support time breakdowns (e.g. get_contribution with 'contribution_metrics_by_time').",

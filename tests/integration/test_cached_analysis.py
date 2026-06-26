@@ -16,12 +16,9 @@ class TestTransparentCacheIntegration:
         original_result = {
             "model_id": "test-model",
             "output_type": "roi",
+            "columns": ["channel", "roi"],
+            "rows": [["tv", 2.5], ["search", 3.1], ["social", 1.8]],
             "row_count": 3,
-            "data": [
-                {"channel": "tv", "roi": 2.5},
-                {"channel": "search", "roi": 3.1},
-                {"channel": "social", "roi": 1.8},
-            ],
         }
 
         params = {"output_type": "roi", "filters": {}}

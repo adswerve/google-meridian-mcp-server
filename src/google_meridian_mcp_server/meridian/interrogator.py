@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.dataset_mapper import (
     TRAINING_DATASETS,
     dataset_to_records,
@@ -32,6 +33,17 @@ class MeridianInterrogator:
     def is_national(self) -> bool:
         value = getattr(self._mmm, "is_national", False)
         return bool(value() if callable(value) else value)
+
+    def has_revenue_per_kpi(self) -> bool:
+        return getattr(self._mmm.input_data, "revenue_per_kpi", None) is not None
+
+    def has_rf_channels(self) -> bool:
+        return len(self.get_data_inputs()["rf_media"]) > 0
+
+    def resolve_use_kpi(self, filters: AnalysisFilters) -> bool:
+        if filters.use_kpi is not None:
+            return filters.use_kpi
+        return not self.has_revenue_per_kpi()
 
     def get_geos_info(self) -> pd.DataFrame:
         input_data = self._mmm.input_data

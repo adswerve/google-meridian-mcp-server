@@ -7,8 +7,14 @@
   },
   "environment": {
     "type": "uv",
-    "python": ">=3.11,<3.13",
-    "project": "."
+    "python": ">=3.12,<3.15",
+    "project": ".",
+    "editable": [
+      "."
+    ],
+    "dependencies": [
+      "google-meridian[schema]==1.7.0"
+    ]
   },
   "deployment": {
     "transport": "stdio",

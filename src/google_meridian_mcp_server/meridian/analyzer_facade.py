@@ -11,7 +11,10 @@ import pandas as pd
 import xarray as xr
 
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
-from google_meridian_mcp_server.meridian.dataset_mapper import dataset_to_records
+from google_meridian_mcp_server.meridian.dataset_mapper import (
+    dataset_to_records,
+    filter_records,
+)
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
 
@@ -82,7 +85,7 @@ class AnalyzerFacade(MeridianInterrogator):
         confidence_level: float = 0.9,
     ):
         filters = filters or AnalysisFilters()
-        use_kpi = bool(filters.use_kpi)
+        use_kpi = self.resolve_use_kpi(filters)
         selected_geos = tuple(filters.geos)
         selected_times = tuple(self._expand_selected_times(filters) or ())
         key = (use_kpi, confidence_level, selected_geos, selected_times)
@@ -143,7 +146,7 @@ class AnalyzerFacade(MeridianInterrogator):
             selected_geos=self._selected_geos(filters),
             selected_times=self._expand_selected_times(filters),
             aggregate_times=filters.aggregate_times,
-            use_kpi=bool(filters.use_kpi),
+            use_kpi=self.resolve_use_kpi(filters),
         )
         return self._records_from_output(ds)
 
@@ -376,11 +379,46 @@ class AnalyzerFacade(MeridianInterrogator):
             ),
         )
 
+    def resolve_base_spend(self, channel: str, filters: AnalysisFilters) -> float:
+        """Historical average spend per time unit for ``channel`` over the slice."""
+        data = self.get_data(
+            agg_geos=True,
+            geos=self._selected_geos(filters),
+            dt_start=filters.start_date.isoformat() if filters.start_date else None,
+            dt_end=filters.end_date.isoformat() if filters.end_date else None,
+        )
+        spend_column = self._get_spend_column(channel)
+        if data.empty or spend_column not in data.columns:
+            raise ValueError(f"No spend data is available for channel '{channel}'.")
+        time_units = len(data.index)
+        return float(data[spend_column].sum()) / time_units
+
+    def spend_response(
+        self, channel: str, spend_points: Sequence[float], filters: AnalysisFilters
+    ) -> list[dict]:
+        """Outcome (mean/ci_lo/ci_hi) at each spend point via ``apply_saturation``."""
+        mean, ci_lo, ci_hi = self.apply_saturation(
+            channel,
+            list(spend_points),
+            geos=self._selected_geos(filters),
+            dt_start=filters.start_date.isoformat() if filters.start_date else None,
+            dt_end=filters.end_date.isoformat() if filters.end_date else None,
+            use_kpi=self.resolve_use_kpi(filters),
+        )
+        return [
+            {
+                "mean": float(mean[i]),
+                "ci_lo": float(ci_lo[i]),
+                "ci_hi": float(ci_hi[i]),
+            }
+            for i in range(len(spend_points))
+        ]
+
     def get_response_curves(self, filters: AnalysisFilters) -> list[dict]:
         ds = self._get_analyzer().response_curves(
             selected_geos=self._selected_geos(filters),
             selected_times=self._expand_selected_times(filters),
-            use_kpi=bool(filters.use_kpi),
+            use_kpi=self.resolve_use_kpi(filters),
         )
         return self._records_from_output(ds, channels=filters.channels)
 
@@ -388,7 +426,7 @@ class AnalyzerFacade(MeridianInterrogator):
         ds = self._get_analyzer().response_curves(
             selected_geos=self._selected_geos(filters),
             selected_times=self._expand_selected_times(filters),
-            use_kpi=bool(filters.use_kpi),
+            use_kpi=self.resolve_use_kpi(filters),
         )
         ds = self._filter_channels(ds, filters.channels)
         df = (
@@ -404,6 +442,84 @@ class AnalyzerFacade(MeridianInterrogator):
         )
         df.columns.name = None
         return dataset_to_records(df)
+
+    # -- Reach & frequency methods ---------------------------------------------
+
+    def get_reach_frequency(self, filters: AnalysisFilters) -> list[dict]:
+        ds = self._get_analyzer().optimal_freq(
+            selected_geos=self._selected_geos(filters),
+            selected_times=self._expand_selected_times(filters),
+            use_kpi=self.resolve_use_kpi(filters),
+            confidence_level=0.9,
+        )
+        roi = ds["roi"].to_dataframe(name="roi").reset_index()
+        roi_wide = (
+            roi.pivot(index=["rf_channel", "frequency"], columns="metric", values="roi")
+            .reset_index()
+            .rename(columns={"mean": "roi"})
+        )
+        optimal = (
+            ds["optimal_frequency"].to_dataframe(name="optimal_frequency").reset_index()
+        )
+        if "metric" in optimal.columns:
+            optimal = optimal[optimal["metric"] == "mean"].drop(columns="metric")
+        merged = roi_wide.merge(optimal, on="rf_channel").rename(
+            columns={"rf_channel": "channel"}
+        )
+        ordered = ["channel", "frequency", "roi", "ci_lo", "ci_hi", "optimal_frequency"]
+        merged = merged.reindex(columns=[c for c in ordered if c in merged.columns])
+        merged.columns.name = None
+        if filters.channels:
+            merged = merged[merged["channel"].isin(filters.channels)].copy()
+        return dataset_to_records(merged)
+
+    # -- Model fit methods ------------------------------------------------------
+
+    def get_model_fit(self, filters: AnalysisFilters) -> list[dict]:
+        ds = self._get_analyzer().expected_vs_actual_data(
+            aggregate_geos=True,
+            aggregate_times=False,
+            use_kpi=self.resolve_use_kpi(filters),
+            confidence_level=0.9,
+        )
+
+        def _wide(var_name: str) -> pd.DataFrame:
+            frame = ds[var_name].to_dataframe(name=var_name).reset_index()
+            pivoted = frame.pivot(index="time", columns="metric", values=var_name)
+            return pivoted.rename(
+                columns={
+                    "mean": var_name,
+                    "ci_lo": f"{var_name}_ci_lo",
+                    "ci_hi": f"{var_name}_ci_hi",
+                }
+            )
+
+        expected = _wide("expected")
+        baseline = _wide("baseline")
+        actual = ds["actual"].to_dataframe(name="actual").reset_index()
+        if "metric" in actual.columns:
+            actual = actual[actual["metric"] == "mean"].drop(columns="metric")
+
+        merged = expected.join(baseline).reset_index().merge(actual, on="time")
+        merged["residual"] = merged["actual"] - merged["expected"]
+        ordered = [
+            "time",
+            "expected",
+            "expected_ci_lo",
+            "expected_ci_hi",
+            "actual",
+            "baseline",
+            "baseline_ci_lo",
+            "baseline_ci_hi",
+            "residual",
+        ]
+        merged = merged.reindex(columns=[c for c in ordered if c in merged.columns])
+        records = dataset_to_records(merged)
+        return filter_records(
+            records,
+            start_date=filters.start_date,
+            end_date=filters.end_date,
+        )
 
     @staticmethod
     def _interpolate_with_extrapolation(
