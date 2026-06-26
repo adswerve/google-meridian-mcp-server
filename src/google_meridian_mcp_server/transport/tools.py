@@ -320,3 +320,53 @@ def register_tools(mcp: FastMCP) -> None:
             )
         except MeridianMcpError as error:
             return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_spend_scenario(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'geo-revenue').",
+            ),
+        ],
+        channel: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="A single paid-media or RF channel to simulate. Valid values are in get_model_overview 'available_tool_options.get_spend_scenario.channel'.",
+            ),
+        ],
+        spend_increase: Annotated[
+            float,
+            Field(
+                ge=0,
+                description="Extra spend PER TIME UNIT to add on top of base spend. Use 0 to get base-only efficiency.",
+            ),
+        ],
+        ctx: Context,
+        base_spend: Annotated[
+            float | None,
+            Field(
+                gt=0,
+                description="Base spend PER TIME UNIT for the channel. Omit to default to the channel's historical average over the selected date/geo slice.",
+            ),
+        ] = None,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters: start_date/end_date/geos slice the model; use_kpi selects the efficiency family (defaults to the model's capability).",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Simulate adding spend to one channel: returns expected outcome lift and efficiency (ROI/mROI for revenue models, CPIK/mCPIK otherwise) at the base and increased spend levels. Spend is PER TIME UNIT. Use this to answer 'what happens to ROI if I add $X per week to search?'."""
+        try:
+            return _analysis_service(ctx).get_spend_scenario(
+                model_id,
+                channel,
+                spend_increase,
+                base_spend,
+                normalize_filters(filters),
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)

@@ -135,3 +135,34 @@ async def test_tool_wrappers_return_standard_error_payloads(
 def test_aggregate_geos_is_no_longer_accepted():
     with pytest.raises(ValidationError):
         AnalysisFilters(aggregate_geos=False)
+
+
+@pytest.mark.asyncio
+async def test_register_tools_exposes_get_spend_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mcp = _FakeFastMCP()
+    captured = {}
+
+    def _get_spend_scenario(model_id, channel, spend_increase, base_spend, filters):
+        captured["args"] = (model_id, channel, spend_increase, base_spend)
+        captured["filters"] = filters
+        return {"model_id": model_id, "channel": channel, "outcome_mode": "revenue"}
+
+    analysis_service = SimpleNamespace(get_spend_scenario=_get_spend_scenario)
+    monkeypatch.setattr(
+        tools_module, "_analysis_service", lambda ctx: analysis_service
+    )
+
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    result = await mcp.tools["get_spend_scenario"]("m1", "search", 1000.0, ctx)
+
+    assert result == {
+        "model_id": "m1",
+        "channel": "search",
+        "outcome_mode": "revenue",
+    }
+    assert captured["args"] == ("m1", "search", 1000.0, None)
+    assert isinstance(captured["filters"], AnalysisFilters)
