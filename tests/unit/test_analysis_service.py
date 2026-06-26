@@ -97,7 +97,6 @@ def _build_analysis_service() -> AnalysisService:
 class TestNormalizeFilters:
     def test_empty_input_returns_defaults(self):
         f = normalize_filters(None)
-        assert f.aggregate_geos is True
         assert f.aggregate_times is True
         assert f.geos == []
         assert f.channels == []
@@ -108,7 +107,6 @@ class TestNormalizeFilters:
             "end_date": "2024-12-31",
             "geos": ["us", "uk"],
             "channels": ["tv", "search"],
-            "aggregate_geos": False,
             "aggregate_times": False,
             "include_non_paid": True,
             "use_kpi": True,
@@ -118,7 +116,6 @@ class TestNormalizeFilters:
         assert f.end_date == date(2024, 12, 31)
         assert f.geos == ["us", "uk"]
         assert f.channels == ["tv", "search"]
-        assert f.aggregate_geos is False
         assert f.aggregate_times is False
         assert f.include_non_paid is True
         assert f.use_kpi is True

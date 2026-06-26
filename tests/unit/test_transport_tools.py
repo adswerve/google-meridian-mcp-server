@@ -5,11 +5,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from google_meridian_mcp_server.domain.errors import (
     BackendUnavailableError,
     ModelNotFoundError,
 )
+from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.transport import tools as tools_module
 
 
@@ -75,7 +77,6 @@ async def test_register_tools_exposes_successful_handlers(
             "end_date": None,
             "geos": [],
             "channels": [],
-            "aggregate_geos": True,
             "aggregate_times": True,
             "include_non_paid": None,
             "use_kpi": None,
@@ -129,3 +130,8 @@ async def test_tool_wrappers_return_standard_error_payloads(
         "message": "Model 'missing' is not available in the configured backend.",
         "details": {"model_id": "missing", "backend": "unknown"},
     }
+
+
+def test_aggregate_geos_is_no_longer_accepted():
+    with pytest.raises(ValidationError):
+        AnalysisFilters(aggregate_geos=False)
