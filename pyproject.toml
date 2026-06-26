@@ -29,6 +29,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py312"

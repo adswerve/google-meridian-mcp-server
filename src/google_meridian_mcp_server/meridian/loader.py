@@ -9,11 +9,12 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
-def load_meridian_model(model_path: Path) -> Any:
+def load_meridian_model(model_path: Path | str) -> Any:
     """Load a Meridian model from a local file, auto-detecting format.
 
     Returns a ``meridian.model.model.Meridian`` instance.
     """
+    model_path = Path(model_path)
     ext = model_path.suffix.lower()
 
     if ext == ".binpb":
