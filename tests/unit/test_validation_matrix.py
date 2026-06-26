@@ -29,8 +29,12 @@ def _variant(key):
 
 def test_roi_valid_only_for_revenue_models():
     assert matrix.expected_valid(_variant("geo-revenue"), "get_channel_summary", "roi")
-    assert not matrix.expected_valid(_variant("geo-kpi-only"), "get_channel_summary", "roi")
-    assert not matrix.expected_valid(_variant("national-kpi-only"), "get_channel_summary", "marginal_roi")
+    assert not matrix.expected_valid(
+        _variant("geo-kpi-only"), "get_channel_summary", "roi"
+    )
+    assert not matrix.expected_valid(
+        _variant("national-kpi-only"), "get_channel_summary", "marginal_roi"
+    )
 
 
 def test_cpik_valid_for_all_models():
@@ -47,6 +51,7 @@ def test_adversarial_cases_cover_roi_on_kpi_only():
 def test_adversarial_cases_cover_reach_frequency_on_media_only():
     cases = matrix.adversarial_cases(_variant("geo-revenue-media-only"))
     assert any(
-        c.tool == "get_reach_frequency" and c.expected_error_code == "metric_not_supported"
+        c.tool == "get_reach_frequency"
+        and c.expected_error_code == "metric_not_supported"
         for c in cases
     )

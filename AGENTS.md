@@ -86,6 +86,9 @@ error-path checks, and exits non-zero on any mismatch.
   `get_reach_frequency` is valid only for RF variants; everything else is valid
   on all variants. Fixtures include organic media/RF + non-media channels so
   `get_channel_data` and `alpha_summary` exercise every channel type.
+  `get_spend_scenario` is valid on every variant (channel derived from the
+  overview); `outcome_mode` is `revenue` for revenue/kpi+rpk variants and `kpi`
+  for kpi-only; an unknown channel returns `missing_model_data`.
 - Showcase ↔ tool parity is tracked in `docs/meridian-mcp-showcase-parity.md`.
 
 ## Module Map
@@ -117,6 +120,7 @@ error-path checks, and exits non-zero on any mismatch.
 - `get_model_fit`
 - `get_reach_frequency`
 - `get_channel_data`
+- `get_spend_scenario`
 
 ## Model Overview Expectations
 The overview tool should tell an agent:
@@ -146,6 +150,14 @@ The overview tool should tell an agent:
 - `get_training_data` applies date/geo/channel filters to the merged rows; the dead `aggregate_geos` filter field has been removed.
 - `get_model_fit` returns expected/actual/baseline/residual over time (geo-aggregated). `get_reach_frequency` returns optimal-frequency ROI curves (RF-only, else `metric_not_supported`). `get_channel_data` returns a per-channel long table across all channel types.
 - `get_training_data` vs `get_channel_data`: training-data is the raw per-dataset extractor (select by dataset name; the only path to non-channel series like KPI/controls/population); channel-data is the per-channel unified long view stacking every channel-keyed input (select by channel). They are separate tools by design — do not merge them behind a layout flag (the two select by different keys).
+- `get_spend_scenario` simulates one channel's spend: inputs `channel`,
+  `spend_increase`, optional `base_spend` (all PER TIME UNIT; base defaults to
+  the channel's historical average over the slice), returns a summary object
+  with `outcome_mode` (`revenue`|`kpi`) and an efficiency triplet
+  (`efficiency`/`marginal_efficiency`/`efficiency_at_new` = ROI/mROI/ROI-at-new
+  for revenue models, CPIK/mCPIK otherwise). Zero-denominator ratios return
+  `null`. It activates the previously-staged saturation engine
+  (`apply_saturation`/`get_data`); `get_carryover` remains unused.
 
 ## Current Test Coverage
 - **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache.

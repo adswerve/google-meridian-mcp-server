@@ -379,9 +379,7 @@ class AnalyzerFacade(MeridianInterrogator):
             ),
         )
 
-    def resolve_base_spend(
-        self, channel: str, filters: AnalysisFilters
-    ) -> float:
+    def resolve_base_spend(self, channel: str, filters: AnalysisFilters) -> float:
         """Historical average spend per time unit for ``channel`` over the slice."""
         data = self.get_data(
             agg_geos=True,
@@ -391,9 +389,7 @@ class AnalyzerFacade(MeridianInterrogator):
         )
         spend_column = self._get_spend_column(channel)
         if data.empty or spend_column not in data.columns:
-            raise ValueError(
-                f"No spend data is available for channel '{channel}'."
-            )
+            raise ValueError(f"No spend data is available for channel '{channel}'.")
         time_units = len(data.index)
         return float(data[spend_column].sum()) / time_units
 
@@ -462,9 +458,9 @@ class AnalyzerFacade(MeridianInterrogator):
             .reset_index()
             .rename(columns={"mean": "roi"})
         )
-        optimal = ds["optimal_frequency"].to_dataframe(
-            name="optimal_frequency"
-        ).reset_index()
+        optimal = (
+            ds["optimal_frequency"].to_dataframe(name="optimal_frequency").reset_index()
+        )
         if "metric" in optimal.columns:
             optimal = optimal[optimal["metric"] == "mean"].drop(columns="metric")
         merged = roi_wide.merge(optimal, on="rf_channel").rename(

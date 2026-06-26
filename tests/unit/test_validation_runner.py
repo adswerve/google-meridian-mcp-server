@@ -21,6 +21,8 @@ def test_assert_columnar_rejects_ragged_rows():
 
 
 def test_assert_error_matches_code():
-    runner.assert_error({"error_code": "metric_not_supported"}, "metric_not_supported", "e")
+    runner.assert_error(
+        {"error_code": "metric_not_supported"}, "metric_not_supported", "e"
+    )
     with pytest.raises(AssertionError):
         runner.assert_error({"error_code": "other"}, "metric_not_supported", "e")

@@ -652,9 +652,7 @@ def test_resolve_base_spend_returns_average_spend_per_time_unit():
     facade.get_data = mock.Mock(
         return_value=pd.DataFrame(
             {"search_spend": [100.0, 200.0, 300.0]},
-            index=pd.Index(
-                ["2024-01-01", "2024-01-08", "2024-01-15"], name="time"
-            ),
+            index=pd.Index(["2024-01-01", "2024-01-08", "2024-01-15"], name="time"),
         )
     )
 

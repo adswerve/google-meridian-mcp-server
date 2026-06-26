@@ -10,7 +10,7 @@ Exploration. Excluded: Summary Report, Budget Optimization, Model Diagnostics.
 | Geographic markets + population | Home | input_data.geo/population | get_model_overview | Supported | |
 | Historical channel spend time-series | Response Curves | input_data.media_spend/rf_spend | get_channel_data | Supported | per-channel long |
 | Response/saturation curve (incremental outcome vs spend) | Response Curves | Analyzer.response_curves | get_response_curves | Supported | |
-| ROI / CPIK / mROI efficiency at spend points | Response Curves | derived from response curve | get_response_curves (+ agent arithmetic) | Partial | app-side arithmetic; derivable |
+| ROI / CPIK / mROI efficiency at spend points | Response Curves | derived from response curve | get_spend_scenario | Supported (new) | what-if spend simulation; returns efficiency triplet at base and new spend |
 | Media summary table (paid + non-paid) | Attribution | Analyzer.summary_metrics | get_channel_summary (paid_summary_metrics) | Supported | |
 | % outcome contribution & % spend by channel | Attribution | summary_metrics | get_channel_summary / get_contribution | Supported | |
 | ROI / CPIK by channel | Attribution | summary_metrics | get_channel_summary (roi/cpik) | Supported | roi gated to revenue models |
@@ -23,6 +23,6 @@ Exploration. Excluded: Summary Report, Budget Optimization, Model Diagnostics.
 | VIF / multicollinearity | Data Exploration | statsmodels over scaled arrays | — | Out-of-scope | computed app-side, not a Meridian output |
 | Per-geo disaggregated metrics | (various) | aggregate_geos=False | — | Future work | dead flag removed; not yet implemented |
 
-New tools `get_model_fit`, `get_reach_frequency`, and `get_channel_data` close
-the previously-unsupported items. VIF and the app-side efficiency arithmetic
-remain out of scope.
+New tools `get_model_fit`, `get_reach_frequency`, `get_channel_data`, and
+`get_spend_scenario` close the previously-unsupported items. VIF remains out of
+scope.

@@ -150,9 +150,7 @@ async def test_register_tools_exposes_get_spend_scenario(
         return {"model_id": model_id, "channel": channel, "outcome_mode": "revenue"}
 
     analysis_service = SimpleNamespace(get_spend_scenario=_get_spend_scenario)
-    monkeypatch.setattr(
-        tools_module, "_analysis_service", lambda ctx: analysis_service
-    )
+    monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
 
     tools_module.register_tools(mcp)
     ctx = SimpleNamespace(lifespan_context={})

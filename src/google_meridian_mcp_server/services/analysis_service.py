@@ -271,7 +271,8 @@ class AnalysisService:
                 "get_channel_data": {},
                 "get_model_fit": {},
                 "get_spend_scenario": {
-                    "channel": overview.get("media_channels", []) + overview.get("rf_channels", []),
+                    "channel": overview.get("media_channels", [])
+                    + overview.get("rf_channels", []),
                 },
             }
             if overview.get("rf_channels"):
@@ -431,7 +432,9 @@ class AnalysisService:
                 model_id, "base_spend must be a positive number"
             )
 
-        outcome_mode = "kpi" if facade.resolve_use_kpi(normalized_filters) else "revenue"
+        outcome_mode = (
+            "kpi" if facade.resolve_use_kpi(normalized_filters) else "revenue"
+        )
         params = {
             "channel": channel,
             "spend_increase": spend_increase,

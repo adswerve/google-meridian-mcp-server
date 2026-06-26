@@ -557,9 +557,17 @@ class _ModelFitCatalog:
 
 def test_get_model_fit_returns_columnar():
     rows = [
-        {"time": "2023-01-01", "expected": 10.0, "actual": 11.0, "baseline": 4.0,
-         "expected_ci_lo": 9.0, "expected_ci_hi": 11.0, "baseline_ci_lo": 3.0,
-         "baseline_ci_hi": 5.0, "residual": 1.0},
+        {
+            "time": "2023-01-01",
+            "expected": 10.0,
+            "actual": 11.0,
+            "baseline": 4.0,
+            "expected_ci_lo": 9.0,
+            "expected_ci_hi": 11.0,
+            "baseline_ci_lo": 3.0,
+            "baseline_ci_hi": 5.0,
+            "residual": 1.0,
+        },
     ]
     service = AnalysisService(catalog=_ModelFitCatalog(rows))
     result = service.get_model_fit("m", None)
@@ -596,8 +604,16 @@ class _RFCatalog:
 
 
 def test_reach_frequency_columnar_when_rf_present():
-    rows = [{"channel": "yt", "frequency": 1.0, "roi": 2.0, "ci_lo": 1.5,
-             "ci_hi": 2.5, "optimal_frequency": 3.0}]
+    rows = [
+        {
+            "channel": "yt",
+            "frequency": 1.0,
+            "roi": 2.0,
+            "ci_lo": 1.5,
+            "ci_hi": 2.5,
+            "optimal_frequency": 3.0,
+        }
+    ]
     service = AnalysisService(catalog=_RFCatalog(has_rf=True, rows=rows))
     result = service.get_reach_frequency("m", None)
     assert result["row_count"] == 1
