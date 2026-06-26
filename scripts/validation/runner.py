@@ -69,6 +69,16 @@ def assert_error(payload, code: str | None, label: str) -> None:
     )
 
 
+def assert_summary(payload, label: str, *, required_keys, outcome_mode: str) -> None:
+    assert isinstance(payload, dict), f"{label}: expected dict, got {type(payload)}"
+    assert "error_code" not in payload, f"{label}: unexpected error {payload}"
+    for key in required_keys:
+        assert key in payload, f"{label}: missing '{key}'"
+    assert payload["outcome_mode"] == outcome_mode, (
+        f"{label}: outcome_mode {payload['outcome_mode']} != {outcome_mode}"
+    )
+
+
 async def run_matrix(client) -> Report:
     from scripts.generate_validation_models import VARIANTS
 
@@ -108,6 +118,42 @@ async def run_matrix(client) -> Report:
             label = f"{model_id}/{tool}"
             try:
                 assert_columnar(await call(client, tool, {"model_id": model_id}), label)
+                report.ok(label)
+            except AssertionError as exc:
+                report.fail(label, str(exc))
+
+        # Spend scenario: derive a channel from the overview, assert summary shape.
+        channel_pool = overview.get("media_channels") or overview.get("rf_channels")
+        if channel_pool:
+            label = f"{model_id}/get_spend_scenario"
+            try:
+                payload = await call(
+                    client,
+                    "get_spend_scenario",
+                    {
+                        "model_id": model_id,
+                        "channel": channel_pool[0],
+                        "spend_increase": 1000.0,
+                    },
+                )
+                assert_summary(
+                    payload,
+                    label,
+                    required_keys=(
+                        "model_id",
+                        "channel",
+                        "channel_type",
+                        "outcome_mode",
+                        "base_spend",
+                        "new_spend",
+                        "base_outcome",
+                        "new_outcome",
+                        "efficiency",
+                        "marginal_efficiency",
+                        "efficiency_at_new",
+                    ),
+                    outcome_mode=matrix.expected_outcome_mode(variant),
+                )
                 report.ok(label)
             except AssertionError as exc:
                 report.fail(label, str(exc))

@@ -36,6 +36,11 @@ def expected_valid(variant, tool: str, output_type: str | None) -> bool:
     return True
 
 
+def expected_outcome_mode(variant) -> str:
+    """Default outcome mode for get_spend_scenario on this variant."""
+    return "revenue" if variant.factory_has_revenue() else "kpi"
+
+
 def adversarial_cases(variant) -> list[AdversarialCase]:
     """Adversarial calls that must return a specific typed error for this variant."""
     cases: list[AdversarialCase] = []
@@ -56,4 +61,15 @@ def adversarial_cases(variant) -> list[AdversarialCase]:
                 "metric_not_supported",
             )
         )
+    cases.append(
+        AdversarialCase(
+            "get_spend_scenario",
+            {
+                "model_id": variant.key,
+                "channel": "__no_such_channel__",
+                "spend_increase": 1.0,
+            },
+            "missing_model_data",
+        )
+    )
     return cases
