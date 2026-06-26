@@ -643,3 +643,55 @@ def test_apply_saturation_rejects_non_positive_mean_spend():
 
     with pytest.raises(ValueError, match="must have a positive mean spend"):
         facade.apply_saturation("search", [1.0])
+
+
+def test_resolve_base_spend_returns_average_spend_per_time_unit():
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(rf_channel=None))
+    )
+    facade.get_data = mock.Mock(
+        return_value=pd.DataFrame(
+            {"search_spend": [100.0, 200.0, 300.0]},
+            index=pd.Index(
+                ["2024-01-01", "2024-01-08", "2024-01-15"], name="time"
+            ),
+        )
+    )
+
+    assert facade.resolve_base_spend("search", AnalysisFilters()) == 200.0
+
+
+def test_resolve_base_spend_raises_when_spend_column_missing():
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(rf_channel=None))
+    )
+    facade.get_data = mock.Mock(
+        return_value=pd.DataFrame(
+            {"tv_spend": [1.0]},
+            index=pd.Index(["2024-01-01"], name="time"),
+        )
+    )
+
+    with pytest.raises(ValueError):
+        facade.resolve_base_spend("search", AnalysisFilters())
+
+
+def test_spend_response_zips_apply_saturation_arrays_in_order():
+    facade = AnalyzerFacade(SimpleNamespace(input_data=SimpleNamespace()))
+    facade.resolve_use_kpi = mock.Mock(return_value=False)
+    facade.apply_saturation = mock.Mock(
+        return_value=(
+            np.array([10.0, 12.0]),
+            np.array([9.0, 11.0]),
+            np.array([11.0, 13.0]),
+        )
+    )
+
+    rows = facade.spend_response("search", [100.0, 120.0], AnalysisFilters())
+
+    assert rows == [
+        {"mean": 10.0, "ci_lo": 9.0, "ci_hi": 11.0},
+        {"mean": 12.0, "ci_lo": 11.0, "ci_hi": 13.0},
+    ]
+    assert facade.apply_saturation.call_args.kwargs["use_kpi"] is False
+    assert facade.apply_saturation.call_args.args[1] == [100.0, 120.0]

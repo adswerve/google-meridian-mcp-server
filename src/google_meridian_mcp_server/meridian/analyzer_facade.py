@@ -379,6 +379,45 @@ class AnalyzerFacade(MeridianInterrogator):
             ),
         )
 
+    def resolve_base_spend(
+        self, channel: str, filters: AnalysisFilters
+    ) -> float:
+        """Historical average spend per time unit for ``channel`` over the slice."""
+        data = self.get_data(
+            agg_geos=True,
+            geos=self._selected_geos(filters),
+            dt_start=filters.start_date.isoformat() if filters.start_date else None,
+            dt_end=filters.end_date.isoformat() if filters.end_date else None,
+        )
+        spend_column = self._get_spend_column(channel)
+        if data.empty or spend_column not in data.columns:
+            raise ValueError(
+                f"No spend data is available for channel '{channel}'."
+            )
+        time_units = len(data.index)
+        return float(data[spend_column].sum()) / time_units
+
+    def spend_response(
+        self, channel: str, spend_points: Sequence[float], filters: AnalysisFilters
+    ) -> list[dict]:
+        """Outcome (mean/ci_lo/ci_hi) at each spend point via ``apply_saturation``."""
+        mean, ci_lo, ci_hi = self.apply_saturation(
+            channel,
+            list(spend_points),
+            geos=self._selected_geos(filters),
+            dt_start=filters.start_date.isoformat() if filters.start_date else None,
+            dt_end=filters.end_date.isoformat() if filters.end_date else None,
+            use_kpi=self.resolve_use_kpi(filters),
+        )
+        return [
+            {
+                "mean": float(mean[i]),
+                "ci_lo": float(ci_lo[i]),
+                "ci_hi": float(ci_hi[i]),
+            }
+            for i in range(len(spend_points))
+        ]
+
     def get_response_curves(self, filters: AnalysisFilters) -> list[dict]:
         ds = self._get_analyzer().response_curves(
             selected_geos=self._selected_geos(filters),
