@@ -768,6 +768,26 @@ def test_spend_scenario_caches_result():
     assert len(facade.spend_response_calls) == 1
 
 
+def test_spend_scenario_kpi_negative_marginal_returns_negative_float():
+    # base_mean=400.0, new_mean=360.0 → delta=-40.0
+    # KPI marginal_efficiency = spend_increase / delta = 20.0 / (-40.0) = -0.5
+    facade = _FakeScenarioFacade(
+        has_revenue=False,
+        base_spend=100.0,
+        outcomes=[
+            {"mean": 400.0, "ci_lo": 350.0, "ci_hi": 450.0},
+            {"mean": 360.0, "ci_lo": 310.0, "ci_hi": 410.0},
+        ],
+    )
+    result = _scenario_service(facade).get_spend_scenario(
+        "m1", "search", 20.0, None, None
+    )
+    assert result["marginal_efficiency"] is not None
+    assert isinstance(result["marginal_efficiency"], float)
+    assert result["marginal_efficiency"] < 0
+    assert result["marginal_efficiency"] == pytest.approx(-0.5)
+
+
 class _FakeOverviewCatalog:
     def __init__(self, overview):
         self._overview = overview
