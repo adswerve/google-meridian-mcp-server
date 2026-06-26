@@ -125,7 +125,7 @@ async def run_matrix(client) -> Report:
 
         # Adversarial: typed errors.
         for case in matrix.adversarial_cases(variant):
-            label = f"{model_id}/ADV/{case.tool}->{case.expected_error_code}"
+            label = f"{model_id}/ADV/{case.tool}[{case.args.get('output_type','')}]->{case.expected_error_code}"
             try:
                 payload = await call(client, case.tool, case.args)
                 assert_error(payload, case.expected_error_code, label)

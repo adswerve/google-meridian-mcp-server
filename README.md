@@ -149,7 +149,7 @@ aggregated across geos, so agents can assess time-series model accuracy.
 raises `metric_not_supported` on models that have no RF channels.
 
 `get_channel_data` returns a per-channel long table covering all channel types (paid media, RF,
-organic, non-media), useful for inspecting raw spend and impression inputs.
+organic media, organic RF, and non-media), useful for inspecting raw spend and impression inputs.
 
 Note: `roi` and `marginal_roi` output types are only available for revenue models (those with a
 non-null `revenue_per_kpi`). On KPI-only models, requesting these metrics raises

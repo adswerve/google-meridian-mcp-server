@@ -433,6 +433,7 @@ class AnalyzerFacade(MeridianInterrogator):
         )
         ordered = ["channel", "frequency", "roi", "ci_lo", "ci_hi", "optimal_frequency"]
         merged = merged.reindex(columns=[c for c in ordered if c in merged.columns])
+        merged.columns.name = None
         if filters.channels:
             merged = merged[merged["channel"].isin(filters.channels)].copy()
         return dataset_to_records(merged)

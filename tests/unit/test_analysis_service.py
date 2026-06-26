@@ -46,6 +46,35 @@ def test_channel_summary_rejects_roi_on_no_revenue_model(output_type):
     assert exc.value.details["output_type"] == output_type
 
 
+class _FakeNoRevenueCpikCatalog:
+    """Catalog stub for no-revenue models that supports cpik/marginal_cpik dispatch."""
+
+    class _Interrogator:
+        def has_revenue_per_kpi(self):
+            return False
+
+    class _Facade:
+        def get_cpik(self, filters):
+            return [{"channel": "tv", "cpik": 0.5}]
+
+        def get_marginal_cpik(self, filters):
+            return [{"channel": "tv", "marginal_cpik": 0.6}]
+
+    def get_interrogator(self, model_id):
+        return self._Interrogator()
+
+    def get_facade(self, model_id):
+        return self._Facade()
+
+
+@pytest.mark.parametrize("output_type", ["cpik", "marginal_cpik"])
+def test_channel_summary_allows_cpik_on_no_revenue_model(output_type):
+    service = AnalysisService(catalog=_FakeNoRevenueCpikCatalog())
+    result = service.get_channel_summary("kpi-only", output_type, None)
+    assert result["output_type"] == output_type
+    assert result["row_count"] == 1
+
+
 class _StubCatalog:
     def __init__(self, model):
         self._model = model
@@ -526,7 +555,7 @@ class _ModelFitCatalog:
         return self._Facade(self._rows)
 
 
-def test_get_model_fit_returns_columnar(monkeypatch):
+def test_get_model_fit_returns_columnar():
     rows = [
         {"time": "2023-01-01", "expected": 10.0, "actual": 11.0, "baseline": 4.0,
          "expected_ci_lo": 9.0, "expected_ci_hi": 11.0, "baseline_ci_lo": 3.0,
@@ -573,6 +602,7 @@ def test_reach_frequency_columnar_when_rf_present():
     result = service.get_reach_frequency("m", None)
     assert result["row_count"] == 1
     assert "optimal_frequency" in result["columns"]
+    assert "data" not in result and "result_metadata" not in result
 
 
 def test_reach_frequency_errors_without_rf():
