@@ -9,6 +9,7 @@ from typing import Any
 from google_meridian_mcp_server.domain.errors import (
     DatasetNotAvailableError,
     InvalidOutputTypeError,
+    MetricNotSupportedError,
     MissingModelDataError,
 )
 from google_meridian_mcp_server.domain.filters import AnalysisFilters, normalize_filters
@@ -30,6 +31,7 @@ CHANNEL_SUMMARY_TYPE_ORDER = (
     "marginal_cpik",
 )
 CHANNEL_SUMMARY_TYPES = frozenset(CHANNEL_SUMMARY_TYPE_ORDER)
+REVENUE_ONLY_CHANNEL_SUMMARY_TYPES = frozenset({"roi", "marginal_roi"})
 
 CONTRIBUTION_TYPE_ORDER = ("contribution_metrics", "contribution_metrics_by_time")
 CONTRIBUTION_TYPES = frozenset(CONTRIBUTION_TYPE_ORDER)
@@ -235,6 +237,14 @@ class AnalysisService:
         output_type: str,
         filters: AnalysisFilters | dict | None,
     ) -> dict[str, Any]:
+        if output_type in REVENUE_ONLY_CHANNEL_SUMMARY_TYPES:
+            interrogator = self._catalog.get_interrogator(model_id)
+            if not interrogator.has_revenue_per_kpi():
+                raise MetricNotSupportedError(
+                    model_id,
+                    output_type,
+                    "model has no revenue_per_kpi; ROI metrics require revenue",
+                )
         return self._run_facade_query(
             tool_name="get_channel_summary",
             model_id=model_id,

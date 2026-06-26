@@ -13,11 +13,37 @@ from pydantic import ValidationError
 from google_meridian_mcp_server.domain.errors import (
     DatasetNotAvailableError,
     InvalidOutputTypeError,
+    MetricNotSupportedError,
     MissingModelDataError,
 )
 from google_meridian_mcp_server.domain.filters import AnalysisFilters, normalize_filters
 from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.services.analysis_service import AnalysisService
+
+
+class _FakeInterrogator:
+    def __init__(self, has_revenue):
+        self._has_revenue = has_revenue
+
+    def has_revenue_per_kpi(self):
+        return self._has_revenue
+
+
+class _FakeCatalog:
+    def __init__(self, has_revenue):
+        self._interrogator = _FakeInterrogator(has_revenue)
+
+    def get_interrogator(self, model_id):
+        return self._interrogator
+
+
+@pytest.mark.parametrize("output_type", ["roi", "marginal_roi"])
+def test_channel_summary_rejects_roi_on_no_revenue_model(output_type):
+    service = AnalysisService(catalog=_FakeCatalog(has_revenue=False))
+    with pytest.raises(MetricNotSupportedError) as exc:
+        service.get_channel_summary("kpi-only", output_type, None)
+    assert exc.value.error_code == "metric_not_supported"
+    assert exc.value.details["output_type"] == output_type
 
 
 class _StubCatalog:
@@ -306,6 +332,9 @@ class TestModelOverview:
 class _DispatchFacade:
     def __init__(self):
         self.calls: list[str] = []
+
+    def has_revenue_per_kpi(self) -> bool:
+        return True
 
     def __getattr__(self, name: str):
         if name.startswith("get_"):
