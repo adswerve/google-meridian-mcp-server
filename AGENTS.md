@@ -52,8 +52,41 @@ and persistence helpers so agents can inspect models and request structured outp
 ## Common Commands
 - `uv run python -m google_meridian_mcp_server.server`
 - `uv run pytest`
-- `uv run ruff check src tests`
-- `uv run ruff format src tests`
+- `uv run ruff check src tests scripts`
+- `uv run ruff format src tests scripts`
+- `uv run python -m scripts.validation.live_validate` — live validation suite (see below)
+- `uv run python scripts/generate_validation_models.py [--force]` — (re)build dummy fixtures
+
+## Live Validation & Dummy Models
+The live validation suite is the integration acceptance gate. It drives an
+in-process FastMCP `Client(mcp)` over every tool across a matrix of dummy
+fitted Meridian models — national vs geo, revenue vs KPI — plus adversarial
+error-path checks, and exits non-zero on any mismatch.
+
+- **Run it:** `uv run python -m scripts.validation.live_validate` (add `--force`
+  to rebuild fixtures). The first run BUILDS the fixtures via real tiny
+  MCMC fits — it takes a few minutes and is NOT a hang. It prints a
+  variant×tool PASS / EXPECTED-ERR / FAIL matrix and ends with
+  `LIVE VALIDATION PASSED` / `N failed`.
+- **Fixtures** live under gitignored `models/_validation/` and are NEVER
+  committed. The suite builds them if missing (build-if-missing).
+- **Generator** `scripts/generate_validation_models.py` builds 7 variants:
+  the 2×3 matrix `national|geo` × `revenue | kpi+revenue_per_kpi | kpi-only`
+  (all with reach & frequency channels), plus one media-only
+  `geo-revenue-media-only` (no RF, for the no-RF graceful-error path), plus a
+  `.pkl` copy of `national-revenue` to exercise the loader's pickle branch.
+  Model id == fixture directory name.
+- **Suite layout:** `scripts/validation/matrix.py` (declarative expectations —
+  which `(tool, output_type)` are expected-valid vs expected-error per variant,
+  via `expected_valid`/`adversarial_cases`), `scripts/validation/runner.py`
+  (client driver + `assert_columnar`/`assert_error`),
+  `scripts/validation/live_validate.py` (entrypoint).
+- **Expectation rules:** `roi`/`marginal_roi` are valid only for revenue and
+  kpi+revenue_per_kpi variants (→ `metric_not_supported` on kpi-only);
+  `get_reach_frequency` is valid only for RF variants; everything else is valid
+  on all variants. Fixtures include organic media/RF + non-media channels so
+  `get_channel_data` and `alpha_summary` exercise every channel type.
+- Showcase ↔ tool parity is tracked in `docs/meridian-mcp-showcase-parity.md`.
 
 ## Module Map
 - **domain/models.py** — enums, `RuntimeConfig`, `ModelCatalogEntry`.
@@ -65,7 +98,7 @@ and persistence helpers so agents can inspect models and request structured outp
 - **persistence/cache.py** — `DiscoveryCache`, `MaterializationCache`, `ResultCache` (TTL-keyed in-memory).
 - **meridian/loader.py** — auto-detects `.binpb` vs `.pkl`; loads through Meridian serde APIs.
 - **meridian/catalog.py** — bridges entries to loaded Meridian objects; memoizes models and facades.
-- **meridian/dataset_mapper.py** — converts xarray datasets to JSON-safe row dicts; merges on shared dims.
+- **meridian/dataset_mapper.py** — converts xarray datasets to JSON-safe row dicts; merges on shared dims. `filter_records` slices rows by date/geo/channel (reused by training-data, model-fit, channel-data); `extract_channel_data` builds the per-channel long table. `_df_to_records` maps NaN → JSON `null` (numeric cells need `astype(object)` first).
 - **meridian/interrogator.py** — model metadata extraction; builds `get_model_overview` payload.
 - **meridian/analyzer_facade.py** — wraps `Analyzer` and `MediaSummary`; executes analysis; normalizes to posterior-only payloads.
 - **services/model_catalog_service.py** — serializes `ModelCatalogEntry`; converts timestamps to ISO-8601.
@@ -112,6 +145,7 @@ The overview tool should tell an agent:
 - The facade resolves `use_kpi` from the model's revenue capability when the caller does not set it (no-revenue models default to KPI mode).
 - `get_training_data` applies date/geo/channel filters to the merged rows; the dead `aggregate_geos` filter field has been removed.
 - `get_model_fit` returns expected/actual/baseline/residual over time (geo-aggregated). `get_reach_frequency` returns optimal-frequency ROI curves (RF-only, else `metric_not_supported`). `get_channel_data` returns a per-channel long table across all channel types.
+- `get_training_data` vs `get_channel_data`: training-data is the raw per-dataset extractor (select by dataset name; the only path to non-channel series like KPI/controls/population); channel-data is the per-channel unified long view stacking every channel-keyed input (select by channel). They are separate tools by design — do not merge them behind a layout flag (the two select by different keys).
 
 ## Current Test Coverage
 - **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache.
