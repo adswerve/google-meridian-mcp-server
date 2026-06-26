@@ -242,3 +242,29 @@ def register_tools(mcp: FastMCP) -> None:
             )
         except MeridianMcpError as error:
             return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_model_fit(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'geo-revenue').",
+            ),
+        ],
+        ctx: Context,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters. Only start_date/end_date apply here; results are aggregated across all geos.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Get model fit over time: expected vs actual outcome, baseline, and residual (actual - expected) per time period, with confidence intervals. Use this to judge how well the model tracks observed outcomes."""
+        try:
+            return _analysis_service(ctx).get_model_fit(
+                model_id,
+                normalize_filters(filters),
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)

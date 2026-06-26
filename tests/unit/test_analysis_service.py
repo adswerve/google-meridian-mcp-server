@@ -511,6 +511,35 @@ def test_training_data_applies_geo_filter(monkeypatch):
     assert result["rows"][0][result["columns"].index("geo")] == "us"
 
 
+class _ModelFitCatalog:
+    def __init__(self, rows):
+        self._rows = rows
+
+    class _Facade:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def get_model_fit(self, filters):
+            return self._rows
+
+    def get_facade(self, model_id):
+        return self._Facade(self._rows)
+
+
+def test_get_model_fit_returns_columnar(monkeypatch):
+    rows = [
+        {"time": "2023-01-01", "expected": 10.0, "actual": 11.0, "baseline": 4.0,
+         "expected_ci_lo": 9.0, "expected_ci_hi": 11.0, "baseline_ci_lo": 3.0,
+         "baseline_ci_hi": 5.0, "residual": 1.0},
+    ]
+    service = AnalysisService(catalog=_ModelFitCatalog(rows))
+    result = service.get_model_fit("m", None)
+    assert result["model_id"] == "m"
+    assert result["row_count"] == 1
+    assert "expected" in result["columns"] and "residual" in result["columns"]
+    assert "data" not in result and "result_metadata" not in result
+
+
 class TestRoundMeasure:
     @pytest.mark.parametrize(
         "value,expected",

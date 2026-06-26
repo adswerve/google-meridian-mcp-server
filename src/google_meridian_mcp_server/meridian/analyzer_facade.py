@@ -11,7 +11,10 @@ import pandas as pd
 import xarray as xr
 
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
-from google_meridian_mcp_server.meridian.dataset_mapper import dataset_to_records
+from google_meridian_mcp_server.meridian.dataset_mapper import (
+    dataset_to_records,
+    filter_records,
+)
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
 
@@ -404,6 +407,54 @@ class AnalyzerFacade(MeridianInterrogator):
         )
         df.columns.name = None
         return dataset_to_records(df)
+
+    # -- Model fit methods ------------------------------------------------------
+
+    def get_model_fit(self, filters: AnalysisFilters) -> list[dict]:
+        ds = self._get_analyzer().expected_vs_actual_data(
+            aggregate_geos=True,
+            aggregate_times=False,
+            use_kpi=self.resolve_use_kpi(filters),
+            confidence_level=0.9,
+        )
+
+        def _wide(var_name: str) -> pd.DataFrame:
+            frame = ds[var_name].to_dataframe(name=var_name).reset_index()
+            pivoted = frame.pivot(index="time", columns="metric", values=var_name)
+            return pivoted.rename(
+                columns={
+                    "mean": var_name,
+                    "ci_lo": f"{var_name}_ci_lo",
+                    "ci_hi": f"{var_name}_ci_hi",
+                }
+            )
+
+        expected = _wide("expected")
+        baseline = _wide("baseline")
+        actual = ds["actual"].to_dataframe(name="actual").reset_index()
+        if "metric" in actual.columns:
+            actual = actual[actual["metric"] == "mean"].drop(columns="metric")
+
+        merged = expected.join(baseline).reset_index().merge(actual, on="time")
+        merged["residual"] = merged["actual"] - merged["expected"]
+        ordered = [
+            "time",
+            "expected",
+            "expected_ci_lo",
+            "expected_ci_hi",
+            "actual",
+            "baseline",
+            "baseline_ci_lo",
+            "baseline_ci_hi",
+            "residual",
+        ]
+        merged = merged.reindex(columns=[c for c in ordered if c in merged.columns])
+        records = dataset_to_records(merged)
+        return filter_records(
+            records,
+            start_date=filters.start_date,
+            end_date=filters.end_date,
+        )
 
     @staticmethod
     def _interpolate_with_extrapolation(
