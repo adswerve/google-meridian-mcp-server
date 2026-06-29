@@ -94,16 +94,21 @@ class OptimizationService:
                     RunStatus.QUEUED,
                 ):
                     record = self._registry.get_record(existing_id)
-                    return self._submit_envelope(record, reused=True)
+                    return self._submit_envelope(
+                        record, reused=True, status=state.status.value
+                    )
 
         features = model_size_features(facade)
         score = size_score(features)
-        resolved = resolve_tier(
-            score,
-            requested=compute_tier,
-            allowed=self._cfg.optimization_allowed_tiers,
-            thresholds=self._cfg.optimization_size_thresholds,
-        )
+        try:
+            resolved = resolve_tier(
+                score,
+                requested=compute_tier,
+                allowed=self._cfg.optimization_allowed_tiers,
+                thresholds=self._cfg.optimization_size_thresholds,
+            )
+        except ValueError as exc:
+            raise InvalidOptimizationConfigError(str(exc)) from exc
         backend = self._cfg.optimization_backend_local  # local-only this phase
 
         run_id = f"{_slug(model_id)}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(3)}"
@@ -125,15 +130,17 @@ class OptimizationService:
         self._registry.create(record)
         self._registry.put_fingerprint(fingerprint, run_id)
         self._executor.submit(record)
-        return self._submit_envelope(record, reused=False)
+        return self._submit_envelope(
+            record, reused=False, status=RunStatus.QUEUED.value
+        )
 
     @staticmethod
-    def _submit_envelope(record: OptimizationRun, *, reused: bool) -> dict[str, Any]:
+    def _submit_envelope(
+        record: OptimizationRun, *, reused: bool, status: str
+    ) -> dict[str, Any]:
         return {
             "run_id": record.run_id,
-            "status": RunStatus.QUEUED.value
-            if not reused
-            else RunStatus.COMPLETED.value,
+            "status": status,
             "compute_tier_resolved": record.compute_tier_resolved,
             "backend": record.backend,
             "size_score": record.size_score,
@@ -169,7 +176,10 @@ class OptimizationService:
         return {"run_id": run_id, **result}
 
     def list_runs(self, model_id=None, status=None, limit=None) -> dict[str, Any]:
-        status_enum = RunStatus(status) if status else None
+        try:
+            status_enum = RunStatus(status) if status else None
+        except ValueError as exc:
+            raise InvalidOptimizationConfigError(str(exc)) from exc
         summaries = self._registry.list(
             model_id=model_id, status=status_enum, limit=limit
         )

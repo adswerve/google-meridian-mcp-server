@@ -74,3 +74,14 @@ def test_delete_removes_run_and_missing_raises(tmp_path):
     reg.delete("m-1")
     with pytest.raises(RunNotFoundError):
         reg.get_record("m-1")
+
+
+def test_write_state_leaves_parseable_file(tmp_path):
+    """FIX 4: atomic write — re-writing state.json leaves a valid, parseable file."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run())
+    reg.write_state(OptimizationRunState(run_id="m-1-abc", status=RunStatus.RUNNING))
+    reg.write_state(OptimizationRunState(run_id="m-1-abc", status=RunStatus.COMPLETED))
+    # Both reads must succeed without json parse errors
+    state = reg.get_state("m-1-abc")
+    assert state.status == RunStatus.COMPLETED

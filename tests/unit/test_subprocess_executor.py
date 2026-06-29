@@ -63,6 +63,47 @@ def test_gate_limits_concurrent_launches(tmp_path):
     assert ex.launched == ["a", "b"]
 
 
+def test_alive_handle_with_stale_heartbeat_not_failed(tmp_path):
+    """FIX 1: alive subprocess must never be stale-failed.
+
+    Even with heartbeat_stale_seconds=0 and a heartbeat_at set to epoch (very
+    stale), a handle that _is_alive() returns True for must remain RUNNING and
+    stay in _handles so the concurrency gate is not prematurely freed.
+    """
+    from google_meridian_mcp_server.domain.optimization import OptimizationRunState
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=1, heartbeat_stale_seconds=0)
+
+    reg.create(_run("a"))
+    ex.submit(_run("a"))
+
+    # Simulate an ancient heartbeat so stale detection would fire if _reconcile_stale
+    # were incorrectly called for alive handles.
+    reg.write_state(
+        OptimizationRunState(
+            run_id="a",
+            status=RunStatus.RUNNING,
+            heartbeat_at="1970-01-01T00:00:00+00:00",  # very stale
+        )
+    )
+
+    # Keep the handle alive and pump
+    assert ex._handles["a"].alive is True
+    ex.pump()
+
+    # Run must remain RUNNING — not FAILED
+    assert reg.get_state("a").status == RunStatus.RUNNING
+    # Handle must still be tracked (slot not leaked)
+    assert "a" in ex._handles
+
+    # A second submitted run must stay QUEUED (gate still honored)
+    reg.create(_run("b"))
+    ex.submit(_run("b"))
+    assert reg.get_state("b").status == RunStatus.QUEUED
+    assert "b" not in ex._handles  # not launched yet — slot still held by "a"
+
+
 def test_subprocess_executor_builds_worker_command(tmp_path, monkeypatch):
     reg = LocalOptimizationRunRegistry(str(tmp_path))
     captured = {}

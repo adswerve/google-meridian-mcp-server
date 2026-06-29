@@ -128,7 +128,7 @@ error-path checks, and exits non-zero on any mismatch.
 - **persistence/optimization_run_registry.py** — `OptimizationRunRegistry` ABC; `LocalOptimizationRunRegistry` (3-file layout per run: manifest, state, result; fingerprint index for reuse); `RunNotFoundError`, `ResultNotReadyError`.
 - **execution/routing.py** — `model_size_features`, `size_score`, `resolve_tier`; maps problem size to cheapest allowed compute tier; reads `OPTIMIZATION_SIZE_THRESHOLDS` and `OPTIMIZATION_ALLOWED_TIERS`.
 - **execution/base_executor.py** — `BaseExecutor` ABC; concurrency gate (max-parallel semaphore), launch lifecycle, crash reconciliation via stale-heartbeat detection.
-- **execution/subprocess_executor.py** — `SubprocessExecutor` (Phase 1 local tier); spawns a worker subprocess per run; passes run_id and config via env; reconciles on startup.
+- **execution/subprocess_executor.py** — `SubprocessExecutor` (Phase 1 local tier); spawns a worker subprocess per run; passes run_id and config via env; crash/orphan reconciliation of runs left non-terminal by a server restart is deferred to Phase 2.
 - **execution/worker.py** — `run_worker`; loads the model, calls `OptimizerFacade.run`, writes result/state to registry; one function, no server imports.
 - **meridian/optimizer_facade.py** — `OptimizerFacade` (extends `MeridianInterrogator`); wraps Meridian `BudgetOptimizer`; shapes `OptimizationResults` into the structured result dict (`summary`, `channel_tables`, `allocation`, `spend_delta`, `outcome_mode`); `response_curves` deferred to Phase 2.
 - **services/optimization_service.py** — `OptimizationService`; orchestrates submission (fingerprint reuse check → routing → executor launch), status/result reads, list, delete.

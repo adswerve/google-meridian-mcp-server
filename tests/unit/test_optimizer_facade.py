@@ -116,3 +116,49 @@ def test_build_result_kpi_mode_inverts_efficiency():
     result = OptimizerFacade.build_result(nonopt, opt, use_kpi=True)
     assert result["outcome_mode"] == "kpi"
     assert result["summary"]["optimized_efficiency"] == 0.25  # 1/total_roi
+
+
+def test_kpi_mode_zero_total_roi_yields_none_efficiency():
+    """FIX 5: KPI mode with total_roi==0 → optimized_efficiency is None, not inf."""
+    channels = ["tv"]
+    common = dict(
+        roi={m: _const(channels, 0.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        mroi={m: _const(channels, 0.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        cpik={m: _const(channels, 0.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        eff={m: _const(channels, 0.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        inc={m: _const(channels, 0.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+    )
+    nonopt = _dataset(
+        channels,
+        budget=100.0,
+        total_outcome=0.0,
+        total_roi=0.0,
+        spend=[100.0],
+        **common,
+    )
+    opt = _dataset(
+        channels,
+        budget=100.0,
+        total_outcome=0.0,
+        total_roi=0.0,
+        spend=[100.0],
+        **common,
+    )
+    result = OptimizerFacade.build_result(nonopt, opt, use_kpi=True)
+    assert result["summary"]["optimized_efficiency"] is None
+    assert result["summary"]["non_optimized_efficiency"] is None
+
+
+def test_sig6_non_finite_returns_none():
+    """FIX 5: _sig6 returns None for inf, -inf, nan, and None."""
+    import math
+
+    from google_meridian_mcp_server.meridian.optimizer_facade import _sig6
+
+    assert _sig6(float("inf")) is None
+    assert _sig6(float("-inf")) is None
+    assert _sig6(float("nan")) is None
+    assert _sig6(None) is None
+    # Finite values still work
+    assert _sig6(2.5) == 2.5
+    assert not math.isnan(_sig6(2.5))

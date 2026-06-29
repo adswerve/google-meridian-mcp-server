@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import abc
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from google_meridian_mcp_server.domain.errors import MeridianMcpError
@@ -76,6 +78,23 @@ class OptimizationRunRegistry(abc.ABC):
     def put_fingerprint(self, fingerprint: str, run_id: str) -> None: ...
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Write *text* to *path* atomically via a same-directory temp file + os.replace."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        os.write(fd, text.encode())
+        os.fsync(fd)
+        os.close(fd)
+        os.replace(tmp, path)
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 class LocalOptimizationRunRegistry(OptimizationRunRegistry):
     def __init__(self, root: str) -> None:
         self._root = Path(root)
@@ -88,19 +107,19 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
     def create(self, run: OptimizationRun) -> None:
         d = self._run_dir(run.run_id)
         d.mkdir(parents=True, exist_ok=True)
-        (d / "record.json").write_text(run.model_dump_json(indent=2))
+        _atomic_write(d / "record.json", run.model_dump_json(indent=2))
 
     def write_state(self, state: OptimizationRunState) -> None:
         d = self._run_dir(state.run_id)
         if not d.is_dir():
             raise RunNotFoundError(state.run_id)
-        (d / "state.json").write_text(state.model_dump_json(indent=2))
+        _atomic_write(d / "state.json", state.model_dump_json(indent=2))
 
     def write_result(self, run_id: str, result: dict) -> None:
         d = self._run_dir(run_id)
         if not d.is_dir():
             raise RunNotFoundError(run_id)
-        (d / "result.json").write_text(json.dumps(result, indent=2))
+        _atomic_write(d / "result.json", json.dumps(result, indent=2))
 
     def get_record(self, run_id: str) -> OptimizationRun:
         path = self._run_dir(run_id) / "record.json"
@@ -174,4 +193,4 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
 
     def put_fingerprint(self, fingerprint: str, run_id: str) -> None:
         self._index.mkdir(parents=True, exist_ok=True)
-        (self._index / fingerprint).write_text(run_id)
+        _atomic_write(self._index / fingerprint, run_id)

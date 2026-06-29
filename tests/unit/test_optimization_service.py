@@ -146,3 +146,60 @@ def test_invalid_per_channel_config_raises(tmp_path):
                 },
             },
         )
+
+
+def test_disallowed_compute_tier_raises_typed_error(tmp_path):
+    """FIX 2: disallowed compute_tier → InvalidOptimizationConfigError, not bare ValueError."""
+    from google_meridian_mcp_server.services.optimization_service import (
+        InvalidOptimizationConfigError,
+    )
+
+    svc, _ = _svc(tmp_path)
+    with pytest.raises(InvalidOptimizationConfigError):
+        svc.run_optimization(
+            "m",
+            {"scenario": {"type": "fixed_budget"}},
+            compute_tier="cloud_gpu",  # not in allowed tiers (default: local only)
+        )
+
+
+def test_list_runs_bad_status_raises_typed_error(tmp_path):
+    """FIX 2: unknown status string in list_runs → InvalidOptimizationConfigError, not bare ValueError."""
+    from google_meridian_mcp_server.services.optimization_service import (
+        InvalidOptimizationConfigError,
+    )
+
+    svc, _ = _svc(tmp_path)
+    with pytest.raises(InvalidOptimizationConfigError):
+        svc.list_runs(status="bogus")
+
+
+def test_reused_running_run_reports_running_status(tmp_path):
+    """FIX 6: reused envelope reports actual status, not hardcoded 'completed'."""
+    from google_meridian_mcp_server.domain.optimization import OptimizationRunState
+
+    svc, reg = _svc(tmp_path)
+    first = svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+
+    # Advance to RUNNING
+    reg.write_state(
+        OptimizationRunState(run_id=first["run_id"], status=RunStatus.RUNNING)
+    )
+
+    again = svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+    assert again["reused"] is True
+    assert again["status"] == "running"
+
+
+def test_identical_config_reuses_completed_run_reports_completed(tmp_path):
+    """FIX 6 regression: COMPLETED reuse must still report 'completed'."""
+    from google_meridian_mcp_server.domain.optimization import OptimizationRunState
+
+    svc, reg = _svc(tmp_path)
+    first = svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+    reg.write_state(
+        OptimizationRunState(run_id=first["run_id"], status=RunStatus.COMPLETED)
+    )
+    again = svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+    assert again["reused"] is True
+    assert again["status"] == "completed"

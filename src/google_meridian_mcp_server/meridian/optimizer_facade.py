@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from google_meridian_mcp_server.domain.optimization import (
@@ -11,8 +12,18 @@ from google_meridian_mcp_server.domain.optimization import (
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
 
-def _sig6(value: float) -> float:
-    return float(f"{float(value):.6g}")
+def _sig6(value: float | None) -> float | None:
+    """Round to 6 significant figures, strict-JSON-safe.
+
+    Returns None for None, NaN, or infinite inputs so the result is always
+    JSON-serialisable without relying on non-standard NaN/Inf extensions.
+    """
+    if value is None:
+        return None
+    f = float(value)
+    if not math.isfinite(f):
+        return None
+    return float(f"{f:.6g}")
 
 
 class OptimizerFacade(MeridianInterrogator):
@@ -55,10 +66,14 @@ class OptimizerFacade(MeridianInterrogator):
         }
 
     @staticmethod
-    def _efficiency(total_roi: float, use_kpi: bool) -> float:
+    def _efficiency(total_roi: float, use_kpi: bool) -> float | None:
         if not use_kpi:
             return total_roi
-        return float("inf") if total_roi == 0 else 1.0 / total_roi
+        # Zero denominator in KPI mode → no meaningful efficiency; return None
+        # (matches the codebase's zero-denominator→null convention).
+        if total_roi == 0:
+            return None
+        return 1.0 / total_roi
 
     @staticmethod
     def _summary(nonopt, opt, use_kpi: bool) -> dict[str, float]:

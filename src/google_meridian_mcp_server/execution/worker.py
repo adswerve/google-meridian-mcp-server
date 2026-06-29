@@ -35,6 +35,8 @@ def _headline(result: dict[str, Any]) -> str:
 def run_worker(
     run_id: str, *, registry: OptimizationRunRegistry, catalog: Any, backend: str
 ) -> int:
+    # NOTE: `backend` is intentionally unused here — it is applied via the
+    # MERIDIAN_BACKEND env var before the catalog/meridian import in main().
     record = registry.get_record(run_id)
     started = _now()
     registry.write_state(
