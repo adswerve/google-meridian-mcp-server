@@ -577,6 +577,49 @@ def test_get_model_fit_returns_columnar():
     assert "data" not in result and "result_metadata" not in result
 
 
+class _ModelFitGeoCatalog:
+    def __init__(self, geos, rows):
+        self._geos = geos
+        self._rows = rows
+
+    class _Facade:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def get_model_fit(self, filters):
+            return self._rows
+
+    class _Interrogator:
+        def __init__(self, geos):
+            self._geos = geos
+
+        def geo_names(self):
+            return self._geos
+
+    def get_facade(self, model_id):
+        return self._Facade(self._rows)
+
+    def get_interrogator(self, model_id):
+        return self._Interrogator(self._geos)
+
+
+def test_get_model_fit_rejects_unknown_geo():
+    service = AnalysisService(catalog=_ModelFitGeoCatalog(geos=["us"], rows=[]))
+    with pytest.raises(MissingModelDataError) as exc:
+        service.get_model_fit("m", {"geos": ["__no_such_geo__"]})
+    assert exc.value.error_code == "missing_model_data"
+    # MissingModelDataError carries its reason in the message, not details
+    # (details is just {"model_id": ...}).
+    assert "__no_such_geo__" in str(exc.value)
+
+
+def test_get_model_fit_accepts_known_geo():
+    rows = [{"time": "2023-01-01", "expected": 1.0, "actual": 1.0, "residual": 0.0}]
+    service = AnalysisService(catalog=_ModelFitGeoCatalog(geos=["us"], rows=rows))
+    result = service.get_model_fit("m", {"geos": ["us"]})
+    assert result["row_count"] == 1
+
+
 class _RFCatalog:
     def __init__(self, has_rf, rows):
         self._has_rf = has_rf

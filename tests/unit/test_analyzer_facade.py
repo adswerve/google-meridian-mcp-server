@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
@@ -693,3 +694,107 @@ def test_spend_response_zips_apply_saturation_arrays_in_order():
     ]
     assert facade.apply_saturation.call_args.kwargs["use_kpi"] is False
     assert facade.apply_saturation.call_args.args[1] == [100.0, 120.0]
+
+
+def test_get_model_fit_forwards_geo_time_and_reshapes_to_wide_schema():
+    captured = {}
+    long_df = pd.DataFrame(
+        {
+            "time": ["2023-01-01", "2023-01-01", "2023-01-01"],
+            "type": ["expected", "baseline", "actual"],
+            "mean": [10.0, 4.0, 11.0],
+            "ci_lo": [9.0, 3.0, 11.0],
+            "ci_hi": [11.0, 5.0, 11.0],
+        }
+    )
+
+    class _FakeModelFit:
+        def __init__(self, *args, **kwargs):
+            captured["init_kwargs"] = kwargs
+
+        def _transform_data_to_dataframe(self, selected_times=None, selected_geos=None):
+            captured["selected_times"] = selected_times
+            captured["selected_geos"] = selected_geos
+            return long_df
+
+    visualizer_module = ModuleType("meridian.analysis.visualizer")
+    visualizer_module.ModelFit = _FakeModelFit
+    analysis_module = ModuleType("meridian.analysis")
+    analysis_module.visualizer = visualizer_module
+    meridian_module = ModuleType("meridian")
+    meridian_module.analysis = analysis_module
+
+    input_data = SimpleNamespace(revenue_per_kpi=None)
+    facade = AnalyzerFacade(
+        SimpleNamespace(
+            input_data=input_data,
+            expand_selected_time_dims=lambda start, end: ["2023-01-01"],
+        )
+    )
+    filters = AnalysisFilters(geos=["us"], start_date=date(2023, 1, 1))
+
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "meridian": meridian_module,
+            "meridian.analysis": analysis_module,
+            "meridian.analysis.visualizer": visualizer_module,
+        },
+    ):
+        rows = facade.get_model_fit(filters)
+
+    assert captured["selected_geos"] == ["us"]
+    assert captured["selected_times"] == ["2023-01-01"]
+    assert captured["init_kwargs"]["use_kpi"] is True
+    assert list(rows[0].keys()) == [
+        "time",
+        "expected",
+        "expected_ci_lo",
+        "expected_ci_hi",
+        "actual",
+        "baseline",
+        "baseline_ci_lo",
+        "baseline_ci_hi",
+        "residual",
+    ]
+    row = rows[0]
+    assert row["expected"] == 10.0
+    assert row["expected_ci_lo"] == 9.0
+    assert row["expected_ci_hi"] == 11.0
+    assert row["actual"] == 11.0
+    assert row["baseline"] == 4.0
+    assert row["baseline_ci_lo"] == 3.0
+    assert row["residual"] == 1.0
+
+
+def test_model_fit_is_cached_by_use_kpi_and_confidence_level():
+    model_fit_ctor = mock.Mock()
+
+    class _FakeModelFit:
+        def __init__(self, *args, **kwargs):
+            model_fit_ctor(*args, **kwargs)
+
+    visualizer_module = ModuleType("meridian.analysis.visualizer")
+    visualizer_module.ModelFit = _FakeModelFit
+    analysis_module = ModuleType("meridian.analysis")
+    analysis_module.visualizer = visualizer_module
+    meridian_module = ModuleType("meridian")
+    meridian_module.analysis = analysis_module
+
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None))
+    )
+
+    with mock.patch.dict(
+        sys.modules,
+        {
+            "meridian": meridian_module,
+            "meridian.analysis": analysis_module,
+            "meridian.analysis.visualizer": visualizer_module,
+        },
+    ):
+        first = facade._get_model_fit(AnalysisFilters())
+        second = facade._get_model_fit(AnalysisFilters())
+
+    assert first is second
+    assert model_fit_ctor.call_count == 1

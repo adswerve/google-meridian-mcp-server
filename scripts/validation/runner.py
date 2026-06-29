@@ -60,7 +60,9 @@ def assert_columnar(payload, label: str) -> None:
 
 
 def assert_error(payload, code: str | None, label: str) -> None:
-    assert isinstance(payload, dict), f"{label}: expected dict error, got {type(payload)}"
+    assert isinstance(payload, dict), (
+        f"{label}: expected dict error, got {type(payload)}"
+    )
     if code is None:
         assert "error_code" in payload, f"{label}: expected an error, got {payload}"
         return
@@ -89,7 +91,9 @@ async def run_matrix(client) -> Report:
         overview = await call(client, "get_model_overview", {"model_id": model_id})
         try:
             assert "available_tool_options" in overview, "no available_tool_options"
-            cs_types = overview["available_tool_options"]["get_channel_summary"]["output_type"]
+            cs_types = overview["available_tool_options"]["get_channel_summary"][
+                "output_type"
+            ]
             if not variant.factory_has_revenue():
                 assert "roi" not in cs_types and "marginal_roi" not in cs_types, (
                     "roi advertised for no-revenue model"
@@ -118,6 +122,31 @@ async def run_matrix(client) -> Report:
             label = f"{model_id}/{tool}"
             try:
                 assert_columnar(await call(client, tool, {"model_id": model_id}), label)
+                report.ok(label)
+            except AssertionError as exc:
+                report.fail(label, str(exc))
+
+        # get_model_fit honors the geos filter end-to-end (transport→service→
+        # facade→Meridian ModelFit). On multi-geo variants the filtered result
+        # must differ from the unfiltered one; on national (1-geo) models a geo
+        # filter equals no filter, so only validate shape.
+        geo_names = overview.get("geo_names") or []
+        if geo_names:
+            label = f"{model_id}/get_model_fit[geo]"
+            try:
+                filtered = await call(
+                    client,
+                    "get_model_fit",
+                    {"model_id": model_id, "filters": {"geos": [geo_names[0]]}},
+                )
+                assert_columnar(filtered, label)
+                if len(geo_names) > 1:
+                    unfiltered = await call(
+                        client, "get_model_fit", {"model_id": model_id}
+                    )
+                    assert filtered["rows"] != unfiltered["rows"], (
+                        f"{label}: geo filter not applied (rows identical to all-geo)"
+                    )
                 report.ok(label)
             except AssertionError as exc:
                 report.fail(label, str(exc))
@@ -171,7 +200,7 @@ async def run_matrix(client) -> Report:
 
         # Adversarial: typed errors.
         for case in matrix.adversarial_cases(variant):
-            label = f"{model_id}/ADV/{case.tool}[{case.args.get('output_type','')}]->{case.expected_error_code}"
+            label = f"{model_id}/ADV/{case.tool}[{case.args.get('output_type', '')}]->{case.expected_error_code}"
             try:
                 payload = await call(client, case.tool, case.args)
                 assert_error(payload, case.expected_error_code, label)
@@ -182,7 +211,9 @@ async def run_matrix(client) -> Report:
     # Global adversarial: unknown model id must return a typed error, not crash.
     label = "GLOBAL/ADV/unknown-model"
     try:
-        payload = await call(client, "get_model_overview", {"model_id": "does-not-exist"})
+        payload = await call(
+            client, "get_model_overview", {"model_id": "does-not-exist"}
+        )
         assert_error(payload, None, label)
         report.ok(label)
     except AssertionError as exc:
@@ -194,7 +225,9 @@ async def run_matrix(client) -> Report:
         overview = await call(
             client, "get_model_overview", {"model_id": "national-revenue-pkl"}
         )
-        assert "available_tool_options" in overview, f"{label}: pkl model failed to load"
+        assert "available_tool_options" in overview, (
+            f"{label}: pkl model failed to load"
+        )
         report.ok(label)
     except AssertionError as exc:
         report.fail(label, str(exc))

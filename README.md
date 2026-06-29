@@ -1,4 +1,4 @@
-# Google Meridian MCP Server [v0.1.0]
+# Google Meridian MCP Server [v0.2.0]
 
 FastMCP server exposing a focused set of Google Meridian model-analysis tools for agents.
 
@@ -104,6 +104,7 @@ The current MCP surface includes:
 - `get_model_fit`
 - `get_reach_frequency`
 - `get_channel_data`
+- `get_spend_scenario`
 
 Every tool is annotated as read-only and uses typed parameters with documented validation metadata
 so the generated schema is stricter and easier for agents to call correctly.
@@ -142,14 +143,21 @@ and the transport payloads do not include a `distribution` field.
 - `response_curve_summary`, which returns numeric summarized rows keyed by channel, spend, and
   spend multiplier with `mean`, `ci_lo`, and `ci_hi`
 
-`get_model_fit` returns expected vs actual outcome values alongside baseline and residual series,
-aggregated across geos, so agents can assess time-series model accuracy.
+`get_model_fit` returns expected vs actual outcome values alongside baseline and residual series so
+agents can assess time-series model accuracy. Pass a `geos` filter to fit only selected markets;
+results are aggregated to one national series (per-geo breakdown is not returned) using Meridian's
+own `ModelFit` visualizer, so they match the showcase app. An unknown geo raises
+`missing_model_data`.
 
 `get_reach_frequency` returns optimal-frequency ROI curves for reach & frequency channels; it
 raises `metric_not_supported` on models that have no RF channels.
 
 `get_channel_data` returns a per-channel long table covering all channel types (paid media, RF,
 organic media, organic RF, and non-media), useful for inspecting raw spend and impression inputs.
+
+`get_spend_scenario` simulates a what-if change to one channel's spend (a per-time-unit increment,
+with an optional explicit base spend) and returns the channel's efficiency at the base and new
+spend levels — ROI/mROI for revenue models, CPIK/mCPIK for KPI-only models.
 
 Note: `roi` and `marginal_roi` output types are only available for revenue models (those with a
 non-null `revenue_per_kpi`). On KPI-only models, requesting these metrics raises
