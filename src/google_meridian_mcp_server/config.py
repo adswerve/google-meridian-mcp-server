@@ -65,4 +65,7 @@ def load_config() -> RuntimeConfig:
         optimization_heartbeat_stale_seconds=int(
             os.getenv("OPTIMIZATION_HEARTBEAT_STALE_SECONDS", "60")
         ),
+        optimization_backend_local=os.getenv(
+            "OPTIMIZATION_BACKEND_LOCAL", "tensorflow"
+        ),
     )
