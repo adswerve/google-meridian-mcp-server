@@ -72,4 +72,11 @@ def adversarial_cases(variant) -> list[AdversarialCase]:
             "missing_model_data",
         )
     )
+    cases.append(
+        AdversarialCase(
+            "get_model_fit",
+            {"model_id": variant.key, "filters": {"geos": ["__no_such_geo__"]}},
+            "missing_model_data",
+        )
+    )
     return cases

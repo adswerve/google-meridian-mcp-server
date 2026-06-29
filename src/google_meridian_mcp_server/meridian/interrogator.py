@@ -59,6 +59,12 @@ class MeridianInterrogator:
             }
         ).sort_values("population", ascending=False, ignore_index=True)
 
+    def geo_names(self) -> list[str]:
+        geos = self.get_geos_info()
+        if "geo" not in geos.columns:
+            return []
+        return [str(geo) for geo in geos["geo"].tolist()]
+
     def get_time_values(self) -> list[str]:
         return [str(value) for value in self._raw_coord_values("time")]
 

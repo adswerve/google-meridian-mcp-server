@@ -89,6 +89,8 @@ error-path checks, and exits non-zero on any mismatch.
   `get_spend_scenario` is valid on every variant (channel derived from the
   overview); `outcome_mode` is `revenue` for revenue/kpi+rpk variants and `kpi`
   for kpi-only; an unknown channel returns `missing_model_data`.
+  `get_model_fit` is valid on all variants and additionally honors a `geos`
+  filter (validated end-to-end); an unknown geo returns `missing_model_data`.
 - Showcase ↔ tool parity is tracked in `docs/meridian-mcp-showcase-parity.md`.
 
 ## Module Map
@@ -101,9 +103,9 @@ error-path checks, and exits non-zero on any mismatch.
 - **persistence/cache.py** — `DiscoveryCache`, `MaterializationCache`, `ResultCache` (TTL-keyed in-memory).
 - **meridian/loader.py** — auto-detects `.binpb` vs `.pkl`; loads through Meridian serde APIs.
 - **meridian/catalog.py** — bridges entries to loaded Meridian objects; memoizes models and facades.
-- **meridian/dataset_mapper.py** — converts xarray datasets to JSON-safe row dicts; merges on shared dims. `filter_records` slices rows by date/geo/channel (reused by training-data, model-fit, channel-data); `extract_channel_data` builds the per-channel long table. `_df_to_records` maps NaN → JSON `null` (numeric cells need `astype(object)` first).
-- **meridian/interrogator.py** — model metadata extraction; builds `get_model_overview` payload.
-- **meridian/analyzer_facade.py** — wraps `Analyzer` and `MediaSummary`; executes analysis; normalizes to posterior-only payloads.
+- **meridian/dataset_mapper.py** — converts xarray datasets to JSON-safe row dicts; merges on shared dims. `filter_records` slices rows by date/geo/channel (reused by training-data, channel-data — NOT model-fit anymore); `extract_channel_data` builds the per-channel long table. `_df_to_records` maps NaN → JSON `null` (numeric cells need `astype(object)` first).
+- **meridian/interrogator.py** — model metadata extraction; builds `get_model_overview` payload. `geo_names()` returns the model's geo coord values (used by the service to validate `get_model_fit` geo filters).
+- **meridian/analyzer_facade.py** — wraps `Analyzer`, `MediaSummary`, and the `ModelFit` visualizer; executes analysis; normalizes to posterior-only payloads. `get_model_fit` delegates geo/time selection to Meridian's `ModelFit` (cached per `(use_kpi, confidence_level)`), then `_reshape_model_fit` pivots the long frame to the wide schema.
 - **services/model_catalog_service.py** — serializes `ModelCatalogEntry`; converts timestamps to ISO-8601.
 - **services/analysis_service.py** — filter normalization; dispatch; result-cache integration; model-overview shaping.
 - **transport/tools.py** — registers FastMCP tools; converts domain errors to standard error payload.
@@ -148,7 +150,7 @@ The overview tool should tell an agent:
 - `get_model_overview.available_tool_options` is dynamic: it omits `roi`/`marginal_roi` for no-revenue models and lists `get_reach_frequency` only for models with reach & frequency channels.
 - The facade resolves `use_kpi` from the model's revenue capability when the caller does not set it (no-revenue models default to KPI mode).
 - `get_training_data` applies date/geo/channel filters to the merged rows; the dead `aggregate_geos` filter field has been removed.
-- `get_model_fit` returns expected/actual/baseline/residual over time (geo-aggregated). `get_reach_frequency` returns optimal-frequency ROI curves (RF-only, else `metric_not_supported`). `get_channel_data` returns a per-channel long table across all channel types.
+- `get_model_fit` returns expected/actual/baseline/residual over time and honors the `geos` filter. It delegates to Meridian's `ModelFit` visualizer and its private `_transform_data_to_dataframe(selected_times, selected_geos)`, which selects geos/times and aggregates to ONE national series inside Meridian — we do NOT reimplement the aggregation or CI math. National `ci_lo`/`ci_hi` are therefore Meridian's summed per-geo intervals (this matches the showcase app; means/actuals/baseline are unchanged — a deliberate change from the old `aggregate_geos=True` intervals, not a regression). An unknown geo raises `missing_model_data` (validated in the service via `interrogator.geo_names()`). This private-API + long-frame-schema coupling is guarded by `tests/contract/test_meridian_modelfit_contract.py` — if a Meridian upgrade breaks it, that test fails loudly. `get_reach_frequency` returns optimal-frequency ROI curves (RF-only, else `metric_not_supported`). `get_channel_data` returns a per-channel long table across all channel types.
 - `get_training_data` vs `get_channel_data`: training-data is the raw per-dataset extractor (select by dataset name; the only path to non-channel series like KPI/controls/population); channel-data is the per-channel unified long view stacking every channel-keyed input (select by channel). They are separate tools by design — do not merge them behind a layout flag (the two select by different keys).
 - `get_spend_scenario` simulates one channel's spend: inputs `channel`,
   `spend_increase`, optional `base_spend` (all PER TIME UNIT; base defaults to
@@ -162,7 +164,7 @@ The overview tool should tell an agent:
 ## Current Test Coverage
 - **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache.
 - **integration/** — provider filesystem behavior and cache interaction.
-- **contract/** — supported enums and public tool-surface expectations.
+- **contract/** — supported enums and public tool-surface expectations; `test_meridian_modelfit_contract.py` guards Meridian's private `ModelFit._transform_data_to_dataframe` signature plus the long-frame schema constants (`type`/`mean`/`ci_lo`/`ci_hi`/`expected`/`baseline`/`actual`) that `get_model_fit` depends on.
 
 ## Editing Guidance
 - Reuse `MeridianInterrogator` for shared model metadata and data extraction.

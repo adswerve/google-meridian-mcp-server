@@ -308,11 +308,11 @@ def register_tools(mcp: FastMCP) -> None:
         filters: Annotated[
             AnalysisFilters | None,
             Field(
-                description="Optional filters. Only start_date/end_date apply here; results are aggregated across all geos.",
+                description="Optional filters: start_date/end_date slice the time range; geos restricts which markets are included before results are aggregated to one national series (per-geo breakdown is not returned).",
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Get model fit over time: expected vs actual outcome, baseline, and residual (actual - expected) per time period, with confidence intervals. Use this to judge how well the model tracks observed outcomes."""
+        """Get model fit over time: expected vs actual outcome, baseline, and residual (actual - expected) per time period, with confidence intervals. Pass a 'geos' filter to fit only selected markets (aggregated to one series). Use this to judge how well the model tracks observed outcomes."""
         try:
             return _analysis_service(ctx).get_model_fit(
                 model_id,

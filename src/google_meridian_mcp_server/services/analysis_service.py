@@ -393,6 +393,13 @@ class AnalysisService:
         self, model_id: str, filters: AnalysisFilters | dict | None
     ) -> dict[str, Any]:
         normalized_filters = normalize_filters(filters)
+        if normalized_filters.geos:
+            valid_geos = set(self._catalog.get_interrogator(model_id).geo_names())
+            unknown = [geo for geo in normalized_filters.geos if geo not in valid_geos]
+            if unknown:
+                raise MissingModelDataError(
+                    model_id, f"unknown geo(s): {', '.join(unknown)}"
+                )
         params = {"filters": self._filter_key(normalized_filters)}
 
         def _compute() -> dict[str, Any]:
