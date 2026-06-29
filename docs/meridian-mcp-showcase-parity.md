@@ -1,7 +1,7 @@
 # mmm-showcase ↔ Meridian MCP Parity
 
 Scope: Home, Response Curves, Attribution, Lag Effects, Reach & Frequency, Data
-Exploration. Excluded: Summary Report, Budget Optimization, Model Diagnostics.
+Exploration, Budget Optimization (Phase 1). Excluded: Summary Report, Model Diagnostics.
 
 Verified against `../mmm-showcase` pages under `src/ui/pages/` and the MCP tools
 in `src/google_meridian_mcp_server/`.
@@ -27,6 +27,7 @@ in `src/google_meridian_mcp_server/`.
 | Raw input series (impressions, spend, reach, freq, controls, KPI) | Data Exploration | input_data arrays | get_channel_data + get_training_data | Supported | channel-keyed vs raw datasets |
 | VIF / multicollinearity | Data Exploration | statsmodels over scaled arrays | — | Out-of-scope | computed app-side, not a Meridian output |
 | Per-geo disaggregated metrics (one row per geo) | (various) | aggregate_geos=False | — | Future work | app filters/aggregates to a geo selection; true per-geo breakdown in one call not yet exposed |
+| Budget optimization (fixed-budget / target-ROAS) | Budget Optimization | BudgetOptimizer | run_optimization, get_optimization_status, get_optimization_result, list_optimizations, delete_optimization | Phase 1 complete (local executor) | structured result = summary + channel tables + allocation + spend-delta; Cloud Run tiers, JAX backend, and response_curves are Phase 2 |
 
 Every in-scope showcase item is now backed by a tool; only VIF (app-side
 computation) and true per-geo disaggregation remain unsupported.

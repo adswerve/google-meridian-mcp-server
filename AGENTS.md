@@ -48,6 +48,15 @@ and persistence helpers so agents can inspect models and request structured outp
 - `RESULT_CACHE_ENABLED` defaults to true.
 - `RESULT_CACHE_TTL_SECONDS` is optional but must be positive when set.
 - `DISCOVERY_TTL_SECONDS` must be positive.
+- `REGISTRY_BACKEND` — `local` (Phase 1) or `gcs` (Phase 2); defaults to `PERSISTENCE_BACKEND`.
+- `OPTIMIZATION_RUNS_ROOT` — local directory for run manifests, state files, and results; default `./optimizations`.
+- `OPTIMIZATION_GCS_PREFIX` — GCS prefix for run files when `REGISTRY_BACKEND=gcs`; Phase 2.
+- `OPTIMIZATION_ALLOWED_TIERS` — comma-separated list of permitted compute tiers (`local`); default `local`.
+- `OPTIMIZATION_DEFAULT_TIER` — `auto` (heuristic) or a fixed tier name; default `auto`.
+- `OPTIMIZATION_MAX_PARALLEL` — maximum concurrent optimization workers per server process; default `2`.
+- `OPTIMIZATION_SIZE_THRESHOLDS` — two comma-separated integers (`small,large`) for the `auto` tier heuristic; default `1000000,100000000`.
+- `OPTIMIZATION_BACKEND_LOCAL` — JAX backend for local workers (`tensorflow` or `jax`); default `tensorflow`.
+- `OPTIMIZATION_HEARTBEAT_STALE_SECONDS` — seconds without a heartbeat before a running worker is reconciled as crashed; default `60`.
 
 ## Common Commands
 - `uv run python -m google_meridian_mcp_server.server`
@@ -91,6 +100,11 @@ error-path checks, and exits non-zero on any mismatch.
   for kpi-only; an unknown channel returns `missing_model_data`.
   `get_model_fit` is valid on all variants and additionally honors a `geos`
   filter (validated end-to-end); an unknown geo returns `missing_model_data`.
+- The suite also gates the optimization module: `run_optimization` → poll
+  `get_optimization_status` → `get_optimization_result` runs end-to-end as a
+  subprocess worker for both `national-revenue` and `geo-revenue` fixtures;
+  fingerprint reuse and the `optimization_run_not_found` adversarial path are
+  also asserted.
 - Showcase ↔ tool parity is tracked in `docs/meridian-mcp-showcase-parity.md`.
 
 ## Module Map
@@ -110,6 +124,15 @@ error-path checks, and exits non-zero on any mismatch.
 - **services/analysis_service.py** — filter normalization; dispatch; result-cache integration; model-overview shaping.
 - **transport/tools.py** — registers FastMCP tools; converts domain errors to standard error payload.
 - **server.py** — lifespan startup; provider selection; `create_server()`, `mcp`, `run_server()`.
+- **domain/optimization.py** — enums (`RunStatus`, `RunPhase`, `ComputeTier`, `OutcomeMode`); Pydantic models `OptimizationConfig`, `OptimizationRun`, `OptimizationRunState`, `OptimizationRunSummary`; helpers `config_fingerprint`, `to_optimize_kwargs`.
+- **persistence/optimization_run_registry.py** — `OptimizationRunRegistry` ABC; `LocalOptimizationRunRegistry` (3-file layout per run: manifest, state, result; fingerprint index for reuse); `RunNotFoundError`, `ResultNotReadyError`.
+- **execution/routing.py** — `model_size_features`, `size_score`, `resolve_tier`; maps problem size to cheapest allowed compute tier; reads `OPTIMIZATION_SIZE_THRESHOLDS` and `OPTIMIZATION_ALLOWED_TIERS`.
+- **execution/base_executor.py** — `BaseExecutor` ABC; concurrency gate (max-parallel semaphore), launch lifecycle, crash reconciliation via stale-heartbeat detection.
+- **execution/subprocess_executor.py** — `SubprocessExecutor` (Phase 1 local tier); spawns a worker subprocess per run; passes run_id and config via env; reconciles on startup.
+- **execution/worker.py** — `run_worker`; loads the model, calls `OptimizerFacade.run`, writes result/state to registry; one function, no server imports.
+- **meridian/optimizer_facade.py** — `OptimizerFacade` (extends `MeridianInterrogator`); wraps Meridian `BudgetOptimizer`; shapes `OptimizationResults` into the structured result dict (`summary`, `channel_tables`, `allocation`, `spend_delta`, `outcome_mode`); `response_curves` deferred to Phase 2.
+- **services/optimization_service.py** — `OptimizationService`; orchestrates submission (fingerprint reuse check → routing → executor launch), status/result reads, list, delete.
+- **bootstrap.py** — `build_model_catalog` (provider + caches → `ModelCatalog`) and `build_registry` (backend selection → `OptimizationRunRegistry`); shared by server lifespan and worker.
 
 ## Current Tool Surface
 - `list_models`
@@ -123,6 +146,11 @@ error-path checks, and exits non-zero on any mismatch.
 - `get_reach_frequency`
 - `get_channel_data`
 - `get_spend_scenario`
+- `run_optimization`
+- `get_optimization_status`
+- `get_optimization_result`
+- `list_optimizations`
+- `delete_optimization`
 
 ## Model Overview Expectations
 The overview tool should tell an agent:
@@ -162,9 +190,9 @@ The overview tool should tell an agent:
   (`apply_saturation`/`get_data`); `get_carryover` remains unused.
 
 ## Current Test Coverage
-- **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache.
+- **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache; optimization domain/registry/routing/executor/facade/service/worker.
 - **integration/** — provider filesystem behavior and cache interaction.
-- **contract/** — supported enums and public tool-surface expectations; `test_meridian_modelfit_contract.py` guards Meridian's private `ModelFit._transform_data_to_dataframe` signature plus the long-frame schema constants (`type`/`mean`/`ci_lo`/`ci_hi`/`expected`/`baseline`/`actual`) that `get_model_fit` depends on.
+- **contract/** — supported enums and public tool-surface expectations; `test_meridian_modelfit_contract.py` guards Meridian's private `ModelFit._transform_data_to_dataframe` signature plus the long-frame schema constants (`type`/`mean`/`ci_lo`/`ci_hi`/`expected`/`baseline`/`actual`) that `get_model_fit` depends on; `test_optimization_tools.py` guards tool registration and `readOnlyHint` annotations for all 5 optimization tools.
 
 ## Editing Guidance
 - Reuse `MeridianInterrogator` for shared model metadata and data extraction.
