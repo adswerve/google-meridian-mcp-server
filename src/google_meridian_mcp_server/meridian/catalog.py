@@ -10,6 +10,7 @@ from google_meridian_mcp_server.domain.models import ModelCatalogEntry
 from google_meridian_mcp_server.meridian.analyzer_facade import AnalyzerFacade
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 from google_meridian_mcp_server.meridian.loader import load_meridian_model
+from google_meridian_mcp_server.meridian.optimizer_facade import OptimizerFacade
 from google_meridian_mcp_server.persistence.cache import (
     DiscoveryCache,
     MaterializationCache,
@@ -30,6 +31,7 @@ class ModelCatalog:
         self._materialization = materialization_cache
         self._loaded: dict[str, Any] = {}
         self._facades: dict[str, AnalyzerFacade] = {}
+        self._optimizer_facades: dict[str, OptimizerFacade] = {}
 
     def list_entries(self) -> list[ModelCatalogEntry]:
         return self._discovery.list_models()
@@ -57,6 +59,12 @@ class ModelCatalog:
         if model_id not in self._facades:
             self._facades[model_id] = AnalyzerFacade(self.resolve(model_id))
         return self._facades[model_id]
+
+    def get_optimizer_facade(self, model_id: str) -> OptimizerFacade:
+        """Resolve a model_id to a cached OptimizerFacade (runs BudgetOptimizer)."""
+        if model_id not in self._optimizer_facades:
+            self._optimizer_facades[model_id] = OptimizerFacade(self.resolve(model_id))
+        return self._optimizer_facades[model_id]
 
     def get_interrogator(self, model_id: str) -> MeridianInterrogator:
         """Resolve a model_id to a metadata-focused interrogator instance."""
