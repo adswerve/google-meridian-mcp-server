@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+from pydantic import ValidationError
 
 from google_meridian_mcp_server.config import _read_bool, load_config
 from google_meridian_mcp_server.domain.errors import (
@@ -109,6 +110,38 @@ class TestRuntimeConfigValidation:
                 persistence_backend="local",
                 local_models_root="/models",
                 result_cache_ttl_seconds=0,
+            )
+
+
+class TestOptimizationConfig:
+    def test_runtime_config_defaults_local(self):
+        cfg = RuntimeConfig(persistence_backend="local", local_models_root="/models")
+        assert cfg.registry_backend == "local"  # follows persistence_backend
+        assert cfg.optimization_allowed_tiers == ("local",)
+        assert cfg.optimization_default_tier == "auto"
+        assert cfg.optimization_max_parallel == 2
+        assert cfg.optimization_size_thresholds == (1_000_000, 100_000_000)
+
+    def test_runtime_config_local_requires_models_root(self):
+        with pytest.raises(ValidationError, match="LOCAL_MODELS_ROOT"):
+            RuntimeConfig(persistence_backend="local", local_models_root=None)
+
+    def test_runtime_config_cloud_tier_requires_gcs_registry(self):
+        with pytest.raises(ValidationError, match="cloud .* require .* gcs registry"):
+            RuntimeConfig(
+                persistence_backend="local",
+                local_models_root="/models",
+                registry_backend="local",
+                optimization_allowed_tiers=("cloud_cpu",),
+            )
+
+    def test_runtime_config_default_tier_must_be_allowed(self):
+        with pytest.raises(ValidationError, match="not in allowed tiers"):
+            RuntimeConfig(
+                persistence_backend="local",
+                local_models_root="/models",
+                optimization_default_tier="cloud_gpu",
+                optimization_allowed_tiers=("local",),
             )
 
 
