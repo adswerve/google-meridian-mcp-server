@@ -1,0 +1,177 @@
+"""Durable registry for optimization runs (interface + local provider)."""
+
+from __future__ import annotations
+
+import abc
+import json
+from pathlib import Path
+
+from google_meridian_mcp_server.domain.errors import MeridianMcpError
+from google_meridian_mcp_server.domain.optimization import (
+    OptimizationRun,
+    OptimizationRunState,
+    OptimizationRunSummary,
+    RunStatus,
+)
+
+
+class RunNotFoundError(MeridianMcpError):
+    def __init__(self, run_id: str):
+        super().__init__(
+            error_code="optimization_run_not_found",
+            message=f"Optimization run '{run_id}' was not found.",
+            details={"run_id": run_id},
+        )
+
+
+class ResultNotReadyError(MeridianMcpError):
+    def __init__(self, run_id: str, status: str):
+        super().__init__(
+            error_code="optimization_not_ready",
+            message=f"Optimization run '{run_id}' has no result yet (status={status}).",
+            details={"run_id": run_id, "status": status},
+        )
+
+
+def build_config_summary(run: OptimizationRun) -> str:
+    cfg = run.config
+    scenario = cfg.scenario.type
+    dates = f"{cfg.start_date or 'start'}..{cfg.end_date or 'end'}"
+    geos = "all geos" if not cfg.selected_geos else f"{len(cfg.selected_geos)} geos"
+    objective = "KPI" if cfg.use_kpi else "ROAS"
+    constraint = (
+        f"+/-{int(cfg.constraint.pct * 100)}%"
+        if cfg.constraint.mode == "global"
+        else "per-channel"
+    )
+    return f"{scenario} . {dates} . {geos} . {objective} . {constraint}"
+
+
+class OptimizationRunRegistry(abc.ABC):
+    @abc.abstractmethod
+    def create(self, run: OptimizationRun) -> None: ...
+    @abc.abstractmethod
+    def write_state(self, state: OptimizationRunState) -> None: ...
+    @abc.abstractmethod
+    def write_result(self, run_id: str, result: dict) -> None: ...
+    @abc.abstractmethod
+    def get_record(self, run_id: str) -> OptimizationRun: ...
+    @abc.abstractmethod
+    def get_state(self, run_id: str) -> OptimizationRunState: ...
+    @abc.abstractmethod
+    def get_result(self, run_id: str) -> dict: ...
+    @abc.abstractmethod
+    def list(
+        self,
+        *,
+        model_id: str | None = None,
+        status: RunStatus | None = None,
+        limit: int | None = None,
+    ) -> list[OptimizationRunSummary]: ...
+    @abc.abstractmethod
+    def delete(self, run_id: str) -> None: ...
+    @abc.abstractmethod
+    def find_by_fingerprint(self, fingerprint: str) -> str | None: ...
+    @abc.abstractmethod
+    def put_fingerprint(self, fingerprint: str, run_id: str) -> None: ...
+
+
+class LocalOptimizationRunRegistry(OptimizationRunRegistry):
+    def __init__(self, root: str) -> None:
+        self._root = Path(root)
+        self._runs = self._root / "runs"
+        self._index = self._root / "index" / "by_fingerprint"
+
+    def _run_dir(self, run_id: str) -> Path:
+        return self._runs / run_id
+
+    def create(self, run: OptimizationRun) -> None:
+        d = self._run_dir(run.run_id)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "record.json").write_text(run.model_dump_json(indent=2))
+
+    def write_state(self, state: OptimizationRunState) -> None:
+        d = self._run_dir(state.run_id)
+        if not d.is_dir():
+            raise RunNotFoundError(state.run_id)
+        (d / "state.json").write_text(state.model_dump_json(indent=2))
+
+    def write_result(self, run_id: str, result: dict) -> None:
+        d = self._run_dir(run_id)
+        if not d.is_dir():
+            raise RunNotFoundError(run_id)
+        (d / "result.json").write_text(json.dumps(result, indent=2))
+
+    def get_record(self, run_id: str) -> OptimizationRun:
+        path = self._run_dir(run_id) / "record.json"
+        if not path.is_file():
+            raise RunNotFoundError(run_id)
+        return OptimizationRun.model_validate_json(path.read_text())
+
+    def get_state(self, run_id: str) -> OptimizationRunState:
+        path = self._run_dir(run_id) / "state.json"
+        if not path.is_file():
+            if not self._run_dir(run_id).is_dir():
+                raise RunNotFoundError(run_id)
+            return OptimizationRunState(run_id=run_id, status=RunStatus.QUEUED)
+        return OptimizationRunState.model_validate_json(path.read_text())
+
+    def get_result(self, run_id: str) -> dict:
+        state = self.get_state(run_id)
+        path = self._run_dir(run_id) / "result.json"
+        if not path.is_file():
+            raise ResultNotReadyError(run_id, state.status.value)
+        return json.loads(path.read_text())
+
+    def list(self, *, model_id=None, status=None, limit=None):
+        if not self._runs.is_dir():
+            return []
+        summaries: list[OptimizationRunSummary] = []
+        for d in sorted(self._runs.iterdir()):
+            record_path = d / "record.json"
+            if not record_path.is_file():
+                continue
+            run = OptimizationRun.model_validate_json(record_path.read_text())
+            if model_id is not None and run.model_id != model_id:
+                continue
+            state = self.get_state(run.run_id)
+            if status is not None and state.status != status:
+                continue
+            summaries.append(
+                OptimizationRunSummary(
+                    run_id=run.run_id,
+                    label=run.label,
+                    model_id=run.model_id,
+                    config_summary=build_config_summary(run),
+                    status=state.status,
+                    created_at=run.created_at,
+                    finished_at=state.finished_at,
+                    headline=state.headline,
+                )
+            )
+        summaries.sort(key=lambda s: s.created_at, reverse=True)
+        return summaries[:limit] if limit else summaries
+
+    def delete(self, run_id: str) -> None:
+        d = self._run_dir(run_id)
+        if not d.is_dir():
+            raise RunNotFoundError(run_id)
+        record_path = d / "record.json"
+        if record_path.is_file():
+            fp = OptimizationRun.model_validate_json(
+                record_path.read_text()
+            ).config_fingerprint
+            pointer = self._index / fp
+            if pointer.is_file() and pointer.read_text().strip() == run_id:
+                pointer.unlink()
+        for child in d.iterdir():
+            child.unlink()
+        d.rmdir()
+
+    def find_by_fingerprint(self, fingerprint: str) -> str | None:
+        pointer = self._index / fingerprint
+        return pointer.read_text().strip() if pointer.is_file() else None
+
+    def put_fingerprint(self, fingerprint: str, run_id: str) -> None:
+        self._index.mkdir(parents=True, exist_ok=True)
+        (self._index / fingerprint).write_text(run_id)
