@@ -81,6 +81,34 @@ def assert_summary(payload, label: str, *, required_keys, outcome_mode: str) -> 
     )
 
 
+async def assert_live_optimization(client, model_id: str, *, overview) -> None:
+    import asyncio
+
+    channels = overview.get("media_channels") or overview.get("rf_channels")  # noqa: F841
+    config = {"scenario": {"type": "fixed_budget"}, "constraint": {"mode": "global", "pct": 0.2}}
+    submit = await call(client, "run_optimization", {"model_id": model_id, "config": config})
+    assert "error_code" not in submit, f"submit error: {submit}"
+    run_id = submit["run_id"]
+    assert submit["compute_tier_resolved"] == "local", f"expected local tier, got {submit}"
+
+    status = None
+    for _ in range(120):  # tiny fixtures finish fast; cap ~60s
+        status = await call(client, "get_optimization_status", {"run_id": run_id})
+        if status["status"] in ("completed", "failed"):
+            break
+        await asyncio.sleep(0.5)
+    assert status and status["status"] == "completed", f"run did not complete: {status}"
+
+    result = await call(client, "get_optimization_result", {"run_id": run_id})
+    for key in ("summary", "channel_tables", "allocation", "spend_delta", "outcome_mode"):
+        assert key in result, f"result missing '{key}': {result.keys()}"
+    assert {"initial", "optimized"} <= set(result["channel_tables"]), "missing channel tables"
+
+    # Reuse: identical submit returns the same run, flagged reused.
+    again = await call(client, "run_optimization", {"model_id": model_id, "config": config})
+    assert again["reused"] is True and again["run_id"] == run_id, f"reuse failed: {again}"
+
+
 async def run_matrix(client) -> Report:
     from scripts.generate_validation_models import VARIANTS
 
@@ -204,6 +232,26 @@ async def run_matrix(client) -> Report:
             try:
                 payload = await call(client, case.tool, case.args)
                 assert_error(payload, case.expected_error_code, label)
+                report.ok(label)
+            except AssertionError as exc:
+                report.fail(label, str(exc))
+
+        # Live optimization: end-to-end subprocess worker for national and geo revenue models.
+        if model_id in ("national-revenue", "geo-revenue"):
+            label = f"{model_id}/run_optimization[live,local,subprocess]"
+            try:
+                await assert_live_optimization(client, model_id, overview=overview)
+                report.ok(label)
+            except AssertionError as exc:
+                report.fail(label, str(exc))
+
+        # Adversarial: result for unknown run_id must return typed error.
+        if model_id == "national-revenue":
+            label = "GLOBAL/ADV/result-not-ready"
+            try:
+                payload = await call(client, "get_optimization_result",
+                                     {"run_id": "does-not-exist"})
+                assert_error(payload, "optimization_run_not_found", label)
                 report.ok(label)
             except AssertionError as exc:
                 report.fail(label, str(exc))
