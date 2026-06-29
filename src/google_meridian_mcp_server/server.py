@@ -8,16 +8,10 @@ from contextlib import asynccontextmanager
 
 from fastmcp import FastMCP
 
+from google_meridian_mcp_server.bootstrap import build_model_catalog
 from google_meridian_mcp_server.config import load_config
-from google_meridian_mcp_server.domain.models import PersistenceBackend, Transport
-from google_meridian_mcp_server.meridian.catalog import ModelCatalog
-from google_meridian_mcp_server.persistence.cache import (
-    DiscoveryCache,
-    MaterializationCache,
-    ResultCache,
-)
-from google_meridian_mcp_server.persistence.gcs_provider import GcsModelProvider
-from google_meridian_mcp_server.persistence.local_provider import LocalModelProvider
+from google_meridian_mcp_server.domain.models import Transport
+from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.transport.tools import register_tools
 
 log = logging.getLogger(__name__)
@@ -33,15 +27,7 @@ async def _lifespan(server: FastMCP):
         cfg.persistence_backend,
     )
 
-    # Build the provider
-    if cfg.persistence_backend == PersistenceBackend.GCS.value:
-        provider = GcsModelProvider(cfg.gcs_bucket, cfg.gcs_models_prefix)
-    else:
-        provider = LocalModelProvider(cfg.local_models_root)
-
-    discovery_cache = DiscoveryCache(provider, cfg.discovery_ttl_seconds)
-    materialization_cache = MaterializationCache(provider, cfg.model_cache_root)
-    model_catalog = ModelCatalog(discovery_cache, materialization_cache)
+    model_catalog = build_model_catalog(cfg)
     result_cache = ResultCache(
         enabled=cfg.result_cache_enabled,
         ttl_seconds=cfg.result_cache_ttl_seconds,
