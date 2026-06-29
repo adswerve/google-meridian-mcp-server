@@ -27,6 +27,11 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         model_cache_root="/tmp/cache",
         result_cache_enabled=True,
         result_cache_ttl_seconds=30,
+        resolved_registry_backend="local",
+        optimization_runs_root="/tmp/optimizations",
+        optimization_max_parallel=2,
+        optimization_heartbeat_stale_seconds=120,
+        optimization_backend_local="subprocess",
     )
 
 

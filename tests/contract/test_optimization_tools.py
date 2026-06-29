@@ -1,0 +1,30 @@
+"""Contract tests for optimization MCP tools registration and annotations."""
+
+from __future__ import annotations
+
+import pytest
+
+from google_meridian_mcp_server.server import create_server
+
+
+@pytest.mark.asyncio
+async def test_optimization_tools_registered():
+    mcp = create_server()
+    tools = {t.name for t in await mcp.list_tools()}
+    assert {
+        "run_optimization",
+        "get_optimization_status",
+        "get_optimization_result",
+        "list_optimizations",
+        "delete_optimization",
+    } <= tools
+
+
+@pytest.mark.asyncio
+async def test_run_optimization_annotations_not_readonly():
+    mcp = create_server()
+    by_name = {t.name: t for t in await mcp.list_tools()}
+    # run_optimization has no annotations (bare @mcp.tool) — not read-only
+    run_opt_annotations = by_name["run_optimization"].annotations
+    assert run_opt_annotations is None or run_opt_annotations.readOnlyHint is not True
+    assert by_name["get_optimization_status"].annotations.readOnlyHint is True

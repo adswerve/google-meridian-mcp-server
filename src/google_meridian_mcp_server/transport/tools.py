@@ -18,10 +18,12 @@ from google_meridian_mcp_server.domain.filters import (
     TrainingDataset,
     normalize_filters,
 )
+from google_meridian_mcp_server.domain.optimization import OptimizationConfig
 from google_meridian_mcp_server.services.analysis_service import AnalysisService
 from google_meridian_mcp_server.services.model_catalog_service import (
     ModelCatalogService,
 )
+from google_meridian_mcp_server.services.optimization_service import OptimizationService
 
 READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True,
@@ -46,6 +48,15 @@ def _analysis_service(ctx: Context) -> AnalysisService:
     return AnalysisService(
         catalog=ctx.lifespan_context["model_catalog"],
         result_cache=ctx.lifespan_context["result_cache"],
+    )
+
+
+def _optimization_service(ctx: Context) -> OptimizationService:
+    return OptimizationService(
+        catalog=ctx.lifespan_context["model_catalog"],
+        registry=ctx.lifespan_context["optimization_registry"],
+        executor=ctx.lifespan_context["optimization_executor"],
+        cfg=ctx.lifespan_context["config"],
     )
 
 
@@ -368,5 +379,111 @@ def register_tools(mcp: FastMCP) -> None:
                 base_spend,
                 normalize_filters(filters),
             )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool
+    async def run_optimization(
+        model_id: Annotated[
+            str, Field(min_length=1, description="Model identifier from list_models.")
+        ],
+        config: Annotated[
+            OptimizationConfig,
+            Field(
+                description=(
+                    "Optimization scenario + constraints. scenario is one of "
+                    "{type:'fixed_budget', budget?} | {type:'target_roas', target_value} | "
+                    "{type:'target_mroas', target_value}. constraint is "
+                    "{mode:'global', pct} or {mode:'per_channel', bounds:{channel:{lower_pct,upper_pct}}}. "
+                    "Optional start_date/end_date (ISO), selected_geos, use_kpi. "
+                    "See get_model_overview.available_tool_options.run_optimization for valid channels/geos."
+                )
+            ),
+        ],
+        ctx: Context,
+        label: Annotated[
+            str | None, Field(description="Human label for this run.")
+        ] = None,
+        note: Annotated[
+            str | None, Field(description="Free-text intent for this run.")
+        ] = None,
+        compute_tier: Annotated[
+            str, Field(description="auto | local | cloud_cpu | cloud_gpu.")
+        ] = "auto",
+        force_rerun: Annotated[
+            bool, Field(description="Recompute even if an identical run exists.")
+        ] = False,
+    ) -> dict[str, Any]:
+        """Start a budget optimization (long-running). Returns a run_id immediately; poll get_optimization_status, then get_optimization_result. Reuses an identical prior run unless force_rerun is set."""
+        try:
+            return _optimization_service(ctx).run_optimization(
+                model_id,
+                config.model_dump(mode="json"),
+                label=label,
+                note=note,
+                compute_tier=compute_tier,
+                force_rerun=force_rerun,
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_optimization_status(
+        run_id: Annotated[
+            str, Field(min_length=1, description="run_id from run_optimization.")
+        ],
+        ctx: Context,
+    ) -> dict[str, Any]:
+        """Poll an optimization run: status (queued/running/completed/failed), phase, heartbeat, elapsed time, and error if any."""
+        try:
+            return _optimization_service(ctx).get_status(run_id)
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def get_optimization_result(
+        run_id: Annotated[
+            str, Field(min_length=1, description="run_id from run_optimization.")
+        ],
+        ctx: Context,
+    ) -> dict[str, Any]:
+        """Fetch the full structured optimization result. Errors with optimization_not_ready until the run is completed."""
+        try:
+            return _optimization_service(ctx).get_result(run_id)
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    async def list_optimizations(
+        ctx: Context,
+        model_id: Annotated[
+            str | None, Field(description="Filter to one model.")
+        ] = None,
+        status: Annotated[
+            str | None,
+            Field(
+                description="Filter by status: queued/running/completed/failed/canceled."
+            ),
+        ] = None,
+        limit: Annotated[
+            int | None, Field(ge=1, description="Max runs to return (newest first).")
+        ] = None,
+    ) -> dict[str, Any]:
+        """List past optimization runs with their config summary, status, and headline result. Use to find and reuse prior work."""
+        try:
+            return _optimization_service(ctx).list_runs(
+                model_id=model_id, status=status, limit=limit
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
+    @mcp.tool
+    async def delete_optimization(
+        run_id: Annotated[str, Field(min_length=1, description="run_id to delete.")],
+        ctx: Context,
+    ) -> dict[str, Any]:
+        """Permanently delete one optimization run and its result from the registry."""
+        try:
+            return _optimization_service(ctx).delete(run_id)
         except MeridianMcpError as error:
             return _error_response(error)

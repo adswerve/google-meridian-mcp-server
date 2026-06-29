@@ -274,6 +274,13 @@ class AnalysisService:
                     "channel": overview.get("media_channels", [])
                     + overview.get("rf_channels", []),
                 },
+                "run_optimization": {
+                    "channels": overview.get("media_channels", [])
+                    + overview.get("rf_channels", []),
+                    "geos": overview.get("geo_names", []),
+                    "use_kpi_togglable": overview.get("has_revenue_per_kpi", False),
+                    "scenarios": ["fixed_budget", "target_roas", "target_mroas"],
+                },
             }
             if overview.get("rf_channels"):
                 overview["available_tool_options"]["get_reach_frequency"] = {}
