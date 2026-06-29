@@ -84,7 +84,6 @@ def assert_summary(payload, label: str, *, required_keys, outcome_mode: str) -> 
 async def assert_live_optimization(client, model_id: str, *, overview) -> None:
     import asyncio
 
-    channels = overview.get("media_channels") or overview.get("rf_channels")  # noqa: F841
     config = {"scenario": {"type": "fixed_budget"}, "constraint": {"mode": "global", "pct": 0.2}}
     submit = await call(client, "run_optimization", {"model_id": model_id, "config": config})
     assert "error_code" not in submit, f"submit error: {submit}"
@@ -247,7 +246,7 @@ async def run_matrix(client) -> Report:
 
         # Adversarial: result for unknown run_id must return typed error.
         if model_id == "national-revenue":
-            label = "GLOBAL/ADV/result-not-ready"
+            label = "GLOBAL/ADV/result-not-found"
             try:
                 payload = await call(client, "get_optimization_result",
                                      {"run_id": "does-not-exist"})

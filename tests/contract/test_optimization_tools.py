@@ -28,3 +28,7 @@ async def test_run_optimization_annotations_not_readonly():
     run_opt_annotations = by_name["run_optimization"].annotations
     assert run_opt_annotations is None or run_opt_annotations.readOnlyHint is not True
     assert by_name["get_optimization_status"].annotations.readOnlyHint is True
+    assert by_name["get_optimization_result"].annotations.readOnlyHint is True
+    assert by_name["list_optimizations"].annotations.readOnlyHint is True
+    delete_ann = by_name["delete_optimization"].annotations
+    assert delete_ann is None or delete_ann.readOnlyHint is not True
