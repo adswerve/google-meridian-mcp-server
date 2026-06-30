@@ -162,3 +162,34 @@ def test_sig6_non_finite_returns_none():
     # Finite values still work
     assert _sig6(2.5) == 2.5
     assert not math.isnan(_sig6(2.5))
+
+
+def _fake_response_curves():
+    # dims: channel x spend_multiplier, metric coord; var incremental_outcome
+    channels = ["tv", "search"]
+    multipliers = [0.0, 1.0, 2.0]
+    spend = np.array([[0.0, 100.0, 200.0], [0.0, 50.0, 100.0]])
+    inc = np.array([[0.0, 300.0, 450.0], [0.0, 120.0, 150.0]])
+    return xr.Dataset(
+        {
+            "spend": (("channel", "spend_multiplier"), spend),
+            "incremental_outcome": (
+                ("channel", "spend_multiplier", "metric"),
+                inc[:, :, None],
+            ),
+        },
+        coords={
+            "channel": channels,
+            "spend_multiplier": multipliers,
+            "metric": ["mean"],
+        },
+    )
+
+
+def test_response_curve_rows_shape_and_rounding():
+    rows = OptimizerFacade._response_curve_rows(_fake_response_curves())
+    assert {"channel", "spend", "incremental_outcome"} == set(rows[0])
+    # one row per (channel, spend_multiplier) point
+    assert len(rows) == 6
+    tv0 = next(r for r in rows if r["channel"] == "tv" and r["spend"] == 100.0)
+    assert tv0["incremental_outcome"] == 300.0

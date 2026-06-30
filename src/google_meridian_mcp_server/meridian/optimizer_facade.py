@@ -47,14 +47,23 @@ class OptimizerFacade(MeridianInterrogator):
         )
         budget_optimizer = optimizer_mod.BudgetOptimizer(self._mmm)
         results = budget_optimizer.optimize(**kwargs)
+        try:
+            curves = results.get_response_curves()
+        except Exception:  # noqa: BLE001 - response curves are best-effort enrichment
+            curves = None
         return self.build_result(
-            results.nonoptimized_data, results.optimized_data, use_kpi=use_kpi
+            results.nonoptimized_data,
+            results.optimized_data,
+            use_kpi=use_kpi,
+            response_curves=curves,
         )
 
     @staticmethod
-    def build_result(nonopt, opt, *, use_kpi: bool) -> dict[str, Any]:
+    def build_result(
+        nonopt, opt, *, use_kpi: bool, response_curves=None
+    ) -> dict[str, Any]:
         outcome_mode = "kpi" if use_kpi else "revenue"
-        return {
+        result = {
             "outcome_mode": outcome_mode,
             "summary": OptimizerFacade._summary(nonopt, opt, use_kpi),
             "channel_tables": {
@@ -64,6 +73,33 @@ class OptimizerFacade(MeridianInterrogator):
             "allocation": OptimizerFacade._allocation(opt),
             "spend_delta": OptimizerFacade._spend_delta(nonopt, opt),
         }
+        if response_curves is not None:
+            result["response_curves"] = OptimizerFacade._response_curve_rows(
+                response_curves
+            )
+        return result
+
+    @staticmethod
+    def _response_curve_rows(curves) -> list[dict[str, Any]]:
+        """Flatten get_response_curves() to per-(channel, spend) points (metric=mean)."""
+        data = curves
+        if "metric" in getattr(data, "dims", {}):
+            data = data.sel(metric="mean", drop=True)
+        channels = [str(c) for c in data.coords["channel"].values.tolist()]
+        rows: list[dict[str, Any]] = []
+        for channel in channels:
+            sub = data.sel(channel=channel)
+            spends = sub["spend"].values.tolist()
+            incs = sub["incremental_outcome"].values.tolist()
+            for spend, inc in zip(spends, incs):
+                rows.append(
+                    {
+                        "channel": channel,
+                        "spend": _sig6(float(spend)),
+                        "incremental_outcome": _sig6(float(inc)),
+                    }
+                )
+        return rows
 
     @staticmethod
     def _efficiency(total_roi: float, use_kpi: bool) -> float | None:
