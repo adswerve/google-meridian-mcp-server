@@ -32,3 +32,12 @@ async def test_run_optimization_annotations_not_readonly():
     assert by_name["list_optimizations"].annotations.readOnlyHint is True
     delete_ann = by_name["delete_optimization"].annotations
     assert delete_ann is None or delete_ann.readOnlyHint is not True
+
+
+@pytest.mark.asyncio
+async def test_cancel_tool_registered_not_readonly():
+    mcp = create_server()
+    by_name = {t.name: t for t in await mcp.list_tools()}
+    assert "cancel_optimization" in by_name
+    cancel_ann = by_name["cancel_optimization"].annotations
+    assert cancel_ann is None or cancel_ann.readOnlyHint is not True

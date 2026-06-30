@@ -47,6 +47,9 @@ class _FakeExecutor(BaseExecutor):
     def _is_alive(self, handle):
         return handle.alive
 
+    def _terminate(self, handle) -> None:
+        pass  # no-op for test doubles
+
 
 def test_gate_limits_concurrent_launches(tmp_path):
     reg = LocalOptimizationRunRegistry(str(tmp_path))

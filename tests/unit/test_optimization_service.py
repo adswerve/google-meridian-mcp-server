@@ -75,6 +75,31 @@ class _Executor:
         pass
 
 
+class _CancellableExecutor:
+    """Fake executor that records cancellations and mirrors what BaseExecutor.cancel does."""
+
+    def __init__(self, registry):
+        self._registry = registry
+        self.submitted = []
+        self.terminated = []
+
+    def submit(self, run):
+        self.submitted.append(run.run_id)
+
+    def pump(self):
+        pass
+
+    def cancel(self, run_id):
+        from google_meridian_mcp_server.domain.optimization import OptimizationRunState
+
+        self.terminated.append(run_id)
+        state = self._registry.get_state(run_id)
+        if state.status in (RunStatus.QUEUED, RunStatus.RUNNING):
+            self._registry.write_state(
+                OptimizationRunState(run_id=run_id, status=RunStatus.CANCELED)
+            )
+
+
 def _svc(tmp_path, catalog=None):
     cfg = RuntimeConfig(
         persistence_backend="local",
@@ -203,3 +228,28 @@ def test_identical_config_reuses_completed_run_reports_completed(tmp_path):
     again = svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
     assert again["reused"] is True
     assert again["status"] == "completed"
+
+
+def test_cancel_marks_canceled_and_terminates(tmp_path):
+    """Task 6: cancel returns the correct envelope, calls executor.cancel, and the state is CANCELED."""
+    from google_meridian_mcp_server.domain.optimization import OptimizationRunState
+
+    cfg = RuntimeConfig(
+        persistence_backend="local",
+        local_models_root=str(tmp_path),
+        optimization_runs_root=str(tmp_path / "runs"),
+    )
+    reg = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
+    executor = _CancellableExecutor(reg)
+    svc = OptimizationService(_Catalog(), reg, executor, cfg)
+
+    # Create a run then advance it to RUNNING
+    out = svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+    run_id = out["run_id"]
+    reg.write_state(OptimizationRunState(run_id=run_id, status=RunStatus.RUNNING))
+
+    result = svc.cancel(run_id)
+
+    assert result == {"run_id": run_id, "status": "canceled"}
+    assert executor.terminated == [run_id]
+    assert reg.get_state(run_id).status == RunStatus.CANCELED

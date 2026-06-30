@@ -43,3 +43,6 @@ class SubprocessExecutor(BaseExecutor):
 
     def _is_alive(self, handle: Any) -> bool:
         return handle.poll() is None
+
+    def _terminate(self, handle: Any) -> None:
+        handle.terminate()

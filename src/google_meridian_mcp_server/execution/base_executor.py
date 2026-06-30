@@ -35,6 +35,22 @@ class BaseExecutor(abc.ABC):
     def _launch(self, run: OptimizationRun) -> Any: ...
     @abc.abstractmethod
     def _is_alive(self, handle: Any) -> bool: ...
+    @abc.abstractmethod
+    def _terminate(self, handle: Any) -> None: ...
+
+    def cancel(self, run_id: str) -> None:
+        handle = self._handles.pop(run_id, None)
+        if handle is not None:
+            self._terminate(handle)
+        try:
+            self._queue.remove(run_id)
+        except ValueError:
+            pass
+        state = self._registry.get_state(run_id)
+        if state.status in (RunStatus.QUEUED, RunStatus.RUNNING):
+            self._registry.write_state(
+                OptimizationRunState(run_id=run_id, status=RunStatus.CANCELED)
+            )
 
     def submit(self, run: OptimizationRun) -> None:
         self._registry.write_state(

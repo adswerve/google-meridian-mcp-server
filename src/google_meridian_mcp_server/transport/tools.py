@@ -487,3 +487,14 @@ def register_tools(mcp: FastMCP) -> None:
             return _optimization_service(ctx).delete(run_id)
         except MeridianMcpError as error:
             return _error_response(error)
+
+    @mcp.tool
+    async def cancel_optimization(
+        run_id: Annotated[str, Field(min_length=1, description="run_id to cancel.")],
+        ctx: Context,
+    ) -> dict[str, Any]:
+        """Best-effort cancel of a queued or running optimization run."""
+        try:
+            return _optimization_service(ctx).cancel(run_id)
+        except MeridianMcpError as error:
+            return _error_response(error)

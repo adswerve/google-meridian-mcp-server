@@ -188,6 +188,11 @@ class OptimizationService:
             "count": len(summaries),
         }
 
+    def cancel(self, run_id: str) -> dict[str, Any]:
+        self._registry.get_record(run_id)  # raises RunNotFoundError if unknown
+        self._executor.cancel(run_id)
+        return {"run_id": run_id, "status": RunStatus.CANCELED.value}
+
     def delete(self, run_id: str) -> dict[str, Any]:
         self._registry.delete(run_id)
         return {"run_id": run_id, "deleted": True}
