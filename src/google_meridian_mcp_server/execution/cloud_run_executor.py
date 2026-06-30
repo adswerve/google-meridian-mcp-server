@@ -75,7 +75,7 @@ class CloudRunJobExecutor(BaseExecutor):
         return operation.metadata.name  # the Execution resource name
 
     def _is_alive(self, handle: Any) -> bool:
-        execution = self._executions.get_execution(handle)
+        execution = self._executions.get_execution(name=handle)
         return not getattr(execution, "completion_time", None)
 
     def _on_alive(self, run_id: str) -> None:
