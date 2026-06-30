@@ -1,0 +1,9 @@
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y python3.12 python3-pip && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY pyproject.toml ./
+COPY src ./src
+RUN pip install --upgrade pip && pip install "." "jax[cuda12]>=0.4"
+ENV MERIDIAN_BACKEND=jax
+ENTRYPOINT ["python3", "-m", "google_meridian_mcp_server.execution.worker"]
