@@ -105,6 +105,12 @@ The current MCP surface includes:
 - `get_reach_frequency`
 - `get_channel_data`
 - `get_spend_scenario`
+- `run_optimization`
+- `get_optimization_status`
+- `get_optimization_result`
+- `list_optimizations`
+- `delete_optimization`
+- `cancel_optimization`
 
 Every tool is annotated as read-only and uses typed parameters with documented validation metadata
 so the generated schema is stricter and easier for agents to call correctly.
@@ -263,12 +269,49 @@ should stay private, keep IAM restricted and put it behind your existing gateway
 Using the `local` backend on Cloud Run is only practical when models are baked into the image at
 build time. For most deployments, `PERSISTENCE_BACKEND=gcs` is the safer and simpler default.
 
-### Budget optimization on Cloud Run (Phase 2 — planned)
+### Budget optimization
 
-The budget-optimization tools (`run_optimization`, `get_optimization_status`, `get_optimization_result`,
-`list_optimizations`, `delete_optimization`) currently run locally via a subprocess executor. A planned
-**Phase 2** offloads heavy optimizations to **Cloud Run Jobs** (CPU or NVIDIA L4 GPU, JAX backend) with a
-durable GCS run registry, adds a `cancel_optimization` tool and `response_curves` output, and is validated
-against the `as-dev-anze` project. See
-`docs/superpowers/plans/2026-06-30-optimization-module-phase2.md` for the implementation plan and
-`deploy/README.md` (added by that plan) for the job-deployment steps.
+The optimization tools submit and track long-running Meridian `BudgetOptimizer` runs. The full tool
+surface is:
+
+- `run_optimization` — submit a fixed-budget or target-ROAS run (returns immediately with a `run_id`).
+- `get_optimization_status` — poll status (`queued → running → completed/failed`).
+- `get_optimization_result` — retrieve the structured result: `summary`, `channel_tables`, `allocation`, `spend_delta`, `outcome_mode`, and `response_curves`.
+- `list_optimizations` — list runs for a model with optional status filter.
+- `delete_optimization` — remove a completed or failed run from the registry.
+- `cancel_optimization` — best-effort cancel of a queued or running run.
+
+#### Local tier (default)
+
+By default all runs execute in a local subprocess (`OPTIMIZATION_ALLOWED_TIERS=local`, `REGISTRY_BACKEND=local`). No extra configuration is needed beyond the Phase 1 defaults in `.env.example`.
+
+#### Cloud tiers (CPU / GPU)
+
+To offload heavy runs to Cloud Run Jobs, enable GCS registry and set Cloud Run coordinates:
+
+```dotenv
+REGISTRY_BACKEND=gcs
+OPTIMIZATION_GCS_PREFIX=optimizations/
+OPTIMIZATION_ALLOWED_TIERS=local,cloud_cpu,cloud_gpu
+CLOUD_RUN_PROJECT=as-dev-anze
+CLOUD_RUN_REGION=us-central1
+CLOUD_RUN_JOB_CPU=meridian-opt-cpu
+CLOUD_RUN_JOB_GPU=meridian-opt-gpu
+```
+
+Cloud tiers use a JAX backend (workers run inside a Cloud Run Job execution). The CPU tier has been verified
+end-to-end against the `as-dev-anze` project. The GPU tier (NVIDIA L4) is deployed and supported; its live
+smoke is run manually.
+
+See [`deploy/README.md`](deploy/README.md) for instructions to build the worker images and register the
+Cloud Run Jobs via `deploy/deploy_jobs.sh`.
+
+#### Validation gates
+
+```bash
+# Local gate (no real GCP project needed — runs full cloud launch/liveness/cancel contract with a fake):
+uv run python -m scripts.validation.live_validate
+
+# Real Cloud Run smoke (requires CLOUD_SMOKE=1 and a configured .env with cloud tiers):
+CLOUD_SMOKE=1 COMPUTE_TIER=cloud_cpu uv run python -m scripts.validation.cloud_smoke
+```
