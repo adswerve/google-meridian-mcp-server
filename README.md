@@ -262,3 +262,13 @@ should stay private, keep IAM restricted and put it behind your existing gateway
 
 Using the `local` backend on Cloud Run is only practical when models are baked into the image at
 build time. For most deployments, `PERSISTENCE_BACKEND=gcs` is the safer and simpler default.
+
+### Budget optimization on Cloud Run (Phase 2 — planned)
+
+The budget-optimization tools (`run_optimization`, `get_optimization_status`, `get_optimization_result`,
+`list_optimizations`, `delete_optimization`) currently run locally via a subprocess executor. A planned
+**Phase 2** offloads heavy optimizations to **Cloud Run Jobs** (CPU or NVIDIA L4 GPU, JAX backend) with a
+durable GCS run registry, adds a `cancel_optimization` tool and `response_curves` output, and is validated
+against the `as-dev-anze` project. See
+`docs/superpowers/plans/2026-06-30-optimization-module-phase2.md` for the implementation plan and
+`deploy/README.md` (added by that plan) for the job-deployment steps.

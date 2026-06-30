@@ -152,6 +152,14 @@ error-path checks, and exits non-zero on any mismatch.
 - `list_optimizations`
 - `delete_optimization`
 
+### Optimization module — Phase 2 (planned, not yet implemented)
+Plan: `docs/superpowers/plans/2026-06-30-optimization-module-phase2.md` (design: `docs/superpowers/specs/2026-06-29-optimization-tool-design.md`). Phase 1 ships local-subprocess execution only. Phase 2 adds, on the **same** worker/registry invariant:
+- `GcsOptimizationRunRegistry` (durable runs on GCS; generation-guarded state writes).
+- `CloudRunJobExecutor` (CPU/GPU Cloud Run Jobs; per-tier TF/JAX backend) selected by allowed tiers; worker heartbeat thread + startup orphan reconcile.
+- `cancel_optimization` tool; `response_curves` in the result payload.
+- New config: `OPTIMIZATION_BACKEND_CLOUD_CPU`/`_CLOUD_GPU`, `CLOUD_RUN_PROJECT`/`_REGION`/`_JOB_CPU`/`_JOB_GPU`; cloud tiers require `REGISTRY_BACKEND=gcs`.
+- Deploy artifacts in `deploy/`; live gates: faked-`jobs.run` local gate + opt-in **real Cloud Run smoke** against the `as-dev-anze` project.
+
 ## Model Overview Expectations
 The overview tool should tell an agent:
 - what type of model it is
