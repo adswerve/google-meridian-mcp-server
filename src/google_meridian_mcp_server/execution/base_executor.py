@@ -53,48 +53,55 @@ class BaseExecutor(abc.ABC):
     def _reap(self) -> None:
         for run_id, handle in list(self._handles.items()):
             if self._is_alive(handle):
-                # Handle is alive: liveness is authoritative for the local subprocess
-                # tier, so we leave it tracked without touching the registry.
-                # _reconcile_stale is reserved for the Phase-2 cloud tier, where
-                # process liveness is not locally observable and stale heartbeats are
-                # the only crash signal.  It is intentionally NOT invoked here.
+                self._on_alive(run_id)
                 continue
             del self._handles[run_id]
-            state = self._registry.get_state(run_id)
-            if state.status in (RunStatus.RUNNING, RunStatus.QUEUED):
-                # process exited without writing a terminal state -> crashed.
-                self._registry.write_state(
-                    OptimizationRunState(
-                        run_id=run_id,
-                        status=RunStatus.FAILED,
-                        error={
-                            "code": "worker_lost",
-                            "message": "worker exited without writing a result",
-                        },
-                    )
+            self._fail_if_unfinished(run_id, "worker exited without writing a result")
+
+    def _on_alive(self, run_id: str) -> None:
+        """Hook: local tier no-ops; cloud tier checks stale heartbeats."""
+        return
+
+    def _fail_if_unfinished(self, run_id: str, message: str) -> None:
+        state = self._registry.get_state(run_id)
+        if state.status in (RunStatus.RUNNING, RunStatus.QUEUED):
+            self._registry.write_state(
+                OptimizationRunState(
+                    run_id=run_id,
+                    status=RunStatus.FAILED,
+                    error={"code": "worker_lost", "message": message},
                 )
+            )
 
     def _reconcile_stale(self, run_id: str) -> None:
-        """Phase-2 cloud-tier crash reconciliation (not invoked for locally-tracked alive processes).
+        """Cloud-tier crash reconciliation via stale heartbeat detection.
 
-        For the local subprocess tier, _is_alive(handle) is authoritative.  This
-        method is kept for the Phase-2 cloud tier where a remote process's liveness
-        cannot be determined locally and a stale heartbeat is the only crash signal.
+        For the local subprocess tier, _is_alive(handle) is authoritative and
+        _on_alive is a no-op so this is never called.  For the cloud tier,
+        _on_alive delegates here because remote process liveness is coarse and
+        a stale heartbeat is the authoritative crash signal.
+        Uses expected_generation so a live heartbeat written between our read
+        and write rejects the false failure.
         """
+        gen = self._registry.get_state_generation(run_id)
         state = self._registry.get_state(run_id)
         if state.status != RunStatus.RUNNING or not state.heartbeat_at:
             return
         last = datetime.fromisoformat(state.heartbeat_at)
         age = (datetime.now(timezone.utc) - last).total_seconds()
         if age > self._stale_seconds:
-            self._registry.write_state(
-                OptimizationRunState(
-                    run_id=run_id,
-                    status=RunStatus.FAILED,
-                    error={
-                        "code": "worker_lost",
-                        "message": f"heartbeat stale ({int(age)}s)",
-                    },
+            try:
+                self._registry.write_state(
+                    OptimizationRunState(
+                        run_id=run_id,
+                        status=RunStatus.FAILED,
+                        error={
+                            "code": "worker_lost",
+                            "message": f"heartbeat stale ({int(age)}s)",
+                        },
+                    ),
+                    expected_generation=gen,
                 )
-            )
+            except Exception:  # noqa: BLE001 - precondition failed => worker still alive
+                return
             self._handles.pop(run_id, None)
