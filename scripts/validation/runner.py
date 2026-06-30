@@ -142,6 +142,9 @@ def assert_cloud_live_optimization(service, model_id: str) -> None:
     result = service.get_result(run_id)
     for key in ("summary", "channel_tables", "allocation", "spend_delta", "outcome_mode"):
         assert key in result, f"result missing '{key}': {list(result.keys())}"
+    assert {"initial", "optimized"} <= set(result["channel_tables"]), (
+        f"missing channel tables: {list(result['channel_tables'])}"
+    )
 
     # Reuse: identical submit returns the same run, flagged reused.
     again = service.run_optimization(model_id, config, compute_tier="cloud_cpu")
@@ -161,8 +164,8 @@ def assert_cloud_live_optimization(service, model_id: str) -> None:
     assert fresh_id != run_id, f"cancel run should be fresh: {fresh}"
     service.cancel(fresh_id)  # must not raise
     final = service.get_status(fresh_id)["status"]
-    assert final in ("canceled", "completed", "failed"), (
-        f"unexpected post-cancel status: {final}"
+    assert final in ("canceled", "completed"), (
+        f"unexpected post-cancel status (failed is not acceptable): {final}"
     )
     print(f"    cancel({model_id}) final status = {final}")
 

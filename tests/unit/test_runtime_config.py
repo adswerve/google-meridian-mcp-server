@@ -36,6 +36,21 @@ def test_cloud_tier_requires_gcs_registry_and_cloud_run_fields():
         )
 
 
+def test_cloud_tier_with_gcs_registry_but_no_bucket_raises():
+    """FIX 2: cloud tier + gcs registry but no GCS_BUCKET raises ValidationError."""
+    with pytest.raises(ValidationError, match="GCS_BUCKET"):
+        RuntimeConfig(
+            persistence_backend="local",
+            local_models_root="/models",
+            registry_backend="gcs",
+            optimization_allowed_tiers=("local", "cloud_cpu"),
+            cloud_run_project="proj",
+            cloud_run_region="us-central1",
+            cloud_run_job_cpu="opt-cpu",
+            # gcs_bucket intentionally omitted
+        )
+
+
 def test_cloud_tier_fully_configured_is_valid():
     cfg = RuntimeConfig(
         persistence_backend="gcs",

@@ -290,6 +290,8 @@ By default all runs execute in a local subprocess (`OPTIMIZATION_ALLOWED_TIERS=l
 To offload heavy runs to Cloud Run Jobs, enable GCS registry and set Cloud Run coordinates:
 
 ```dotenv
+PERSISTENCE_BACKEND=gcs
+GCS_BUCKET=<bucket>
 REGISTRY_BACKEND=gcs
 OPTIMIZATION_GCS_PREFIX=optimizations/
 OPTIMIZATION_ALLOWED_TIERS=local,cloud_cpu,cloud_gpu

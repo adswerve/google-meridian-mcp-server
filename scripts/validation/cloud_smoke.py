@@ -38,7 +38,7 @@ def main() -> int:
     )
 
     compute_tier = os.getenv("COMPUTE_TIER", "cloud_cpu")
-    model_id = os.environ["MODEL_ID"]
+    model_id = os.getenv("MODEL_ID") or sys.exit("ERROR: MODEL_ID env var is required")
     timeout = float(os.getenv("OPTIMIZATION_SMOKE_TIMEOUT", "1800"))
     # Same model+config fingerprints to one run regardless of tier, so a repeat
     # smoke (e.g. cloud_gpu after cloud_cpu) would otherwise reuse the prior run.

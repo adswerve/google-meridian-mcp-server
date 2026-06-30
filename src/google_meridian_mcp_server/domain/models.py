@@ -141,6 +141,8 @@ class RuntimeConfig(BaseModel):
                 raise ValueError(
                     "cloud tiers require a gcs registry (set REGISTRY_BACKEND=gcs)"
                 )
+            if not self.gcs_bucket:
+                raise ValueError("cloud tiers require GCS_BUCKET")
             if not self.cloud_run_project or not self.cloud_run_region:
                 raise ValueError(
                     "cloud tiers require CLOUD_RUN_PROJECT and CLOUD_RUN_REGION"

@@ -109,7 +109,7 @@ class OptimizationService:
             )
         except ValueError as exc:
             raise InvalidOptimizationConfigError(str(exc)) from exc
-        backend = self._cfg.optimization_backend_local  # local-only this phase
+        backend = self._cfg.backend_for_tier(resolved)
 
         run_id = f"{_slug(model_id)}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(3)}"
         record = OptimizationRun(

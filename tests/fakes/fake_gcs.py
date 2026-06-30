@@ -47,6 +47,7 @@ class FakeBucket:
         return FakeBlob(self._store, name, self._counters)
 
     def list_blobs(self, prefix="", delimiter=None):
+        # delimiter is accepted but ignored — the registry never passes it.
         names = [n for n in self._store if n.startswith(prefix)]
         return [FakeBlob(self._store, n, self._counters) for n in names]
 

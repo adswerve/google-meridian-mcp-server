@@ -230,6 +230,47 @@ def test_identical_config_reuses_completed_run_reports_completed(tmp_path):
     assert again["status"] == "completed"
 
 
+def test_cloud_tier_run_records_jax_backend(tmp_path):
+    """FIX 1: a run resolved to cloud_cpu records backend == 'jax'."""
+    cfg = RuntimeConfig(
+        persistence_backend="local",
+        local_models_root=str(tmp_path),
+        optimization_runs_root=str(tmp_path / "runs"),
+        registry_backend="gcs",
+        gcs_bucket="b",
+        optimization_allowed_tiers=("cloud_cpu",),
+        cloud_run_project="proj",
+        cloud_run_region="us-central1",
+        cloud_run_job_cpu="meridian-opt-cpu",
+    )
+    reg = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
+    svc = OptimizationService(_Catalog(), reg, _Executor(), cfg)
+    out = svc.run_optimization(
+        "m", {"scenario": {"type": "fixed_budget"}}, compute_tier="cloud_cpu"
+    )
+    assert out["backend"] == "jax"
+    assert reg.get_record(out["run_id"]).backend == "jax"
+
+
+def test_local_tier_run_records_local_backend(tmp_path):
+    """FIX 1: a local run still records the local (tensorflow) backend."""
+    svc, reg = _svc(tmp_path)
+    out = svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+    assert out["backend"] == "tensorflow"
+    assert reg.get_record(out["run_id"]).backend == "tensorflow"
+
+
+def test_cancel_unknown_run_raises_run_not_found(tmp_path):
+    """FIX 4: cancel('unknown-run-id') raises RunNotFoundError."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        RunNotFoundError,
+    )
+
+    svc, _ = _svc(tmp_path)
+    with pytest.raises(RunNotFoundError):
+        svc.cancel("unknown-run-id")
+
+
 def test_cancel_marks_canceled_and_terminates(tmp_path):
     """Task 6: cancel returns the correct envelope, calls executor.cancel, and the state is CANCELED."""
     from google_meridian_mcp_server.domain.optimization import OptimizationRunState

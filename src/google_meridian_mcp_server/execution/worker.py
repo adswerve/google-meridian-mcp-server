@@ -57,6 +57,7 @@ def run_worker(
     )
 
     stop = threading.Event()
+    # phase_box dict assignments are GIL-safe (immutable values), no lock needed.
     phase_box = {"phase": RunPhase.LOADING_MODEL, "progress": 0.05}
 
     def _beat() -> None:
@@ -92,6 +93,9 @@ def run_worker(
         phase_box["phase"] = RunPhase.UPLOADING
         phase_box["progress"] = 0.95
         registry.write_result(run_id, result)
+        # Stop heartbeat before writing terminal state to prevent a post-terminal heartbeat.
+        stop.set()
+        beat.join(timeout=1.0)
         registry.write_state(
             OptimizationRunState(
                 run_id=run_id,
@@ -104,6 +108,9 @@ def run_worker(
         )
         return 0
     except Exception as exc:  # noqa: BLE001 - worker boundary: record then exit non-zero
+        # Stop heartbeat before writing terminal state to prevent a post-terminal heartbeat.
+        stop.set()
+        beat.join(timeout=1.0)
         registry.write_state(
             OptimizationRunState(
                 run_id=run_id,
@@ -119,6 +126,8 @@ def run_worker(
         )
         return 1
     finally:
+        # Idempotent: a second stop.set()/beat.join() is harmless; ensures cleanup
+        # even on unexpected control flow.
         stop.set()
         beat.join(timeout=1.0)
 
