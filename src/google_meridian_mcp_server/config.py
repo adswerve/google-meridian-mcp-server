@@ -68,4 +68,14 @@ def load_config() -> RuntimeConfig:
         optimization_backend_local=os.getenv(
             "OPTIMIZATION_BACKEND_LOCAL", "tensorflow"
         ),
+        optimization_backend_cloud_cpu=os.getenv(
+            "OPTIMIZATION_BACKEND_CLOUD_CPU", "jax"
+        ),
+        optimization_backend_cloud_gpu=os.getenv(
+            "OPTIMIZATION_BACKEND_CLOUD_GPU", "jax"
+        ),
+        cloud_run_project=os.getenv("CLOUD_RUN_PROJECT"),
+        cloud_run_region=os.getenv("CLOUD_RUN_REGION"),
+        cloud_run_job_cpu=os.getenv("CLOUD_RUN_JOB_CPU"),
+        cloud_run_job_gpu=os.getenv("CLOUD_RUN_JOB_GPU"),
     )

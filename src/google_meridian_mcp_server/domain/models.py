@@ -60,6 +60,12 @@ class RuntimeConfig(BaseModel):
     optimization_size_thresholds: tuple[int, int] = (1_000_000, 100_000_000)
     optimization_heartbeat_stale_seconds: int = 60
     optimization_backend_local: str = "tensorflow"
+    optimization_backend_cloud_cpu: str = "jax"
+    optimization_backend_cloud_gpu: str = "jax"
+    cloud_run_project: str | None = None
+    cloud_run_region: str | None = None
+    cloud_run_job_cpu: str | None = None
+    cloud_run_job_gpu: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -129,16 +135,44 @@ class RuntimeConfig(BaseModel):
             )
 
         cloud_tiers = {ComputeTier.CLOUD_CPU.value, ComputeTier.CLOUD_GPU.value}
-        if cloud_tiers & set(self.optimization_allowed_tiers):
+        allowed_cloud = cloud_tiers & set(self.optimization_allowed_tiers)
+        if allowed_cloud:
             if self.resolved_registry_backend != PersistenceBackend.GCS.value:
                 raise ValueError(
                     "cloud tiers require a gcs registry (set REGISTRY_BACKEND=gcs)"
                 )
+            if not self.cloud_run_project or not self.cloud_run_region:
+                raise ValueError(
+                    "cloud tiers require CLOUD_RUN_PROJECT and CLOUD_RUN_REGION"
+                )
+            if (
+                ComputeTier.CLOUD_CPU.value in allowed_cloud
+                and not self.cloud_run_job_cpu
+            ):
+                raise ValueError("cloud_cpu tier requires CLOUD_RUN_JOB_CPU")
+            if (
+                ComputeTier.CLOUD_GPU.value in allowed_cloud
+                and not self.cloud_run_job_gpu
+            ):
+                raise ValueError("cloud_gpu tier requires CLOUD_RUN_JOB_GPU")
         return self
 
     @property
     def resolved_registry_backend(self) -> str:
         return self.registry_backend or self.persistence_backend
+
+    def backend_for_tier(self, tier: str) -> str:
+        return {
+            ComputeTier.LOCAL.value: self.optimization_backend_local,
+            ComputeTier.CLOUD_CPU.value: self.optimization_backend_cloud_cpu,
+            ComputeTier.CLOUD_GPU.value: self.optimization_backend_cloud_gpu,
+        }[tier]
+
+    def cloud_run_job_for_tier(self, tier: str) -> str | None:
+        return {
+            ComputeTier.CLOUD_CPU.value: self.cloud_run_job_cpu,
+            ComputeTier.CLOUD_GPU.value: self.cloud_run_job_gpu,
+        }.get(tier)
 
 
 @dataclass(frozen=True)
