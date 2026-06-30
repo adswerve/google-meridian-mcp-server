@@ -27,6 +27,11 @@ def test_build_registry_local(tmp_path):
     assert isinstance(build_registry(_cfg(tmp_path)), LocalOptimizationRunRegistry)
 
 
-def test_build_registry_gcs(tmp_path):
+def test_build_registry_gcs(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        GcsOptimizationRunRegistry,
+        "_default_client",
+        staticmethod(lambda: object()),
+    )
     cfg = _cfg(tmp_path, registry_backend="gcs", gcs_bucket="b", gcs_models_prefix="p/")
     assert isinstance(build_registry(cfg), GcsOptimizationRunRegistry)
