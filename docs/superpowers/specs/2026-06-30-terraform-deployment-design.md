@@ -100,6 +100,14 @@ tfvars. The deployed env is composed by Terraform across three categories:
 | Auto-wired from resources | `CLOUD_RUN_JOB_CPU`, `CLOUD_RUN_JOB_GPU`, `CLOUD_RUN_PROJECT`, `CLOUD_RUN_REGION`, service-account emails | Terraform resource references (cannot drift) |
 | Genuine inputs | `GCS_BUCKET`, `GCS_MODELS_PREFIX`, `OPTIMIZATION_GCS_PREFIX`, tier sizing, `OPTIMIZATION_ALLOWED_TIERS` | From `terraform.tfvars` |
 
+`GCS_MODELS_PREFIX` and `OPTIMIZATION_GCS_PREFIX` are **separate Terraform
+variables with defaults** — `gcs_models_prefix` defaults to `"models/"` and
+`optimization_gcs_prefix` defaults to `"optimizations/"`. They are overridable
+in `terraform.tfvars` but can be omitted to take the defaults, keeping a typical
+tfvars short. `gcs_bucket` has no default (always supplied). A GCS prefix is a
+key path inside the bucket, not a resource — Terraform only ever emits it as an
+env value; there is no "create prefix" step.
+
 The server Service and both Jobs each get the subset of env they need. The job
 names the server calls (`CLOUD_RUN_JOB_CPU/GPU`) are the **same job resources**
 Terraform creates, so the server can never point at a job that doesn't exist.
