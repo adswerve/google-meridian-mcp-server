@@ -32,6 +32,7 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         optimization_max_parallel=2,
         optimization_heartbeat_stale_seconds=120,
         optimization_backend_local="subprocess",
+        optimization_allowed_tiers=("local",),
     )
 
 

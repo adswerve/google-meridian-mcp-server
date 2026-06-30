@@ -38,18 +38,18 @@ async def _lifespan(server: FastMCP):
         cfg.result_cache_ttl_seconds,
     )
 
-    from google_meridian_mcp_server.bootstrap import build_registry
-    from google_meridian_mcp_server.execution.subprocess_executor import (
-        SubprocessExecutor,
+    from google_meridian_mcp_server.bootstrap import (
+        build_executor,
+        build_registry,
+        reconcile_orphans,
     )
 
     optimization_registry = build_registry(cfg)
-    optimization_executor = SubprocessExecutor(
-        optimization_registry,
-        max_parallel=cfg.optimization_max_parallel,
-        heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
-        backend=cfg.optimization_backend_local,
-    )
+    optimization_executor = build_executor(cfg, optimization_registry)
+    try:
+        reconcile_orphans(optimization_registry, optimization_executor)
+    except Exception:  # noqa: BLE001 - reconcile is best-effort startup hygiene
+        log.warning("startup orphan reconcile failed", exc_info=True)
 
     yield {
         "config": cfg,

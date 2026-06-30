@@ -34,3 +34,46 @@ def build_registry(cfg: RuntimeConfig) -> OptimizationRunRegistry:
 
         return GcsOptimizationRunRegistry(cfg.gcs_bucket, cfg.optimization_gcs_prefix)
     return LocalOptimizationRunRegistry(cfg.optimization_runs_root)
+
+
+def build_executor(
+    cfg: RuntimeConfig,
+    registry: OptimizationRunRegistry,
+    *,
+    jobs_client=None,
+    executions_client=None,
+):
+    from google_meridian_mcp_server.domain.models import ComputeTier
+
+    allowed = set(cfg.optimization_allowed_tiers)
+    if ComputeTier.LOCAL.value in allowed:
+        from google_meridian_mcp_server.execution.subprocess_executor import (
+            SubprocessExecutor,
+        )
+
+        return SubprocessExecutor(
+            registry,
+            max_parallel=cfg.optimization_max_parallel,
+            heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
+            backend=cfg.optimization_backend_local,
+        )
+    from google_meridian_mcp_server.execution.cloud_run_executor import (
+        CloudRunJobExecutor,
+    )
+
+    return CloudRunJobExecutor(
+        registry,
+        cfg=cfg,
+        max_parallel=cfg.optimization_max_parallel,
+        heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
+        jobs_client=jobs_client,
+        executions_client=executions_client,
+    )
+
+
+def reconcile_orphans(registry: OptimizationRunRegistry, executor) -> None:
+    """On startup, fail runs left RUNNING with a stale heartbeat (crash during downtime)."""
+    from google_meridian_mcp_server.domain.optimization import RunStatus
+
+    for summary in registry.list(status=RunStatus.RUNNING):
+        executor._reconcile_stale(summary.run_id)
