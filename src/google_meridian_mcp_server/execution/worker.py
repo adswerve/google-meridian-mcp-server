@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import traceback
 from datetime import datetime, timezone
 from typing import Any
@@ -33,10 +34,15 @@ def _headline(result: dict[str, Any]) -> str:
 
 
 def run_worker(
-    run_id: str, *, registry: OptimizationRunRegistry, catalog: Any, backend: str
+    run_id: str,
+    *,
+    registry: OptimizationRunRegistry,
+    catalog: Any,
+    backend: str,
+    heartbeat_interval: float = 8.0,
 ) -> int:
-    # NOTE: `backend` is intentionally unused here — it is applied via the
-    # MERIDIAN_BACKEND env var before the catalog/meridian import in main().
+    # NOTE: `backend` is applied via MERIDIAN_BACKEND before the meridian import
+    # in main(); kept in the signature for provenance/symmetry.
     record = registry.get_record(run_id)
     started = _now()
     registry.write_state(
@@ -44,27 +50,53 @@ def run_worker(
             run_id=run_id,
             status=RunStatus.RUNNING,
             phase=RunPhase.LOADING_MODEL,
+            progress_fraction=0.05,
             started_at=started,
             heartbeat_at=started,
         )
     )
+
+    stop = threading.Event()
+    phase_box = {"phase": RunPhase.LOADING_MODEL, "progress": 0.05}
+
+    def _beat() -> None:
+        while not stop.wait(heartbeat_interval):
+            registry.write_state(
+                OptimizationRunState(
+                    run_id=run_id,
+                    status=RunStatus.RUNNING,
+                    phase=phase_box["phase"],
+                    progress_fraction=phase_box["progress"],
+                    started_at=started,
+                    heartbeat_at=_now(),
+                )
+            )
+
+    beat = threading.Thread(target=_beat, daemon=True)
+    beat.start()
     try:
         facade = catalog.get_optimizer_facade(record.model_id)
+        phase_box["phase"] = RunPhase.OPTIMIZING
+        phase_box["progress"] = 0.3
         registry.write_state(
             OptimizationRunState(
                 run_id=run_id,
                 status=RunStatus.RUNNING,
                 phase=RunPhase.OPTIMIZING,
+                progress_fraction=0.3,
                 started_at=started,
                 heartbeat_at=_now(),
             )
         )
         result = facade.run(record.config)
+        phase_box["phase"] = RunPhase.UPLOADING
+        phase_box["progress"] = 0.95
         registry.write_result(run_id, result)
         registry.write_state(
             OptimizationRunState(
                 run_id=run_id,
                 status=RunStatus.COMPLETED,
+                progress_fraction=1.0,
                 started_at=started,
                 finished_at=_now(),
                 headline=_headline(result),
@@ -86,6 +118,9 @@ def run_worker(
             )
         )
         return 1
+    finally:
+        stop.set()
+        beat.join(timeout=1.0)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,4 +1,7 @@
 # tests/unit/test_optimization_worker.py
+import time
+from typing import Any
+
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationConfig,
     OptimizationRun,
@@ -83,6 +86,63 @@ def test_worker_failure_writes_failed_state(tmp_path):
     state = reg.get_state("m-1")
     assert state.status == RunStatus.FAILED
     assert "optimize blew up" in state.error["message"]
+
+
+class _RecordingRegistry:
+    def __init__(self, record):
+        self._record = record
+        self.states: list[Any] = []
+
+    def get_record(self, run_id):
+        return self._record
+
+    def write_state(self, state):
+        self.states.append(state)
+
+    def write_result(self, run_id, result):
+        pass
+
+
+class _SlowFacade:
+    def run(self, config):
+        time.sleep(0.6)  # longer than the test heartbeat interval
+        return {"outcome_mode": "revenue", "summary": {}}
+
+
+class _Catalog:
+    def get_optimizer_facade(self, model_id):
+        return _SlowFacade()
+
+
+def test_worker_emits_heartbeats_during_optimize(tmp_path):
+    cfg = OptimizationConfig.model_validate({"scenario": {"type": "fixed_budget"}})
+    record = OptimizationRun(
+        run_id="m-1",
+        label="l",
+        model_id="m",
+        config=cfg,
+        config_fingerprint="fp",
+        compute_tier_requested="auto",
+        compute_tier_resolved="local",
+        backend="tensorflow",
+        size_score=1,
+        created_at="2026-06-29T00:00:00+00:00",
+        meridian_version="1.7.0",
+        server_version="0.1.0",
+    )
+    registry = _RecordingRegistry(record)
+    rc = run_worker(
+        record.run_id,
+        registry=registry,
+        catalog=_Catalog(),
+        backend="tensorflow",
+        heartbeat_interval=0.2,
+    )
+    assert rc == 0
+    heartbeats = [s.heartbeat_at for s in registry.states if s.heartbeat_at]
+    # initial running write + >=1 background heartbeat + terminal
+    assert len(heartbeats) >= 3
+    assert registry.states[-1].status == RunStatus.COMPLETED
 
 
 def test_catalog_get_optimizer_facade_returns_and_caches(monkeypatch):
