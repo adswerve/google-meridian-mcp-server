@@ -36,15 +36,19 @@ export GCS_MODELS_PREFIX=models/
 # export CLOUD_RUN_REGION=us-central1
 # export OPTIMIZATION_GCS_PREFIX=optimizations/
 
-bash deploy/deploy_jobs.sh
+bash deploy/deploy_jobs.sh        # cpu + gpu
+# or build/deploy a single tier:
+bash deploy/deploy_jobs.sh cpu
+bash deploy/deploy_jobs.sh gpu
 ```
 
-The script:
-1. Builds the CPU image (`opt-cpu`) via Cloud Build (falls back to local
-   `docker build + push` if Cloud Build is unavailable).
-2. Deploys the `meridian-opt-cpu` Cloud Run job (4 vCPU, 16 GiB RAM).
-3. Builds and pushes the GPU image (`opt-gpu`) locally with `docker build`.
-4. Deploys the `meridian-opt-gpu` Cloud Run job (4 vCPU, 16 GiB RAM, 1× NVIDIA L4).
+The script (per selected target `cpu` | `gpu` | `all`, default `all`):
+1. Builds the image via **Cloud Build** (`E2_HIGHCPU_8`, 100 GiB disk, 40 min
+   timeout — the image bundles Meridian + JAX and is multi-GB).
+2. Deploys the matching Cloud Run job:
+   - `meridian-opt-cpu` — 4 vCPU, 16 GiB RAM.
+   - `meridian-opt-gpu` — 4 vCPU, 16 GiB RAM, 1× NVIDIA L4
+     (requires L4 capacity/quota in `CLOUD_RUN_REGION`).
 
 Both jobs are idempotent (create-or-update).
 
@@ -53,7 +57,11 @@ Both jobs are idempotent (create-or-update).
 | File | Base | JAX install |
 |------|------|-------------|
 | `Dockerfile.worker` | `python:3.12-slim` | `pip install ".[jax]"` |
-| `Dockerfile.worker.gpu` | `nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04` | `pip install "." "jax[cuda12]>=0.4"` |
+| `Dockerfile.worker.gpu` | `python:3.12-slim` | `pip install "." "jax[cuda12]>=0.4"` |
+
+The GPU image uses the same slim Python base as the CPU image: `jax[cuda12]`
+ships self-contained CUDA runtime wheels, and Cloud Run's L4 runtime provides
+the GPU driver, so no `nvidia/cuda` base image is required.
 
 Both images share the same entrypoint:
 `python -m google_meridian_mcp_server.execution.worker`
@@ -93,7 +101,6 @@ executor for every invocation.
 - The worker reads the model referenced by `OPTIMIZATION_RUN_ID` from the
   same `GCS_BUCKET`/`GCS_MODELS_PREFIX` as the MCP server, so both must point
   at the same bucket.
-- Real image builds run via Cloud Build during deployment; `docker build` is
-  the local fallback for the CPU image and the primary build path for the GPU
-  image.
+- Both images are built via Cloud Build during deployment (no local Docker
+  required).
 - Task 10 performs the live end-to-end smoke test against these deployed jobs.
