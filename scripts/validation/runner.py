@@ -108,6 +108,65 @@ async def assert_live_optimization(client, model_id: str, *, overview) -> None:
     assert again["reused"] is True and again["run_id"] == run_id, f"reuse failed: {again}"
 
 
+def assert_cloud_live_optimization(service, model_id: str) -> None:
+    """Drive the OptimizationService directly to prove the CloudRunJobExecutor
+    launch/liveness/cancel contract end-to-end (faked jobs.run, real worker).
+
+    The MCP transport path for run_optimization is already covered by the local
+    matrix; this gate targets the executor + worker + registry + launch + cancel
+    contract, so it calls the service API directly.
+    """
+    import time
+
+    config = {
+        "scenario": {"type": "fixed_budget"},
+        "constraint": {"mode": "global", "pct": 0.2},
+    }
+    submit = service.run_optimization(model_id, config, compute_tier="cloud_cpu")
+    run_id = submit["run_id"]
+    assert submit["compute_tier_resolved"] == "cloud_cpu", (
+        f"expected cloud_cpu tier, got {submit}"
+    )
+    assert submit["reused"] is False, f"fresh submit should not be reused: {submit}"
+
+    status = None
+    for _ in range(240):  # ~120s cap; real Meridian optimize takes several seconds
+        status = service.get_status(run_id)
+        if status["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.5)
+    assert status and status["status"] == "completed", (
+        f"cloud run did not complete: {status}"
+    )
+
+    result = service.get_result(run_id)
+    for key in ("summary", "channel_tables", "allocation", "spend_delta", "outcome_mode"):
+        assert key in result, f"result missing '{key}': {list(result.keys())}"
+
+    # Reuse: identical submit returns the same run, flagged reused.
+    again = service.run_optimization(model_id, config, compute_tier="cloud_cpu")
+    assert again["reused"] is True and again["run_id"] == run_id, (
+        f"reuse failed: {again}"
+    )
+
+    # Cancel: a DIFFERENT config yields a fresh run; cancel must not raise. The
+    # run may already be terminal (worker is fast), so accept canceled OR a
+    # terminal status and report which.
+    cancel_config = {
+        "scenario": {"type": "fixed_budget"},
+        "constraint": {"mode": "global", "pct": 0.35},
+    }
+    fresh = service.run_optimization(model_id, cancel_config, compute_tier="cloud_cpu")
+    fresh_id = fresh["run_id"]
+    assert fresh_id != run_id, f"cancel run should be fresh: {fresh}"
+    service.cancel(fresh_id)  # must not raise
+    final = service.get_status(fresh_id)["status"]
+    assert final in ("canceled", "completed", "failed"), (
+        f"unexpected post-cancel status: {final}"
+    )
+    print(f"    cancel({model_id}) final status = {final}")
+
+
 async def run_matrix(client) -> Report:
     from scripts.generate_validation_models import VARIANTS
 
