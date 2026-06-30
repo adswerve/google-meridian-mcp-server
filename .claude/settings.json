@@ -1,0 +1,31 @@
+{
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))\" 2>/dev/null); if [[ \"$FILE\" == *.py ]]; then ruff format \"$FILE\" 2>/dev/null; ruff check --fix \"$FILE\" 2>/dev/null; fi; true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))\" 2>/dev/null); if [[ \"$FILE\" == *\".env\" ]] && [[ \"$FILE\" != *\".env.example\" ]]; then echo 'Blocked: editing .env directly is not allowed. Edit .env.example instead.'; exit 2; fi; true"
+          }
+        ]
+      }
+    ]
+  }
+}

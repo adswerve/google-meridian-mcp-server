@@ -24,3 +24,5 @@ references/
 uv.lock
 .vscode/
 models/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
