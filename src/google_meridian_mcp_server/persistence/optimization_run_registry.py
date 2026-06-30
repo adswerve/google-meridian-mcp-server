@@ -81,13 +81,16 @@ class OptimizationRunRegistry(abc.ABC):
 def _atomic_write(path: Path, text: str) -> None:
     """Write *text* to *path* atomically via a same-directory temp file + os.replace."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    fd_closed = False
     try:
         os.write(fd, text.encode())
         os.fsync(fd)
         os.close(fd)
+        fd_closed = True
         os.replace(tmp, path)
     except Exception:
-        os.close(fd)
+        if not fd_closed:
+            os.close(fd)
         try:
             os.unlink(tmp)
         except OSError:
