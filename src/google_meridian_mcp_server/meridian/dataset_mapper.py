@@ -64,6 +64,7 @@ def filter_records(
         out.append(row)
     return out
 
+
 TRAINING_DATASETS = (
     "kpi",
     "revenue_per_kpi",
@@ -204,15 +205,29 @@ _CHANNEL_DATA_COLUMNS = [
 
 # (channel_type, channel_coord, [(array_attr, value_column), ...])
 _CHANNEL_DATA_SOURCES = [
-    ("paid_media", "media_channel", [("media", "impressions"), ("media_spend", "spend")]),
-    ("rf", "rf_channel", [("reach", "reach"), ("frequency", "frequency"), ("rf_spend", "rf_spend")]),
+    (
+        "paid_media",
+        "media_channel",
+        [("media", "impressions"), ("media_spend", "spend")],
+    ),
+    (
+        "rf",
+        "rf_channel",
+        [("reach", "reach"), ("frequency", "frequency"), ("rf_spend", "rf_spend")],
+    ),
     ("organic_media", "organic_media_channel", [("organic_media", "impressions")]),
-    ("organic_rf", "organic_rf_channel", [("organic_reach", "reach"), ("organic_frequency", "frequency")]),
+    (
+        "organic_rf",
+        "organic_rf_channel",
+        [("organic_reach", "reach"), ("organic_frequency", "frequency")],
+    ),
     ("non_media", "non_media_channel", [("non_media_treatments", "value")]),
 ]
 
 
-def _channel_long_frame(array: Any, channel_coord: str, value_column: str) -> pd.DataFrame | None:
+def _channel_long_frame(
+    array: Any, channel_coord: str, value_column: str
+) -> pd.DataFrame | None:
     if array is None:
         return None
     frame = array.to_dataframe(name=value_column).reset_index()
@@ -241,7 +256,11 @@ def extract_channel_data(mmm: Any) -> list[dict]:
             if merged is None:
                 merged = frame
             else:
-                join_keys = [c for c in merged.columns if c in frame.columns and c not in (value_column,)]
+                join_keys = [
+                    c
+                    for c in merged.columns
+                    if c in frame.columns and c not in (value_column,)
+                ]
                 merged = merged.merge(frame, how="outer", on=join_keys)
         if merged is None:
             continue
