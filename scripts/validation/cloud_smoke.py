@@ -40,6 +40,9 @@ def main() -> int:
     compute_tier = os.getenv("COMPUTE_TIER", "cloud_cpu")
     model_id = os.environ["MODEL_ID"]
     timeout = float(os.getenv("OPTIMIZATION_SMOKE_TIMEOUT", "1800"))
+    # Same model+config fingerprints to one run regardless of tier, so a repeat
+    # smoke (e.g. cloud_gpu after cloud_cpu) would otherwise reuse the prior run.
+    force_rerun = os.getenv("FORCE_RERUN") == "1"
 
     cfg = load_config()
     registry = build_registry(cfg)
@@ -53,7 +56,9 @@ def main() -> int:
         "scenario": {"type": "fixed_budget"},
         "constraint": {"mode": "global", "pct": 0.2},
     }
-    submit = service.run_optimization(model_id, config, compute_tier=compute_tier)
+    submit = service.run_optimization(
+        model_id, config, compute_tier=compute_tier, force_rerun=force_rerun
+    )
     run_id = submit["run_id"]
     assert submit["compute_tier_resolved"] == compute_tier, (
         f"tier mismatch: expected {compute_tier!r}, got {submit!r}"
