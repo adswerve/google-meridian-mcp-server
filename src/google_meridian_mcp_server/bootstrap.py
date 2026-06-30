@@ -28,5 +28,9 @@ def build_model_catalog(cfg: RuntimeConfig) -> ModelCatalog:
 
 def build_registry(cfg: RuntimeConfig) -> OptimizationRunRegistry:
     if cfg.resolved_registry_backend == PersistenceBackend.GCS.value:
-        raise ValueError("gcs registry is implemented in Phase 2, not yet available")
+        from google_meridian_mcp_server.persistence.optimization_run_registry import (
+            GcsOptimizationRunRegistry,
+        )
+
+        return GcsOptimizationRunRegistry(cfg.gcs_bucket, cfg.optimization_gcs_prefix)
     return LocalOptimizationRunRegistry(cfg.optimization_runs_root)

@@ -1,11 +1,10 @@
 """Unit tests for the shared bootstrap helpers."""
 
-import pytest
-
 from google_meridian_mcp_server.bootstrap import build_model_catalog, build_registry
 from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
+    GcsOptimizationRunRegistry,
     LocalOptimizationRunRegistry,
 )
 
@@ -28,7 +27,6 @@ def test_build_registry_local(tmp_path):
     assert isinstance(build_registry(_cfg(tmp_path)), LocalOptimizationRunRegistry)
 
 
-def test_build_registry_gcs_not_supported_phase1(tmp_path):
+def test_build_registry_gcs(tmp_path):
     cfg = _cfg(tmp_path, registry_backend="gcs", gcs_bucket="b", gcs_models_prefix="p/")
-    with pytest.raises(ValueError, match="Phase 2"):
-        build_registry(cfg)
+    assert isinstance(build_registry(cfg), GcsOptimizationRunRegistry)
