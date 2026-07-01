@@ -1,56 +1,26 @@
-# Deploy: Cloud Run Worker Jobs
+# Deploy: Cloud Run Worker Images
 
-This directory contains the container images and deployment script for the
-Meridian budget-optimization workers that run as Cloud Run jobs.
+This directory contains the container images for the Meridian server and the
+budget-optimization workers that run as Cloud Run Jobs.
 
-## Prerequisites
+Infrastructure provisioning — Artifact Registry, GCS bucket, Cloud Run service
+and jobs, IAM — is fully managed by Terraform. See
+[`deploy/terraform/README.md`](terraform/README.md) for the full operator runbook
+(bootstrap, build, configure, provision, smoke-test).
 
-1. **gcloud CLI** authenticated with Application Default Credentials (ADC):
-   ```bash
-   gcloud auth application-default login
-   ```
+## Build & push images (Cloud Build)
 
-2. **Artifact Registry** — a Docker repository named `meridian` must already
-   exist in `us-central1` (or the `CLOUD_RUN_REGION` you choose):
-   ```bash
-   gcloud artifacts repositories create meridian \
-     --repository-format=docker \
-     --location=us-central1 \
-     --project=as-dev-anze
-   ```
-
-3. **GCS bucket** — at least one fitted Meridian model must be present under
-   `GCS_MODELS_PREFIX` in the bucket you specify. The workers read models from
-   the same bucket/prefix at runtime; they do not bake model data into the
-   image.
-
-4. **Enabled APIs** — Cloud Build, Cloud Run, Artifact Registry, Cloud Storage.
-
-## Running the deploy script
+After Terraform has provisioned the Artifact Registry repository:
 
 ```bash
-export GCS_BUCKET=as-dev-anze-meridian-opt
-export GCS_MODELS_PREFIX=models/
-# Optionally override defaults:
-# export CLOUD_RUN_PROJECT=as-dev-anze
-# export CLOUD_RUN_REGION=us-central1
-# export OPTIMIZATION_GCS_PREFIX=optimizations/
-
-bash deploy/deploy_jobs.sh        # cpu + gpu
-# or build/deploy a single tier:
-bash deploy/deploy_jobs.sh cpu
-bash deploy/deploy_jobs.sh gpu
+REPO=us-central1-docker.pkg.dev/<project_id>/meridian
+gcloud builds submit --project <project_id> --tag $REPO/server:latest .
+gcloud builds submit --project <project_id> --tag $REPO/opt-cpu:latest -f deploy/Dockerfile.worker .
+gcloud builds submit --project <project_id> --tag $REPO/opt-gpu:latest -f deploy/Dockerfile.worker.gpu .
 ```
 
-The script (per selected target `cpu` | `gpu` | `all`, default `all`):
-1. Builds the image via **Cloud Build** (`E2_HIGHCPU_8`, 100 GiB disk, 40 min
-   timeout — the image bundles Meridian + JAX and is multi-GB).
-2. Deploys the matching Cloud Run job:
-   - `meridian-opt-cpu` — 4 vCPU, 16 GiB RAM.
-   - `meridian-opt-gpu` — 4 vCPU, 16 GiB RAM, 1× NVIDIA L4
-     (requires L4 capacity/quota in `CLOUD_RUN_REGION`).
-
-Both jobs are idempotent (create-or-update).
+The worker images bundle Meridian + JAX and are multi-GB; allow a long build.
+The GPU worker requires L4 quota in the deployment region.
 
 ## Container images
 
@@ -68,8 +38,7 @@ Both images share the same entrypoint:
 
 ## Environment contract
 
-The following variables are **baked into the job definition** by the deploy
-script (sourced from the shell env at deploy time):
+The following variables are **set in the Terraform-managed job definition**:
 
 | Variable | Description |
 |----------|-------------|
@@ -103,4 +72,3 @@ executor for every invocation.
   at the same bucket.
 - Both images are built via Cloud Build during deployment (no local Docker
   required).
-- Task 10 performs the live end-to-end smoke test against these deployed jobs.

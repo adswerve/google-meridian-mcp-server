@@ -229,6 +229,15 @@ docker run --rm -p 8080:8080 --env-file .env -e MCP_HOST=0.0.0.0 google-meridian
 
 The container listens on `0.0.0.0` and respects the injected `PORT` environment variable.
 
+## Deployment
+
+The server runs on Cloud Run with `streamable-http` transport, provisioned **per client** via
+Terraform (`deploy/terraform/`). `.env` is for local development only — the deployed environment
+is fully Terraform-managed (Cloud Run service + jobs, Artifact Registry, GCS, IAM).
+
+See [`deploy/terraform/README.md`](deploy/terraform/README.md) for the full operator runbook
+(bootstrap → build → configure → provision → smoke-test).
+
 ## Cloud Run Deployment
 
 Cloud Run is usually the best fit when this server is deployed with the **GCS backend**. That
@@ -305,8 +314,9 @@ Cloud tiers use a JAX backend (workers run inside a Cloud Run Job execution). Th
 end-to-end against the `as-dev-anze` project. The GPU tier (NVIDIA L4) is deployed and supported; its live
 smoke is run manually.
 
-See [`deploy/README.md`](deploy/README.md) for instructions to build the worker images and register the
-Cloud Run Jobs via `deploy/deploy_jobs.sh`.
+See [`deploy/README.md`](deploy/README.md) for the worker image build commands and environment
+contract, and [`deploy/terraform/README.md`](deploy/terraform/README.md) for the full provisioning
+runbook.
 
 #### Validation gates
 
