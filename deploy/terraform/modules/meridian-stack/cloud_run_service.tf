@@ -14,7 +14,7 @@ resource "google_cloud_run_v2_service" "server" {
     }
 
     containers {
-      image = var.server_image
+      image = local.image_ref["server"]
 
       ports {
         container_port = 8080
@@ -85,7 +85,7 @@ resource "google_cloud_run_v2_service" "server" {
     }
   }
 
-  depends_on = [google_project_service.services]
+  depends_on = [google_project_service.services, terraform_data.build]
 }
 
 # Optional public access for the live tooling test (Task 11). Gate behind auth

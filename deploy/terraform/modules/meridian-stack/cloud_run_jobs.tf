@@ -22,7 +22,7 @@ resource "google_cloud_run_v2_job" "cpu" {
       timeout         = var.cpu_job_timeout
 
       containers {
-        image = var.worker_cpu_image
+        image = local.image_ref["opt-cpu"]
 
         resources {
           limits = {
@@ -42,7 +42,7 @@ resource "google_cloud_run_v2_job" "cpu" {
     }
   }
 
-  depends_on = [google_project_service.services]
+  depends_on = [google_project_service.services, terraform_data.build]
 }
 
 resource "google_cloud_run_v2_job" "gpu" {
@@ -66,7 +66,7 @@ resource "google_cloud_run_v2_job" "gpu" {
       }
 
       containers {
-        image = var.worker_gpu_image
+        image = local.image_ref["opt-gpu"]
 
         resources {
           limits = {
@@ -87,5 +87,5 @@ resource "google_cloud_run_v2_job" "gpu" {
     }
   }
 
-  depends_on = [google_project_service.services]
+  depends_on = [google_project_service.services, terraform_data.build]
 }

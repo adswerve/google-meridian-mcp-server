@@ -46,20 +46,10 @@ variable "artifact_registry_repo" {
   default     = "meridian"
 }
 
-# --- Images (built out-of-band; full refs incl. tag) ---
-variable "server_image" {
+# --- Build context ---
+variable "build_context" {
   type        = string
-  description = "Full image ref for the MCP server, e.g. REGION-docker.pkg.dev/PROJECT/meridian/server:TAG."
-}
-
-variable "worker_cpu_image" {
-  type        = string
-  description = "Full image ref for the CPU optimization worker."
-}
-
-variable "worker_gpu_image" {
-  type        = string
-  description = "Full image ref for the GPU optimization worker."
+  description = "Absolute path to the repo root submitted to Cloud Build and hashed for image tags. Set automatically by the root module; operators never set this."
 }
 
 variable "enable_gpu_job" {

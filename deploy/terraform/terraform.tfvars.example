@@ -1,5 +1,5 @@
-# Copy to terraform.tfvars (gitignored) and fill in. Image tags come from the
-# three `gcloud builds submit` commands in deploy/terraform/README.md.
+# Copy to terraform.tfvars (gitignored) and fill in. Terraform builds and pushes
+# the three images during `apply` (via Cloud Build); there are no image tags to set.
 
 project_id = "your-client-project"
 region     = "us-central1"
@@ -10,9 +10,7 @@ gcs_bucket = "your-client-meridian"
 # gcs_models_prefix       = "models/"
 # optimization_gcs_prefix = "optimizations/"
 
-server_image     = "us-central1-docker.pkg.dev/your-client-project/meridian/server:latest"
-worker_cpu_image = "us-central1-docker.pkg.dev/your-client-project/meridian/opt-cpu:latest"
-worker_gpu_image = "us-central1-docker.pkg.dev/your-client-project/meridian/opt-gpu:latest"
+# artifact_registry_repo = "meridian"
 # enable_gpu_job = true              # default false; to enable GPU: set true AND add cloud_gpu to optimization_allowed_tiers AND ensure L4 quota in the region
 
 # optimization_allowed_tiers = "cloud_cpu"   # add cloud_gpu when GPU job is enabled

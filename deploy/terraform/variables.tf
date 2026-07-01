@@ -26,9 +26,6 @@ variable "artifact_registry_repo" {
   type    = string
   default = "meridian"
 }
-variable "server_image" { type = string }
-variable "worker_cpu_image" { type = string }
-variable "worker_gpu_image" { type = string }
 variable "enable_gpu_job" {
   type    = bool
   default = false
