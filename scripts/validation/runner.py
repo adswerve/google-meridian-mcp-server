@@ -107,6 +107,33 @@ async def assert_live_optimization(client, model_id: str, *, overview) -> None:
     again = await call(client, "run_optimization", {"model_id": model_id, "config": config})
     assert again["reused"] is True and again["run_id"] == run_id, f"reuse failed: {again}"
 
+    # list_optimizations must surface this run for the model.
+    listing = await call(client, "list_optimizations", {"model_id": model_id})
+    assert "error_code" not in listing, f"list_optimizations error: {listing}"
+    listed_ids = {r["run_id"] for r in listing["runs"]}
+    assert run_id in listed_ids, f"run {run_id} not in list_optimizations: {listed_ids}"
+    assert listing["count"] == len(listing["runs"]), (
+        f"list count mismatch: {listing['count']} != {len(listing['runs'])}"
+    )
+
+    # Drain the executor's reap loop before deletion.  The subprocess writes
+    # state=completed and calls sys.exit(); poll() may still return None for a
+    # brief moment.  If we delete the run first and pump() then reaps the
+    # now-dead handle it calls _fail_if_unfinished on a missing run, which
+    # propagates RunNotFoundError into the next model's submit().  A short wait
+    # followed by one status poll ensures the handle is reaped while the run
+    # directory still exists (state=completed → _fail_if_unfinished is a no-op).
+    await asyncio.sleep(0.5)
+    await call(client, "get_optimization_status", {"run_id": run_id})
+
+    # delete_optimization removes it; a subsequent status lookup must 404 (typed).
+    deleted = await call(client, "delete_optimization", {"run_id": run_id})
+    assert deleted.get("deleted") is True and deleted.get("run_id") == run_id, (
+        f"delete failed: {deleted}"
+    )
+    gone = await call(client, "get_optimization_status", {"run_id": run_id})
+    assert_error(gone, "optimization_run_not_found", f"{model_id}/deleted-run-status")
+
 
 def assert_cloud_live_optimization(service, model_id: str) -> None:
     """Drive the OptimizationService directly to prove the CloudRunJobExecutor
