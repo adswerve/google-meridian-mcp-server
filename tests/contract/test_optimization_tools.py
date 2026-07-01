@@ -41,3 +41,37 @@ async def test_cancel_tool_registered_not_readonly():
     assert "cancel_optimization" in by_name
     cancel_ann = by_name["cancel_optimization"].annotations
     assert cancel_ann is None or cancel_ann.readOnlyHint is not True
+
+
+def _prop(schema: dict, name: str) -> dict:
+    return schema["properties"][name]
+
+
+def _enum_values(prop: dict) -> set[str]:
+    # Literal[...] renders either as a top-level "enum" or, for Optional,
+    # inside an "anyOf" branch that carries the "enum".
+    if "enum" in prop:
+        return set(prop["enum"])
+    for branch in prop.get("anyOf", []):
+        if "enum" in branch:
+            return set(branch["enum"])
+    return set()
+
+
+@pytest.mark.asyncio
+async def test_compute_tier_and_status_are_enums():
+    mcp = create_server()
+    by_name = {t.name: t for t in await mcp.list_tools()}
+
+    tier = _prop(by_name["run_optimization"].to_mcp_tool().inputSchema, "compute_tier")
+    assert _enum_values(tier) == {"auto", "local", "cloud_cpu", "cloud_gpu"}
+    assert tier.get("default") == "auto"
+
+    status = _prop(by_name["list_optimizations"].to_mcp_tool().inputSchema, "status")
+    assert _enum_values(status) == {
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "canceled",
+    }

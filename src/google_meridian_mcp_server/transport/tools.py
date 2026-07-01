@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
@@ -94,7 +94,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 min_length=1,
-                description="Model identifier from list_models (e.g. 'geo-revenue').",
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
             ),
         ],
         dataset: Annotated[
@@ -128,7 +128,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 min_length=1,
-                description="Model identifier from list_models (e.g. 'geo-revenue').",
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
             ),
         ],
         output_type: Annotated[
@@ -161,7 +161,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 min_length=1,
-                description="Model identifier from list_models (e.g. 'geo-revenue').",
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
             ),
         ],
         output_type: Annotated[
@@ -194,7 +194,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 min_length=1,
-                description="Model identifier from list_models (e.g. 'geo-revenue').",
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
             ),
         ],
         output_type: Annotated[
@@ -227,7 +227,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 min_length=1,
-                description="Model identifier from list_models (e.g. 'geo-revenue').",
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
             ),
         ],
         output_type: Annotated[
@@ -260,7 +260,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 min_length=1,
-                description="Model identifier from list_models (e.g. 'geo-revenue').",
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
             ),
         ],
         ctx: Context,
@@ -286,7 +286,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 min_length=1,
-                description="Model identifier from list_models (e.g. 'geo-revenue').",
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
             ),
         ],
         ctx: Context,
@@ -312,7 +312,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 min_length=1,
-                description="Model identifier from list_models (e.g. 'geo-revenue').",
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
             ),
         ],
         ctx: Context,
@@ -338,7 +338,7 @@ def register_tools(mcp: FastMCP) -> None:
             str,
             Field(
                 min_length=1,
-                description="Model identifier from list_models (e.g. 'geo-revenue').",
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
             ),
         ],
         channel: Annotated[
@@ -408,7 +408,13 @@ def register_tools(mcp: FastMCP) -> None:
             str | None, Field(description="Free-text intent for this run.")
         ] = None,
         compute_tier: Annotated[
-            str, Field(description="auto | local | cloud_cpu | cloud_gpu.")
+            Literal["auto", "local", "cloud_cpu", "cloud_gpu"],
+            Field(
+                description="Where to run the optimization. 'auto' (default) picks "
+                "the cheapest allowed backend from the problem size; 'local' runs "
+                "in-process; 'cloud_cpu'/'cloud_gpu' dispatch a Cloud Run Job "
+                "(only if the server enables those tiers).",
+            ),
         ] = "auto",
         force_rerun: Annotated[
             bool, Field(description="Recompute even if an identical run exists.")
@@ -460,9 +466,9 @@ def register_tools(mcp: FastMCP) -> None:
             str | None, Field(description="Filter to one model.")
         ] = None,
         status: Annotated[
-            str | None,
+            Literal["queued", "running", "completed", "failed", "canceled"] | None,
             Field(
-                description="Filter by status: queued/running/completed/failed/canceled."
+                description="Filter to runs in this state. Omit to return all states.",
             ),
         ] = None,
         limit: Annotated[
