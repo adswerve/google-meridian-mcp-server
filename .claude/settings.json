@@ -27,5 +27,7 @@
         ]
       }
     ]
-  }
+  },
+  "enabledMcpjsonServers": ["meridian-mcp"]
 }
+
