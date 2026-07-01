@@ -385,7 +385,11 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool
     async def run_optimization(
         model_id: Annotated[
-            str, Field(min_length=1, description="Model identifier from list_models.")
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
+            ),
         ],
         config: Annotated[
             OptimizationConfig,
@@ -478,7 +482,8 @@ def register_tools(mcp: FastMCP) -> None:
     async def list_optimizations(
         ctx: Context,
         model_id: Annotated[
-            str | None, Field(description="Filter to one model.")
+            str | None,
+            Field(description="Filter to one model (e.g. 'model-2026-Q1')."),
         ] = None,
         status: Annotated[
             Literal["queued", "running", "completed", "failed", "canceled"] | None,
