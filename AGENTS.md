@@ -67,13 +67,12 @@ and persistence helpers so agents can inspect models and request structured outp
 
 ### Deployment (Terraform)
 The full stack (Cloud Run service + CPU/GPU jobs, Artifact Registry, GCS bucket, IAM) is
-provisioned per client via `deploy/terraform/`. The **build plane** is three
-`gcloud builds submit` commands (server, opt-cpu, opt-gpu); the **provision plane** is
-`terraform init -backend-config=backend.hcl && terraform apply`. Per-client
+provisioned per client via `deploy/terraform/`. A single `terraform apply` builds and pushes
+all three images via Cloud Build (content-hash tags) and then provisions everything. Per-client
 `terraform.tfvars` and `backend.hcl` are uncommitted (`.example` files are committed).
-`.env` is local-dev only — deployed env vars are Terraform-managed. Runbook:
-[`deploy/terraform/README.md`](deploy/terraform/README.md). When editing `.tf` files,
-use context7 (`/hashicorp/terraform-provider-google`) for current provider syntax.
+`.env` is local-dev only — deployed env vars are Terraform-managed. Full operator runbook:
+[README.md § Deploy to Google Cloud](README.md#deploy-to-google-cloud-terraform). When editing
+`.tf` files, use context7 (`/hashicorp/terraform-provider-google`) for current provider syntax.
 
 ## Common Commands
 - `uv run python -m google_meridian_mcp_server.server`
@@ -156,7 +155,7 @@ error-path checks, and exits non-zero on any mismatch.
 - **execution/cloud_run_executor.py** — `CloudRunJobExecutor` (cloud tiers); launches worker as a Cloud Run Job execution (CPU or NVIDIA L4 GPU); selects per-tier JAX backend (`OPTIMIZATION_BACKEND_CLOUD_CPU`/`_GPU`); worker heartbeat thread + stale-heartbeat detection is the cloud crash signal; startup orphan reconcile handles runs left in-flight across server restarts.
 - **execution/worker.py** — `run_worker`; loads the model, calls `OptimizerFacade.run`, writes result/state to registry; one function, no server imports.
 - **meridian/optimizer_facade.py** — `OptimizerFacade` (extends `MeridianInterrogator`); wraps Meridian `BudgetOptimizer`; shapes `OptimizationResults` into the structured result dict (`summary`, `channel_tables`, `allocation`, `spend_delta`, `outcome_mode`, `response_curves`).
-- **deploy/** — `Dockerfile.worker` (CPU), `Dockerfile.worker.gpu` (GPU; adds `jax[cuda12]` self-contained CUDA wheels — Cloud Run L4 provides the driver), `README.md`; images build via Cloud Build (`gcloud builds submit`). Infrastructure provisioning is via `deploy/terraform/` (Terraform module).
+- **deploy/** — `Dockerfile.worker` (CPU), `Dockerfile.worker.gpu` (GPU; adds `jax[cuda12]` self-contained CUDA wheels — Cloud Run L4 provides the driver); images are built automatically by `terraform apply` via Cloud Build. Infrastructure provisioning is via `deploy/terraform/` (Terraform module).
 - **services/optimization_service.py** — `OptimizationService`; orchestrates submission (fingerprint reuse check → routing → executor launch), status/result reads, list, delete.
 - **bootstrap.py** — `build_model_catalog` (provider + caches → `ModelCatalog`) and `build_registry` (backend selection → `OptimizationRunRegistry`); shared by server lifespan and worker.
 
