@@ -1,5 +1,5 @@
 output "service_uri" {
-  description = "Base HTTPS URL of the MCP server (append /mcp/ for the endpoint)."
+  description = "Base HTTPS URL of the MCP server (append /mcp, no trailing slash, for the endpoint)."
   value       = google_cloud_run_v2_service.server.uri
 }
 

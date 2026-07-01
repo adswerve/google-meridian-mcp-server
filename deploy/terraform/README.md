@@ -25,14 +25,21 @@ gcloud storage buckets create gs://<state_bucket> --project <project_id> --locat
 ## 2. Build & push the three images (Cloud Build)
 ```bash
 REPO=us-central1-docker.pkg.dev/<project_id>/meridian
-gcloud builds submit --project <project_id> --tag $REPO/server:latest .
-gcloud builds submit --project <project_id> --tag $REPO/opt-cpu:latest -f deploy/Dockerfile.worker .
-gcloud builds submit --project <project_id> --tag $REPO/opt-gpu:latest -f deploy/Dockerfile.worker.gpu .
+CB="gcloud builds submit --project <project_id> --config deploy/cloudbuild.yaml"
+$CB --substitutions=_DOCKERFILE=Dockerfile,_IMAGE=$REPO/server:latest .
+$CB --substitutions=_DOCKERFILE=deploy/Dockerfile.worker,_IMAGE=$REPO/opt-cpu:latest .
+$CB --substitutions=_DOCKERFILE=deploy/Dockerfile.worker.gpu,_IMAGE=$REPO/opt-gpu:latest .
 ```
-The `meridian` repo is created by Terraform — for the very first build either run
-`terraform apply` once to create it, or pre-create it with
-`gcloud artifacts repositories create meridian --repository-format=docker --location=us-central1 --project <project_id>`.
-The worker images bundle Meridian + JAX and are multi-GB; allow a long build.
+All three images build through `deploy/cloudbuild.yaml`, which runs
+`docker build -f <dockerfile>`. (`gcloud builds submit --tag` can only build the
+root `./Dockerfile`, so the worker images — which use `deploy/Dockerfile.worker[.gpu]`
+— need this `--config` form.) The `meridian` repo is created by Terraform — for the
+very first build either run `terraform apply` once to create it (a targeted
+`terraform apply -target='module.meridian_stack.google_artifact_registry_repository.meridian'`
+is enough), or pre-create it with
+`gcloud artifacts repositories create meridian --repository-format=docker --location=us-central1 --project <project_id>`
+then `terraform import` it. The worker images bundle Meridian + JAX and are
+multi-GB; the config sets a larger machine, 100 GiB disk, and a long timeout.
 
 ## 3. Configure (uncommitted)
 ```bash
@@ -45,7 +52,7 @@ cp backend.hcl.example backend.hcl             # the state bucket from step 1
 ```bash
 terraform init -backend-config=backend.hcl
 terraform apply
-terraform output service_uri      # the MCP endpoint base (append /mcp/)
+terraform output service_uri      # the MCP endpoint base (append /mcp, no trailing slash)
 ```
 
 ## 5. Smoke-test the deployed tooling

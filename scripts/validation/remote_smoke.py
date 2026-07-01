@@ -20,11 +20,17 @@ from fastmcp import Client
 
 
 def normalize_mcp_url(base: str) -> str:
-    """Return the streamable-http endpoint URL for a service base URL."""
+    """Return the streamable-http endpoint URL for a service base URL.
+
+    The endpoint has NO trailing slash. FastMCP serves streamable-http at
+    ``/mcp``; requesting ``/mcp/`` returns a 307 redirect to ``/mcp``, and
+    behind a TLS-terminating proxy (Cloud Run) that redirect's Location is
+    ``http://`` — which breaks the POST. Targeting ``/mcp`` directly avoids it.
+    """
     base = base.rstrip("/")
     if base.endswith("/mcp"):
-        return base + "/"
-    return base + "/mcp/"
+        return base
+    return base + "/mcp"
 
 
 def _data(result):

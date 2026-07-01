@@ -14,13 +14,18 @@ After Terraform has provisioned the Artifact Registry repository:
 
 ```bash
 REPO=us-central1-docker.pkg.dev/<project_id>/meridian
-gcloud builds submit --project <project_id> --tag $REPO/server:latest .
-gcloud builds submit --project <project_id> --tag $REPO/opt-cpu:latest -f deploy/Dockerfile.worker .
-gcloud builds submit --project <project_id> --tag $REPO/opt-gpu:latest -f deploy/Dockerfile.worker.gpu .
+CB="gcloud builds submit --project <project_id> --config deploy/cloudbuild.yaml"
+$CB --substitutions=_DOCKERFILE=Dockerfile,_IMAGE=$REPO/server:latest .
+$CB --substitutions=_DOCKERFILE=deploy/Dockerfile.worker,_IMAGE=$REPO/opt-cpu:latest .
+$CB --substitutions=_DOCKERFILE=deploy/Dockerfile.worker.gpu,_IMAGE=$REPO/opt-gpu:latest .
 ```
 
-The worker images bundle Meridian + JAX and are multi-GB; allow a long build.
-The GPU worker requires L4 quota in the deployment region.
+All three images build through `deploy/cloudbuild.yaml` (a parameterized
+`docker build -f <dockerfile>`). `gcloud builds submit --tag` only builds the
+root `./Dockerfile`, so the worker images — which use
+`deploy/Dockerfile.worker[.gpu]` — must use this `--config` form. The worker
+images bundle Meridian + JAX and are multi-GB; allow a long build. The GPU
+worker requires L4 quota in the deployment region.
 
 ## Container images
 

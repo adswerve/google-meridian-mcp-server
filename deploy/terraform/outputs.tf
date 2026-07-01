@@ -1,5 +1,5 @@
 output "service_uri" {
-  description = "Base URL of the MCP server. Append /mcp/ for the streamable-http endpoint."
+  description = "Base URL of the MCP server. Append /mcp (no trailing slash) for the streamable-http endpoint."
   value       = module.meridian_stack.service_uri
 }
 output "server_service_account" { value = module.meridian_stack.server_service_account }
