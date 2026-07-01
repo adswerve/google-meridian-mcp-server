@@ -282,10 +282,10 @@ In `README.md`, in the paragraph at line 38, replace the clause `provisions Arti
 provisions Artifact Registry, GCS, the Cloud Run Service
 ```
 
-Then append these two sentences to the end of that same paragraph (after "provisions the CPU worker only."):
+Then append this note to the end of that same paragraph (after "provisions the CPU worker only."):
 
 ```
-The service and jobs run as a single identity: by default the project's compute engine default service account (nothing is created), or — when `service_account_id` is set — a dedicated SA that Terraform creates or adopts and grants least-privilege roles (`run.developer`, `storage.objectAdmin`, and `actAs` on itself). `terraform output service_account` reports which identity is in use.
+**Service account:** the service and jobs run as a single identity. By default (`service_account_id` unset) that is the project's compute engine default service account and Terraform creates/binds nothing — it relies on that SA's project `Editor` grant. Set `service_account_id` to a name (e.g. `meridian-mcp`) and Terraform instead creates or adopts a dedicated SA in the project and grants it least-privilege roles (`run.developer`, `storage.objectAdmin`, and `actAs` on itself). `terraform output service_account` reports which identity is in use. This replaces the previous two-SA (`meridian-mcp-server` + `meridian-opt-worker`) layout.
 ```
 
 - [ ] **Step 3: Update AGENTS.md deployment note**
@@ -378,42 +378,72 @@ git commit -m "chore: rename MCP server to meridian-mcp"
 
 ---
 
-### Task 4: Live acceptance on a real GCP project (operator step)
+### Task 4: Full live deployment on a real GCP project (MANDATORY acceptance)
 
 This task needs GCP credentials + the real state backend, so it is NOT part of
 the offline implementer flow. The controller (or the operator) runs it against
-`as-dev-anze` after Tasks 1-3 are merged-ready. It is the real verification of
-the default and custom SA paths.
+`as-dev-anze` after Tasks 1-3 are merged-ready. This is a REQUIRED full
+end-to-end deployment, not a plan-only check: the whole stack is actually
+applied, exercised, and torn down. The **custom SA path** is the primary
+acceptance target because it exercises everything new (in-apply `gcloud`
+create/adopt, the data-source read, and all three bindings); the default path
+is confirmed by plan.
 
-**Files:** none (verification only).
+Before running, confirm with the operator/user that a live `apply` (and later
+`destroy`) against `as-dev-anze` is authorized — it builds images via Cloud
+Build and provisions real Cloud Run resources.
+
+**Files:** none (verification only). Any plan/output files go to scratchpad, never the repo.
 
 - [ ] **Step 1: Init with the real backend**
 
 Run: `cd deploy/terraform && terraform init -reconfigure -backend-config=backend.hcl`
 Expected: `Terraform has been successfully initialized!`
 
-- [ ] **Step 2: Plan the default path**
+- [ ] **Step 2: Pre-flight — plan the default path**
 
 Run: `cd deploy/terraform && terraform plan -out /private/tmp/claude-501/-Users-anze-Projects-google-meridian-mcp/0fb920d5-fdd9-46a9-909e-7fc0dbdaf6af/scratchpad/tf-default.plan`
-Expected: the plan contains NO `google_service_account.deploy` create, NO `terraform_data.service_account`, and NO `deploy_*` IAM members; the Cloud Run service/job `service_account` resolves to `null`. (Write the plan file to scratchpad, never into the repo — `tf.plan` is not committed.)
+Expected: NO `terraform_data.service_account`, NO `google_service_account`/`data.google_service_account.deploy`, NO `deploy_*` IAM members; the Cloud Run service/job `service_account` resolves to `null`. (Write plan files to scratchpad — `tf.plan` is never committed.)
 
-- [ ] **Step 3: Plan the custom path**
+- [ ] **Step 3: Pre-flight — plan the custom path**
 
 Run: `cd deploy/terraform && terraform plan -var 'service_account_id=meridian-mcp' -out /private/tmp/claude-501/-Users-anze-Projects-google-meridian-mcp/0fb920d5-fdd9-46a9-909e-7fc0dbdaf6af/scratchpad/tf-custom.plan`
 Expected: the plan adds `terraform_data.service_account[0]`, reads `data.google_service_account.deploy[0]` (known after apply), and adds the three `deploy_*` bindings; the service/job `service_account` becomes the custom email (known after apply).
 
-- [ ] **Step 4: Live apply + smoke one path, then confirm output**
+- [ ] **Step 4: Full live apply — custom SA path**
 
-Decide with the operator which path to apply live (default is lower-risk). Apply it, then:
+Run: `cd deploy/terraform && terraform apply -var 'service_account_id=meridian-mcp' -auto-approve`
+Expected: `Apply complete!`. This builds the images via Cloud Build, creates/adopts the `meridian-mcp` SA in-apply, binds the three roles, and provisions Artifact Registry, GCS wiring, the Cloud Run service, and the CPU job. First apply is long (worker image build can take 10–40 min). If a build fails mid-apply, re-run the same command — it is idempotent.
+
+- [ ] **Step 5: Confirm the resolved identity and that bindings landed**
 
 Run: `cd deploy/terraform && terraform output service_account`
-Expected: for the default path, `<number>-compute@developer.gserviceaccount.com (default compute engine SA)`; for the custom path, `meridian-mcp@as-dev-anze.iam.gserviceaccount.com`.
+Expected: `meridian-mcp@as-dev-anze.iam.gserviceaccount.com`.
 
-Confirm the server answers on `/mcp` (append `/mcp`, no trailing slash, to `terraform output service_uri`) and that one optimization run reaches the worker job. Record the results as acceptance evidence in the SDD ledger.
+Run: `gcloud iam service-accounts describe meridian-mcp@as-dev-anze.iam.gserviceaccount.com --project as-dev-anze`
+Expected: the SA exists (exit 0). Confirm the Cloud Run service uses it:
 
-- [ ] **Step 5 (optional): Destroy the throwaway install**
+Run: `gcloud run services describe meridian-mcp-server --region us-central1 --project as-dev-anze --format='value(spec.template.spec.serviceAccountName)'`
+Expected: `meridian-mcp@as-dev-anze.iam.gserviceaccount.com`.
 
-If this was a throwaway verification apply, run `terraform destroy` and confirm the SA output's identity is torn down for the custom path (the compute engine default SA is never deleted). Do not destroy a shared/real install.
+- [ ] **Step 6: Smoke the live server end-to-end**
+
+Get the endpoint: `cd deploy/terraform && terraform output service_uri` (append `/mcp`, no trailing slash).
+Drive one real optimization through the live MCP endpoint using the existing remote smoke path (`scripts/validation/remote_smoke.py` with `--run-optimization` and a novel config so it forces a fresh run — do not reuse a stale completed run). Confirm the run transitions queued → running → completed and that the Cloud Run CPU job logs a `1/1` execution — i.e. the consolidated SA can launch the job, act as itself, and read/write the bucket.
+Record the outputs (`service_account`, run id, job execution) as acceptance evidence in the SDD ledger.
+
+- [ ] **Step 7: Idempotence — re-apply adopts, does not recreate**
+
+Run: `cd deploy/terraform && terraform apply -var 'service_account_id=meridian-mcp' -auto-approve`
+Expected: `Apply complete!` with no changes to `terraform_data.service_account` (the SA already exists, so the `gcloud describe` short-circuits the create) and no image rebuilds (content hashes unchanged). This proves the "adopt if exists, don't recreate" behavior.
+
+- [ ] **Step 8: Destroy the throwaway install**
+
+Run: `cd deploy/terraform && terraform destroy -var 'service_account_id=meridian-mcp' -auto-approve`
+Expected: `Destroy complete!`. Confirm the Cloud Run service/jobs and the `meridian-mcp` SA are gone:
+
+Run: `gcloud iam service-accounts describe meridian-mcp@as-dev-anze.iam.gserviceaccount.com --project as-dev-anze`
+Expected: `NOT_FOUND` (exit non-zero) — the custom SA is torn down. Note: the shared models bucket (`create_bucket = false`) and the project's compute engine default SA are intentionally NOT deleted. Record the teardown as acceptance evidence.
 
 ---
 
