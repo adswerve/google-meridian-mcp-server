@@ -86,7 +86,8 @@ class PerChannelConstraint(BaseModel):
     mode: Literal["per_channel"]
     bounds: dict[str, ChannelBound] = Field(
         description="Per-channel lower/upper fractional bounds; must cover every "
-        "paid/RF channel. Valid channels: see get_model_overview.",
+        "paid/RF channel. Valid channels: "
+        "get_model_overview.available_tool_options.run_optimization.channels.",
     )
 
 
@@ -112,7 +113,8 @@ class OptimizationConfig(BaseModel):
         default=None,
         description="Subset of geo identifiers to optimize over (e.g. "
         "['US-CA', 'US-NY']). Omit for all geos; ignored by national models. "
-        "Valid values: get_model_overview 'geos'.",
+        "Valid values: "
+        "get_model_overview.available_tool_options.run_optimization.geos.",
     )
     use_kpi: bool | None = Field(
         default=None,

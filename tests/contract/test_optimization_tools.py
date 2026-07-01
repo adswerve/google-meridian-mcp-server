@@ -75,3 +75,6 @@ async def test_compute_tier_and_status_are_enums():
         "failed",
         "canceled",
     }
+    # status is optional: omitting it returns all states.
+    assert status.get("default") is None
+    assert any(branch.get("type") == "null" for branch in status.get("anyOf", []))
