@@ -200,6 +200,7 @@ The scenario library, each row = a business question → tool routing:
 | "Don't move any channel more than ±X% / freeze channel Z" | `constraint`: `global` pct vs. `per_channel` bounds |
 | "Optimize just for Q4 / a specific window (flighting, seasonality)" | `start_date`/`end_date` window |
 | "Reallocate within specific regions only" | `selected_geos` |
+| "How should I plan / allocate my budget for NEXT quarter (forward-looking)?" | Forward-planning approximation — see §5.4.1 |
 
 Plus two teaching points an LLM reliably gets wrong:
 
@@ -212,6 +213,50 @@ And the lifecycle in full: submit → poll (`queued`/`running`/`completed`/
 `failed`/`canceled`) → result; how to read the result (summary, per-channel
 before/after, allocation, spend-delta, `outcome_mode`); fingerprint reuse; how to
 interpret optimized vs. non-optimized.
+
+#### 5.4.1 Forward-looking budget planning ("plan next quarter")
+
+This is one of the most common real questions ("how do I allocate *next*
+quarter's budget?"), and it needs honest framing because MMM optimization is
+fundamentally **backward-looking**: it reallocates over a historical window using
+parameters fitted on historical data.
+
+**What Meridian supports vs. what this MCP exposes.** Meridian's
+`BudgetOptimizer.optimize()` has a `new_data` (`DataTensors`) argument for true
+scenario planning — overriding cost-per-media-unit (CPM), `revenue_per_kpi`
+(price/LTV), flighting pattern, and the future time window while keeping the
+fitted posteriors ("scenario planning affects metric definitions, not parameter
+estimation"; it forecasts *incremental outcome*, not absolute future KPI).
+**Our `run_optimization` does not currently expose `new_data`** (verified:
+`to_optimize_kwargs` passes only `budget`, `target_roi/mroi`, spend constraints,
+`selected_geos`, `start_date`/`end_date`, `use_kpi`). See §10 — exposing
+`new_data` is a flagged future enhancement, out of scope for this skill.
+
+**The approximation the skill teaches (with existing knobs):**
+
+1. Set `budget` to the **planned future total** (what you intend to spend next
+   period), not the historical spend.
+2. Set `start_date`/`end_date` to a **recent historical window that best resembles
+   the expected future conditions** — e.g. optimize over last year's Q4 to plan
+   next Q4, so seasonality and flighting carry over.
+3. Apply `constraint`s that reflect real planning limits (contracts, minimums).
+4. Read the result through **marginal ROI**, not average ROI — marginal ROI is
+   what tells you where the *next* dollar should go.
+
+**Caveats the skill must state every time it gives a forward recommendation:**
+
+- It assumes **CPM, price/LTV, and response-curve shapes stay stable** into the
+  future; if you expect media costs or unit economics to change, the estimate
+  drifts (this is exactly what `new_data` would correct, and we don't expose it).
+- **Extrapolation risk:** points on the response curve *beyond historical spend*
+  are extrapolated, not observed — treat aggressive scale-ups as low-confidence.
+- The optimizer reports **incremental outcome**, not a guaranteed absolute future
+  revenue/KPI number.
+- **Validate large moves** with geo experiments / holdout tests before committing.
+
+Grounding: [Meridian — scenario planning & future budget optimization](https://developers.google.com/meridian/docs/post-modeling/scenario-planning-and-future-budget-optimization),
+[Measured — diminishing-return curves → budget decisions](https://www.measured.com/faq/media-mix-modeling-diminishing-return-curves-mmm-budget-decision/),
+[Analytical Alley — MMM ROI (avg vs. marginal for planning)](https://www.analyticalalley.com/knowledge-hub/roi-of-marketing-mix-modeling/).
 
 ### 5.5 `references/channel-performance.md`
 
@@ -305,3 +350,10 @@ The reviewer critiques for, in priority order:
 - Whether to also expose the skill as a plain MCP resource for resource-aware
   clients that don't implement the skills provider (deferred; revisit if the
   spike shows weak client support).
+- **`new_data` scenario-planning capability (flagged future enhancement).**
+  Meridian's optimizer supports true forward planning via `new_data`
+  (CPM / `revenue_per_kpi` / future-period overrides); `run_optimization` does not
+  expose it (§5.4.1). Exposing it is real code work — its own design spec + plan —
+  and would upgrade the skill's forward-planning section from an approximation to
+  first-class scenario planning. Out of scope for this skill; recommended as the
+  next design once the skill ships.
