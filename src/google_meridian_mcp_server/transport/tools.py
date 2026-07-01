@@ -391,21 +391,31 @@ def register_tools(mcp: FastMCP) -> None:
             OptimizationConfig,
             Field(
                 description=(
-                    "Optimization scenario + constraints. scenario is one of "
+                    "Optimization scenario + constraints (see the nested field "
+                    "descriptions for details). scenario is one of "
                     "{type:'fixed_budget', budget?} | {type:'target_roas', target_value} | "
                     "{type:'target_mroas', target_value}. constraint is "
                     "{mode:'global', pct} or {mode:'per_channel', bounds:{channel:{lower_pct,upper_pct}}}. "
-                    "Optional start_date/end_date (ISO), selected_geos, use_kpi. "
-                    "See get_model_overview.available_tool_options.run_optimization for valid channels/geos."
+                    "Optional start_date/end_date, selected_geos, use_kpi. "
+                    "Valid channels/geos: get_model_overview.available_tool_options.run_optimization."
                 )
             ),
         ],
         ctx: Context,
         label: Annotated[
-            str | None, Field(description="Human label for this run.")
+            str | None,
+            Field(
+                description="Human-readable label for this run, shown by "
+                "list_optimizations. Omit to auto-generate one from the model and "
+                "scenario type.",
+            ),
         ] = None,
         note: Annotated[
-            str | None, Field(description="Free-text intent for this run.")
+            str | None,
+            Field(
+                description="Optional free-text describing the intent of this run; "
+                "stored with the run. Omit to leave unset.",
+            ),
         ] = None,
         compute_tier: Annotated[
             Literal["auto", "local", "cloud_cpu", "cloud_gpu"],
@@ -417,10 +427,15 @@ def register_tools(mcp: FastMCP) -> None:
             ),
         ] = "auto",
         force_rerun: Annotated[
-            bool, Field(description="Recompute even if an identical run exists.")
+            bool,
+            Field(
+                description="Set true to force a fresh computation even when an "
+                "identical prior run (same model + config) exists; default false "
+                "reuses that run's result.",
+            ),
         ] = False,
     ) -> dict[str, Any]:
-        """Start a budget optimization (long-running). Returns a run_id immediately; poll get_optimization_status, then get_optimization_result. Reuses an identical prior run unless force_rerun is set."""
+        """Optimize how budget is split across paid-media & RF channels. Answers "how should I reallocate spend?" or "what mix best hits a 2x ROAS target?". Supply a scenario (fixed_budget | target_roas | target_mroas) and spend constraints via `config`. Long-running: returns a run_id immediately — then poll get_optimization_status until status is 'completed', then read get_optimization_result. An identical prior run (same model + config) is reused unless force_rerun=true; browse prior runs with list_optimizations."""
         try:
             return _optimization_service(ctx).run_optimization(
                 model_id,
@@ -440,7 +455,7 @@ def register_tools(mcp: FastMCP) -> None:
         ],
         ctx: Context,
     ) -> dict[str, Any]:
-        """Poll an optimization run: status (queued/running/completed/failed), phase, heartbeat, elapsed time, and error if any."""
+        """Poll a run started by run_optimization. Returns status (queued/running/completed/failed/canceled), current phase, last heartbeat, elapsed time, and an error object if it failed. Call repeatedly until status is 'completed', then call get_optimization_result."""
         try:
             return _optimization_service(ctx).get_status(run_id)
         except MeridianMcpError as error:
@@ -453,7 +468,7 @@ def register_tools(mcp: FastMCP) -> None:
         ],
         ctx: Context,
     ) -> dict[str, Any]:
-        """Fetch the full structured optimization result. Errors with optimization_not_ready until the run is completed."""
+        """Fetch the full structured result of a completed optimization: optimized-vs-current spend per channel, expected outcome lift, and per-channel efficiency (ROI/ROAS for revenue models, CPIK otherwise). Raises optimization_not_ready until get_optimization_status reports 'completed'. Answers 'what is the recommended budget allocation?'."""
         try:
             return _optimization_service(ctx).get_result(run_id)
         except MeridianMcpError as error:
@@ -475,7 +490,7 @@ def register_tools(mcp: FastMCP) -> None:
             int | None, Field(ge=1, description="Max runs to return (newest first).")
         ] = None,
     ) -> dict[str, Any]:
-        """List past optimization runs with their config summary, status, and headline result. Use to find and reuse prior work."""
+        """List past optimization runs (newest first) with config summary, status, and headline result. Use to find and reuse prior work instead of re-running, or to get a run_id for get_optimization_result / delete_optimization. Filter by model_id and/or status."""
         try:
             return _optimization_service(ctx).list_runs(
                 model_id=model_id, status=status, limit=limit
@@ -488,7 +503,7 @@ def register_tools(mcp: FastMCP) -> None:
         run_id: Annotated[str, Field(min_length=1, description="run_id to delete.")],
         ctx: Context,
     ) -> dict[str, Any]:
-        """Permanently delete one optimization run and its result from the registry."""
+        """Permanently delete one optimization run and its stored result by run_id. Irreversible. Find run_ids via list_optimizations. To stop an in-flight run instead, use cancel_optimization."""
         try:
             return _optimization_service(ctx).delete(run_id)
         except MeridianMcpError as error:
@@ -499,7 +514,7 @@ def register_tools(mcp: FastMCP) -> None:
         run_id: Annotated[str, Field(min_length=1, description="run_id to cancel.")],
         ctx: Context,
     ) -> dict[str, Any]:
-        """Best-effort cancel of a queued or running optimization run."""
+        """Best-effort cancel of a queued or running optimization by run_id. Does not remove the run record (use delete_optimization for that) and has no effect on runs that already completed or failed."""
         try:
             return _optimization_service(ctx).cancel(run_id)
         except MeridianMcpError as error:

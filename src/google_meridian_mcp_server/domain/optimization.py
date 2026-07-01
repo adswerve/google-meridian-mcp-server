@@ -99,19 +99,26 @@ class OptimizationConfig(BaseModel):
     scenario: Scenario
     constraint: Constraint = Field(default_factory=lambda: GlobalConstraint(pct=0.3))
     start_date: date | None = Field(
-        default=None, description="ISO start; omit for full range."
+        default=None,
+        description="Inclusive start date (ISO-8601, e.g. '2023-01-01') of the "
+        "window to optimize over. Omit to use the model's full date range.",
     )
     end_date: date | None = Field(
-        default=None, description="ISO end; omit for full range."
+        default=None,
+        description="Inclusive end date (ISO-8601, e.g. '2023-12-31') of the "
+        "window to optimize over. Omit to use the model's full date range.",
     )
     selected_geos: list[str] | None = Field(
         default=None,
-        description="Subset of geos; omit for all. Ignored by national models.",
+        description="Subset of geo identifiers to optimize over (e.g. "
+        "['US-CA', 'US-NY']). Omit for all geos; ignored by national models. "
+        "Valid values: get_model_overview 'geos'.",
     )
     use_kpi: bool | None = Field(
         default=None,
-        description="Objective: false=ROAS/ROI, true=CPIK. Omit to use the model's "
-        "native objective (revenue->ROAS, no-revenue->CPIK).",
+        description="Objective family: false = revenue-based (ROAS/ROI), "
+        "true = KPI-based (CPIK). Omit/null to use the model's native objective "
+        "(revenue models -> ROAS, no-revenue models -> CPIK).",
     )
 
 
