@@ -33,10 +33,16 @@ resource "google_storage_bucket_iam_member" "server_bucket" {
   bucket = var.gcs_bucket
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.server.email}"
+
+  # Ensure the bucket exists before binding IAM when create_bucket=true.
+  # A no-op when create_bucket=false (count=0 resource; depends_on is ignored).
+  depends_on = [google_storage_bucket.models]
 }
 
 resource "google_storage_bucket_iam_member" "worker_bucket" {
   bucket = var.gcs_bucket
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.worker.email}"
+
+  depends_on = [google_storage_bucket.models]
 }

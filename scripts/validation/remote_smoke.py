@@ -44,7 +44,7 @@ async def _run(url: str, model_id: str | None, run_opt: bool, poll_timeout: int)
     async with Client(endpoint) as client:
         tools = [t.name for t in await client.list_tools()]
         print(f"Tools: {sorted(tools)}")
-        for required in ("list_models", "get_model_overview", "run_optimization"):
+        for required in ("list_models", "get_model_overview", "run_optimization", "get_optimization_status", "get_optimization_result"):
             if required not in tools:
                 print(f"FAIL: deployed server missing tool {required}")
                 return 1

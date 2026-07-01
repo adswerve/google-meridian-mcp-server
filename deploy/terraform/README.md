@@ -1,9 +1,13 @@
 # Deploying the Meridian MCP server with Terraform
 
 This provisions the whole hosted stack — Cloud Run **Service** (the MCP server),
-Cloud Run **Jobs** (CPU + GPU optimization workers), Artifact Registry, GCS, and
+Cloud Run **Jobs** (CPU optimization worker, GPU opt-in), Artifact Registry, GCS, and
 service accounts/IAM — into **one GCP project per client**. The repo ships a
 generic config; per-client inputs are **not committed**.
+
+> GPU is opt-in (`enable_gpu_job = true` + add `cloud_gpu` to
+> `optimization_allowed_tiers` + L4 quota in the region). The default apply
+> provisions the CPU worker only.
 
 > When editing the `.tf` files, pull current `google` provider syntax from the
 > **context7 MCP** (`/hashicorp/terraform-provider-google`) — the GPU fields in

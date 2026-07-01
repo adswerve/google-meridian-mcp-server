@@ -64,8 +64,8 @@ variable "worker_gpu_image" {
 
 variable "enable_gpu_job" {
   type        = bool
-  description = "Provision the GPU worker job (needs L4 quota in the region)."
-  default     = true
+  description = "Provision the GPU (L4) worker job. Disabled by default: the default optimization_allowed_tiers (cloud_cpu) never invokes it and L4 quota is not guaranteed. To enable: set to true AND add cloud_gpu to optimization_allowed_tiers AND ensure L4 quota in the region."
+  default     = false
 }
 
 # --- Names ---

@@ -31,7 +31,7 @@ variable "worker_cpu_image" { type = string }
 variable "worker_gpu_image" { type = string }
 variable "enable_gpu_job" {
   type    = bool
-  default = true
+  default = false
 }
 
 variable "optimization_allowed_tiers" {

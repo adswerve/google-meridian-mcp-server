@@ -13,7 +13,7 @@ gcs_bucket = "your-client-meridian"
 server_image     = "us-central1-docker.pkg.dev/your-client-project/meridian/server:latest"
 worker_cpu_image = "us-central1-docker.pkg.dev/your-client-project/meridian/opt-cpu:latest"
 worker_gpu_image = "us-central1-docker.pkg.dev/your-client-project/meridian/opt-gpu:latest"
-# enable_gpu_job = true              # false if no L4 quota in the region
+# enable_gpu_job = true              # default false; to enable GPU: set true AND add cloud_gpu to optimization_allowed_tiers AND ensure L4 quota in the region
 
 # optimization_allowed_tiers = "cloud_cpu"   # add cloud_gpu when GPU job is enabled
 # allow_unauthenticated      = false          # true only for the live tooling test

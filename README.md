@@ -238,47 +238,7 @@ is fully Terraform-managed (Cloud Run service + jobs, Artifact Registry, GCS, IA
 See [`deploy/terraform/README.md`](deploy/terraform/README.md) for the full operator runbook
 (bootstrap → build → configure → provision → smoke-test).
 
-## Cloud Run Deployment
-
-Cloud Run is usually the best fit when this server is deployed with the **GCS backend**. That
-keeps model files outside the container image, avoids rebuilds when models change, and works well
-with Cloud Run's ephemeral filesystem.
-
-Before deploying:
-
-1. Create or choose a GCS bucket and prefix that hold your Meridian models.
-2. Grant the Cloud Run service account access to read those objects
-   (for example, `roles/storage.objectViewer`).
-3. Create an Artifact Registry repository for the image if you do not already have one.
-
-Build and publish the container:
-
-```bash
-gcloud builds submit \
-  --tag REGION-docker.pkg.dev/PROJECT_ID/REPOSITORY/google-meridian-mcp-server
-```
-
-Deploy to Cloud Run:
-
-```bash
-gcloud run deploy google-meridian-mcp-server \
-  --image REGION-docker.pkg.dev/PROJECT_ID/REPOSITORY/google-meridian-mcp-server \
-  --region REGION \
-  --platform managed \
-  --service-account CLOUD_RUN_SERVICE_ACCOUNT \
-  --set-env-vars=MCP_TRANSPORT=streamable-http,MCP_HOST=0.0.0.0,PERSISTENCE_BACKEND=gcs,GCS_BUCKET=MY_BUCKET,GCS_MODELS_PREFIX=models,MODEL_CACHE_ROOT=/tmp/mmm-models,DISCOVERY_TTL_SECONDS=7200,RESULT_CACHE_ENABLED=true
-```
-
-Cloud Run injects the `PORT` environment variable automatically, and the server already uses that
-value when it starts its HTTP transport.
-
-If you need a public endpoint, add `--allow-unauthenticated` to the deploy command. If the service
-should stay private, keep IAM restricted and put it behind your existing gateway or identity layer.
-
-Using the `local` backend on Cloud Run is only practical when models are baked into the image at
-build time. For most deployments, `PERSISTENCE_BACKEND=gcs` is the safer and simpler default.
-
-### Budget optimization
+## Budget optimization
 
 The optimization tools submit and track long-running Meridian `BudgetOptimizer` runs. The full tool
 surface is:
