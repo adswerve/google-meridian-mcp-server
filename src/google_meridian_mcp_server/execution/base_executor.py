@@ -14,6 +14,7 @@ from google_meridian_mcp_server.domain.optimization import (
 )
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
+    RunNotFoundError,
 )
 
 
@@ -79,7 +80,12 @@ class BaseExecutor(abc.ABC):
         return
 
     def _fail_if_unfinished(self, run_id: str, message: str) -> None:
-        state = self._registry.get_state(run_id)
+        try:
+            state = self._registry.get_state(run_id)
+        except RunNotFoundError:
+            # The run was deleted while its handle was still pending reap; a
+            # deleted run is not "unfinished", so there is nothing to fail.
+            return
         if state.status in (RunStatus.RUNNING, RunStatus.QUEUED):
             self._registry.write_state(
                 OptimizationRunState(

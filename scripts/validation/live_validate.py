@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shutil
 import sys
 
 from scripts.generate_validation_models import DEFAULT_OUT_ROOT, build_all
@@ -99,6 +100,7 @@ def _run_cloud_gate() -> list[str]:
     )
 
     shared_dir = DEFAULT_OUT_ROOT / "_cloud_runs"
+    shutil.rmtree(shared_dir, ignore_errors=True)
     shared_dir.mkdir(parents=True, exist_ok=True)
     tf_service = _build_cloud_service(backend="tensorflow", shared_dir=shared_dir)
     for model_id in ("national-revenue", "geo-revenue"):
@@ -119,6 +121,7 @@ def _run_cloud_gate() -> list[str]:
         print("  SKIP: jax not installed (cross-backend gate)")
     else:
         jax_dir = DEFAULT_OUT_ROOT / "_cloud_runs_jax"
+        shutil.rmtree(jax_dir, ignore_errors=True)
         jax_dir.mkdir(parents=True, exist_ok=True)
         jax_service = _build_cloud_service(backend="jax", shared_dir=jax_dir)
         try:

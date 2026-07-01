@@ -249,6 +249,20 @@ def test_reconcile_stale_precondition_guards_against_race():
     assert run_id not in ex._handles
 
 
+def test_reap_after_deleted_run_does_not_raise(tmp_path):
+    """A completed run's handle may be reaped after the run is deleted (delete
+    races the poll() lag). _fail_if_unfinished must treat a missing run as a
+    no-op, not propagate RunNotFoundError into a later pump()."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    reg.create(_run("a"))
+    ex.submit(_run("a"))  # launched; handle in _handles
+    ex._handles["a"].alive = False  # subprocess exited
+    reg.delete("a")  # run deleted before its handle is reaped
+    ex.pump()  # _reap -> _fail_if_unfinished("a") must not raise
+    assert "a" not in ex._handles
+
+
 def test_subprocess_executor_builds_worker_command(tmp_path, monkeypatch):
     reg = LocalOptimizationRunRegistry(str(tmp_path))
     captured = {}

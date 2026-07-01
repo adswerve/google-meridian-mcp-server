@@ -116,16 +116,6 @@ async def assert_live_optimization(client, model_id: str, *, overview) -> None:
         f"list count mismatch: {listing['count']} != {len(listing['runs'])}"
     )
 
-    # Drain the executor's reap loop before deletion.  The subprocess writes
-    # state=completed and calls sys.exit(); poll() may still return None for a
-    # brief moment.  If we delete the run first and pump() then reaps the
-    # now-dead handle it calls _fail_if_unfinished on a missing run, which
-    # propagates RunNotFoundError into the next model's submit().  A short wait
-    # followed by one status poll ensures the handle is reaped while the run
-    # directory still exists (state=completed → _fail_if_unfinished is a no-op).
-    await asyncio.sleep(0.5)
-    await call(client, "get_optimization_status", {"run_id": run_id})
-
     # delete_optimization removes it; a subsequent status lookup must 404 (typed).
     deleted = await call(client, "delete_optimization", {"run_id": run_id})
     assert deleted.get("deleted") is True and deleted.get("run_id") == run_id, (
