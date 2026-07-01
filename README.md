@@ -69,7 +69,9 @@ terraform apply       # builds all 3 images via Cloud Build, then provisions eve
 terraform output service_uri   # MCP endpoint base; append /mcp (no trailing slash)
 ```
 
-The first apply is long — up to three ~10-minute Cloud Builds run in parallel. If a build fails mid-apply, re-running `terraform apply` resumes cleanly (it is idempotent).
+The first apply is long — the default CPU-only apply runs two Cloud Builds in parallel (the `server` image and the multi-GB `opt-cpu` worker; a third `opt-gpu` build is added when `enable_gpu_job = true`). The worker image can take 10–40 minutes to build (the Cloud Build timeout is 40 min). If a build fails mid-apply, re-running `terraform apply` resumes cleanly (it is idempotent).
+
+> On a brand-new project the Cloud Build service account may lack push access to Artifact Registry. If `apply` fails during `gcloud builds submit` with an Artifact Registry permission error, grant the build service account `roles/artifactregistry.writer` (or run one build manually to surface the exact principal), then re-run `terraform apply`.
 
 ### 4. Smoke-test the deployed server
 
@@ -243,7 +245,7 @@ Then set these variables in `.env`:
 ```dotenv
 PERSISTENCE_BACKEND=gcs
 GCS_BUCKET=my-project.appspot.com
-GCS_MODELS_PREFIX=models
+GCS_MODELS_PREFIX=models/
 ```
 
 ## Reference

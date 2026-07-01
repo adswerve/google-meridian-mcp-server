@@ -45,9 +45,9 @@ resource "terraform_data" "build" {
 
   provisioner "local-exec" {
     command = join(" ", [
-      "gcloud builds submit ${var.build_context}",
+      "gcloud builds submit '${var.build_context}'",
       "--project ${var.project_id}",
-      "--config ${var.build_context}/deploy/cloudbuild.yaml",
+      "--config '${var.build_context}/deploy/cloudbuild.yaml'",
       "--substitutions=_DOCKERFILE=${each.value.dockerfile},_IMAGE=${local.image_ref[each.key]}",
     ])
   }
