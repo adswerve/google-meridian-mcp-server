@@ -51,7 +51,7 @@ and persistence helpers so agents can inspect models and request structured outp
 - `REGISTRY_BACKEND` — `local` (Phase 1) or `gcs` (Phase 2); defaults to `PERSISTENCE_BACKEND`.
 - `OPTIMIZATION_RUNS_ROOT` — local directory for run manifests, state files, and results; default `./optimizations`.
 - `OPTIMIZATION_GCS_PREFIX` — GCS prefix for run files when `REGISTRY_BACKEND=gcs`; Phase 2.
-- `OPTIMIZATION_ALLOWED_TIERS` — comma-separated list of permitted compute tiers (`local`); default `local`.
+- `OPTIMIZATION_ALLOWED_TIERS` — comma-separated permitted tiers (`local`, `cloud_cpu`, `cloud_gpu`); default `local`.
 - `OPTIMIZATION_DEFAULT_TIER` — `auto` (heuristic) or a fixed tier name; default `auto`.
 - `OPTIMIZATION_MAX_PARALLEL` — maximum concurrent optimization workers per server process; default `2`.
 - `OPTIMIZATION_SIZE_THRESHOLDS` — two comma-separated integers (`small,large`) for the `auto` tier heuristic; default `1000000,100000000`.
@@ -66,13 +66,12 @@ and persistence helpers so agents can inspect models and request structured outp
 - Cloud tiers require `REGISTRY_BACKEND=gcs`; validated at startup.
 
 ### Deployment (Terraform)
-The full stack (Cloud Run service + CPU/GPU jobs, Artifact Registry, GCS bucket, IAM) is
-provisioned per client via `deploy/terraform/`. A single `terraform apply` builds and pushes
-all three images via Cloud Build (content-hash tags) and then provisions everything. Per-client
-`terraform.tfvars` and `backend.hcl` are uncommitted (`.example` files are committed).
-`.env` is local-dev only — deployed env vars are Terraform-managed. Full operator runbook:
+The full stack (Cloud Run service + CPU/GPU jobs, Artifact Registry, GCS, IAM) is provisioned
+per client via `deploy/terraform/`. A single `terraform apply` builds+pushes all three images
+via Cloud Build (content-hash tags), then provisions everything. Per-client `terraform.tfvars`
+and `backend.hcl` are uncommitted (`.example` committed); `.env` is local-dev only. Full runbook:
 [README.md § Deploy to Google Cloud](README.md#deploy-to-google-cloud-terraform). When editing
-`.tf` files, use context7 (`/hashicorp/terraform-provider-google`) for current provider syntax.
+`.tf`, use context7 (`/hashicorp/terraform-provider-google`) for current provider syntax.
 
 ## Common Commands
 - `uv run python -m google_meridian_mcp_server.server`
@@ -116,18 +115,17 @@ error-path checks, and exits non-zero on any mismatch.
   for kpi-only; an unknown channel returns `missing_model_data`.
   `get_model_fit` is valid on all variants and additionally honors a `geos`
   filter (validated end-to-end); an unknown geo returns `missing_model_data`.
-- The suite also gates the optimization module: `run_optimization` → poll
-  `get_optimization_status` → `get_optimization_result` runs end-to-end as a
-  subprocess worker for both `national-revenue` and `geo-revenue` fixtures;
-  fingerprint reuse and the `optimization_run_not_found` adversarial path are
-  also asserted. A **local cloud-executor gate** (faked `jobs.run` launching the
-  real worker against a local-dir registry) exercises the full cloud
-  launch/liveness/cancel contract without a real GCP project. An opt-in
-  **JAX cross-backend gate** (`JAX_BACKEND_GATE=1`) confirms results agree
-  across `tensorflow` and `jax` backends. A separate **real Cloud Run smoke**
-  script (`scripts.validation.cloud_smoke`; `CLOUD_SMOKE=1`,
-  `COMPUTE_TIER=cloud_cpu|cloud_gpu`) runs against the live `as-dev-anze`
-  project; the CPU real-smoke has been verified PASSING end-to-end.
+- The suite also gates the optimization module end-to-end (subprocess worker,
+  `national-revenue` + `geo-revenue`): `run_optimization` → poll
+  `get_optimization_status` → `get_optimization_result` → `list_optimizations` →
+  `delete_optimization` → verify-gone, plus fingerprint reuse and the
+  `optimization_run_not_found` path. A **local cloud-executor gate** (faked
+  `jobs.run`, real worker, local-dir registry reset each run) covers the full
+  cloud launch/liveness/cancel contract with no GCP project. A **cross-backend
+  JAX gate** auto-runs when `jax` imports (else skips), confirming `tensorflow`
+  and `jax` results agree. A **real Cloud Run smoke** (`scripts.validation.cloud_smoke`;
+  `CLOUD_SMOKE=1`, `COMPUTE_TIER`, `MODEL_ID`) runs against live `as-dev-anze`;
+  CPU real-smoke verified PASSING.
 - Showcase ↔ tool parity is tracked in `docs/meridian-mcp-showcase-parity.md`.
 
 ## Module Map
@@ -150,7 +148,7 @@ error-path checks, and exits non-zero on any mismatch.
 - **domain/optimization.py** — enums (`RunStatus`, `RunPhase`, `ComputeTier`, `OutcomeMode`); Pydantic models `OptimizationConfig`, `OptimizationRun`, `OptimizationRunState`, `OptimizationRunSummary`; helpers `config_fingerprint`, `to_optimize_kwargs`.
 - **persistence/optimization_run_registry.py** — `OptimizationRunRegistry` ABC; `LocalOptimizationRunRegistry` (3-file layout per run: manifest, state, result; fingerprint index for reuse); `GcsOptimizationRunRegistry` (same 3-file + fingerprint layout on GCS; generation-guarded state writes via `write_state(*, expected_generation)` + `get_state_generation`); `RunNotFoundError`, `ResultNotReadyError`.
 - **execution/routing.py** — `model_size_features`, `size_score`, `resolve_tier`; maps problem size to cheapest allowed compute tier; reads `OPTIMIZATION_SIZE_THRESHOLDS` and `OPTIMIZATION_ALLOWED_TIERS`.
-- **execution/base_executor.py** — `BaseExecutor` ABC; concurrency gate (max-parallel semaphore), launch lifecycle, crash reconciliation via stale-heartbeat detection.
+- **execution/base_executor.py** — `BaseExecutor` ABC; concurrency gate (max-parallel semaphore), launch lifecycle, crash reconciliation via stale-heartbeat detection; `_fail_if_unfinished` no-ops on a deleted run (`RunNotFoundError` guard) so deleting a just-completed (unreaped) run can't break a later submit.
 - **execution/subprocess_executor.py** — `SubprocessExecutor` (local tier); spawns a worker subprocess per run; passes run_id and config via env; crash/orphan reconciliation of runs left non-terminal by a server restart runs at startup.
 - **execution/cloud_run_executor.py** — `CloudRunJobExecutor` (cloud tiers); launches worker as a Cloud Run Job execution (CPU or NVIDIA L4 GPU); selects per-tier JAX backend (`OPTIMIZATION_BACKEND_CLOUD_CPU`/`_GPU`); worker heartbeat thread + stale-heartbeat detection is the cloud crash signal; startup orphan reconcile handles runs left in-flight across server restarts.
 - **execution/worker.py** — `run_worker`; loads the model, calls `OptimizerFacade.run`, writes result/state to registry; one function, no server imports.
@@ -179,13 +177,12 @@ error-path checks, and exits non-zero on any mismatch.
 - `cancel_optimization`
 
 ### Optimization module — Phase 2 (implemented)
-Plan: `docs/superpowers/plans/2026-06-30-optimization-module-phase2.md` (design: `docs/superpowers/specs/2026-06-29-optimization-tool-design.md`). Phase 2 shipped on top of Phase 1's worker/registry invariant:
-- `GcsOptimizationRunRegistry` — durable runs on GCS; same 3-file + fingerprint layout; generation-guarded state writes prevent lost-update races.
-- `CloudRunJobExecutor` — CPU or NVIDIA L4 GPU Cloud Run Jobs; per-tier JAX backend; worker heartbeat thread + stale-heartbeat detection as the cloud crash signal; startup orphan reconcile.
-- `cancel_optimization` tool — best-effort cancel of a queued or running optimization.
-- `response_curves` — now included in the optimization result payload alongside `summary`, `channel_tables`, `allocation`, `spend_delta`, and `outcome_mode`.
-- Deploy artifacts in `deploy/` (Dockerfiles, `deploy/terraform/` Terraform module, README).
-- Live gates: faked-`jobs.run` local cloud-executor gate + opt-in real Cloud Run smoke (`scripts.validation.cloud_smoke`); CPU real-smoke verified PASSING against `as-dev-anze`.
+Plan `docs/superpowers/plans/2026-06-30-optimization-module-phase2.md`; design
+`docs/superpowers/specs/2026-06-29-optimization-tool-design.md`. Fully shipped — see Module Map
+(GCS registry with generation-guarded writes, `CloudRunJobExecutor`, `cancel_optimization`,
+`response_curves`) + Live Validation. Images build in-apply via Cloud Build (content-hash tags);
+one `terraform apply` build→provision→smoke→destroy verified end-to-end on `as-dev-anze` (CPU
+tier), zero residual.
 
 ## Model Overview Expectations
 The overview tool should tell an agent:
