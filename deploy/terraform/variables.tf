@@ -4,6 +4,11 @@ variable "region" {
   default = "us-central1"
 }
 
+variable "service_account_id" {
+  type    = string
+  default = ""
+}
+
 variable "gcs_bucket" { type = string }
 variable "create_bucket" {
   type    = bool

@@ -7,7 +7,7 @@ resource "google_cloud_run_v2_service" "server" {
   labels              = var.labels
 
   template {
-    service_account = google_service_account.server.email
+    service_account = local.manage_sa ? data.google_service_account.deploy[0].email : null
 
     scaling {
       max_instance_count = 2

@@ -16,3 +16,8 @@ resource "google_project_service" "services" {
 
   disable_on_destroy = false
 }
+
+# Project number, used to render the compute engine default SA email in outputs.
+data "google_project" "this" {
+  project_id = var.project_id
+}

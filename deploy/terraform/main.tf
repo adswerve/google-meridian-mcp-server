@@ -9,6 +9,8 @@ module "meridian_stack" {
   project_id = var.project_id
   region     = var.region
 
+  service_account_id = var.service_account_id
+
   gcs_bucket              = var.gcs_bucket
   create_bucket           = var.create_bucket
   bucket_force_destroy    = var.bucket_force_destroy

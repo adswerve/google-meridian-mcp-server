@@ -3,12 +3,9 @@ output "service_uri" {
   value       = google_cloud_run_v2_service.server.uri
 }
 
-output "server_service_account" {
-  value = google_service_account.server.email
-}
-
-output "worker_service_account" {
-  value = google_service_account.worker.email
+output "service_account" {
+  description = "Identity the Cloud Run service and jobs run as."
+  value       = local.manage_sa ? data.google_service_account.deploy[0].email : "${data.google_project.this.number}-compute@developer.gserviceaccount.com (default compute engine SA)"
 }
 
 output "bucket_name" {

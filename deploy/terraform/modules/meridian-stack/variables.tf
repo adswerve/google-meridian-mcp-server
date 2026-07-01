@@ -9,6 +9,13 @@ variable "region" {
   default     = "us-central1"
 }
 
+# --- Deployment identity ---
+variable "service_account_id" {
+  type        = string
+  description = "Account id (short name, NOT email) of the single service account the Cloud Run service and jobs run as. Empty (default) makes both run as the project's compute engine default SA and creates/binds nothing. Set a name to create/adopt <id>@<project>.iam.gserviceaccount.com in this project and bind least-privilege roles."
+  default     = ""
+}
+
 # --- GCS ---
 variable "gcs_bucket" {
   type        = string

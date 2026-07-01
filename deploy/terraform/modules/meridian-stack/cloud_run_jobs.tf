@@ -17,7 +17,7 @@ resource "google_cloud_run_v2_job" "cpu" {
 
   template {
     template {
-      service_account = google_service_account.worker.email
+      service_account = local.manage_sa ? data.google_service_account.deploy[0].email : null
       max_retries     = 0
       timeout         = var.cpu_job_timeout
 
@@ -56,7 +56,7 @@ resource "google_cloud_run_v2_job" "gpu" {
 
   template {
     template {
-      service_account               = google_service_account.worker.email
+      service_account               = local.manage_sa ? data.google_service_account.deploy[0].email : null
       max_retries                   = 0
       timeout                       = var.gpu_job_timeout
       gpu_zonal_redundancy_disabled = true
