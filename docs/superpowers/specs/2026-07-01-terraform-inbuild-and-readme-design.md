@@ -170,10 +170,12 @@ region + hash), in both `modules/meridian-stack/variables.tf` and root
 
 ---
 
-## Part B — Live acceptance: real optimization + result pull
+## Part B — Live acceptance + local end-to-end regression
 
-The live acceptance already exercises a real optimization end to end via
-`scripts/validation/remote_smoke.py --run-optimization`, which chains
+### B1. Deployed live acceptance: real optimization + result pull
+
+The deployed live acceptance already exercises a real optimization end to end
+via `scripts/validation/remote_smoke.py --run-optimization`, which chains
 `run_optimization` → poll `get_optimization_status` to `completed` →
 `get_optimization_result`. Make the acceptance criteria **explicit** that:
 
@@ -186,6 +188,40 @@ No code change is required to `remote_smoke.py` for this; it is an
 acceptance-criteria clarification. If the existing assertion only checks
 truthiness, tighten it to confirm the result payload contains the expected
 top-level keys (`summary`, `allocation`).
+
+### B2. Full local end-to-end regression (all tools)
+
+This change touches Terraform, docs, and (B3) the validation harness — none of
+the runtime tool code — but the acceptance must still prove **no regression in
+any other tool**. Add running the full local end-to-end suite as an acceptance
+gate:
+
+```bash
+uv run python -m scripts.validation.live_validate
+```
+
+This builds the dummy-model fixtures and runs the whole tool matrix (national
+vs geo, revenue vs KPI, adversarial error paths) plus the existing cloud-tier
+optimization gate, exiting non-zero on any mismatch. It must pass clean.
+
+### B3. Add a simple local-tier optimization flow to the end-to-end
+
+`live_validate` currently covers optimization only through the **cloud-tier**
+gate (`assert_cloud_live_optimization`, TF + JAX cross-backend, which launches a
+real worker locally). Add a **simple `local`-tier** `run_optimization`
+happy-path to the suite — the default tier an operator hits first and the one
+with no coverage in the end-to-end today:
+
+1. Submit `run_optimization` on a fixtures model with `compute_tier=local` and a
+   minimal fixed-budget config.
+2. Poll `get_optimization_status` to `completed` (bounded timeout).
+3. Fetch `get_optimization_result` and assert the payload is non-empty and
+   contains the expected top-level keys (`summary`, `allocation`).
+
+Implement as a new assertion (e.g. `assert_local_live_optimization`) invoked
+from `live_validate` alongside the existing cloud gate, reusing the fixtures and
+in-process MCP/service wiring already present. It must be a real submit → poll →
+result flow (not a fake), running in the default local subprocess tier.
 
 ---
 
@@ -283,13 +319,19 @@ server). Verification is:
 1. `terraform fmt -check` + `terraform validate` — static.
 2. `terraform plan` against `as-dev-anze` — confirms the graph resolves and
    image refs compute without running a build.
-3. **Live acceptance** (the real gate): clean `terraform apply` from zero →
-   assert all three (or two, CPU-only) images land in Artifact Registry and
-   Cloud Run comes up healthy → `remote_smoke.py --run-optimization` launches a
-   real optimization, polls to `completed`, and **pulls a valid result** →
-   `terraform destroy` leaves zero residual (models bucket preserved per
-   `create_bucket`/`bucket_force_destroy`).
-4. README: manual read-through of the restructured file; every command block
+3. **Full local end-to-end regression** (Part B2/B3):
+   `uv run python -m scripts.validation.live_validate` passes clean — the whole
+   tool matrix plus the new local-tier optimization flow and the existing
+   cloud-tier gate — proving no other tool regressed.
+4. `uv run pytest` + `uv run ruff check` / `ruff format --check` pass (the new
+   assertion and any harness change are covered/lint-clean).
+5. **Deployed live acceptance** (the real gate): clean `terraform apply` from
+   zero → assert all three (or two, CPU-only) images land in Artifact Registry
+   and Cloud Run comes up healthy → `remote_smoke.py --run-optimization`
+   launches a real optimization, polls to `completed`, and **pulls a valid
+   result** → `terraform destroy` leaves zero residual (models bucket preserved
+   per `create_bucket`/`bucket_force_destroy`).
+6. README: manual read-through of the restructured file; every command block
    copy-paste runnable; no dead links or stale flags.
 
 ## Out of scope
