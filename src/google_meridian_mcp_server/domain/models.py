@@ -57,7 +57,7 @@ class RuntimeConfig(BaseModel):
     optimization_allowed_tiers: tuple[str, ...] = ("local",)
     optimization_default_tier: str = "auto"
     optimization_max_parallel: int = 2
-    optimization_size_thresholds: tuple[int, int] = (1_000_000, 100_000_000)
+    optimization_size_thresholds: tuple[int, int] = (10_000_000, 100_000_000)
     optimization_heartbeat_stale_seconds: int = 60
     optimization_backend_local: str = "tensorflow"
     optimization_backend_cloud_cpu: str = "jax"

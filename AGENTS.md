@@ -54,7 +54,7 @@ and persistence helpers so agents can inspect models and request structured outp
 - `OPTIMIZATION_ALLOWED_TIERS` — comma-separated permitted tiers (`local`, `cloud_cpu`, `cloud_gpu`); default `local`.
 - `OPTIMIZATION_DEFAULT_TIER` — `auto` (heuristic) or a fixed tier name; default `auto`.
 - `OPTIMIZATION_MAX_PARALLEL` — maximum concurrent optimization workers per server process; default `2`.
-- `OPTIMIZATION_SIZE_THRESHOLDS` — two comma-separated integers (`small,large`) for the `auto` tier heuristic; default `1000000,100000000`.
+- `OPTIMIZATION_SIZE_THRESHOLDS` — two comma-separated integers (`small,large`) for the `auto` tier heuristic; default `10000000,100000000`.
 - `OPTIMIZATION_BACKEND_LOCAL` — JAX backend for local workers (`tensorflow` or `jax`); default `tensorflow`.
 - `OPTIMIZATION_BACKEND_CLOUD_CPU` — JAX backend for cloud CPU workers; default `jax`.
 - `OPTIMIZATION_BACKEND_CLOUD_GPU` — JAX backend for cloud GPU workers; default `jax`.

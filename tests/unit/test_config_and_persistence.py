@@ -120,7 +120,7 @@ class TestOptimizationConfig:
         assert cfg.optimization_allowed_tiers == ("local",)
         assert cfg.optimization_default_tier == "auto"
         assert cfg.optimization_max_parallel == 2
-        assert cfg.optimization_size_thresholds == (1_000_000, 100_000_000)
+        assert cfg.optimization_size_thresholds == (10_000_000, 100_000_000)
         assert cfg.optimization_backend_local == "tensorflow"
 
     def test_runtime_config_local_requires_models_root(self):

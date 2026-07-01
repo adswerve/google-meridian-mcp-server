@@ -60,7 +60,7 @@ def load_config() -> RuntimeConfig:
         optimization_default_tier=os.getenv("OPTIMIZATION_DEFAULT_TIER", "auto"),
         optimization_max_parallel=int(os.getenv("OPTIMIZATION_MAX_PARALLEL", "2")),
         optimization_size_thresholds=_read_thresholds(
-            "OPTIMIZATION_SIZE_THRESHOLDS", (1_000_000, 100_000_000)
+            "OPTIMIZATION_SIZE_THRESHOLDS", (10_000_000, 100_000_000)
         ),
         optimization_heartbeat_stale_seconds=int(
             os.getenv("OPTIMIZATION_HEARTBEAT_STALE_SECONDS", "60")

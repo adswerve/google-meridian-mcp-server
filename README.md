@@ -348,6 +348,24 @@ The optimization tools submit and track long-running Meridian `BudgetOptimizer` 
 
 The `auto` default tier selects the cheapest allowed tier based on problem size (`OPTIMIZATION_SIZE_THRESHOLDS`).
 
+**Which tier does `auto` pick?**
+
+Selection multiplies `geos × time_periods × channels × posterior_samples` and compares it to `OPTIMIZATION_SIZE_THRESHOLDS` (default `1e7`, `1e8`). Controls, KPI, and spend columns do **not** affect it; `channels` = paid media + reach/frequency channels.
+
+The grid below assumes a typical model — **weekly data over ~2 years (~104 periods)** and **7,000 posterior samples** (7 chains × 1,000 draws):
+
+| channels ↓ \ geos → | 1 (national) | 5 | 10 | 25 | 50 | 100 |
+|---|---|---|---|---|---|---|
+| **5** | local | cloud_cpu | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu |
+| **8** | local | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu |
+| **10** | local | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu |
+| **15** | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu | cloud_gpu |
+| **20** | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu | cloud_gpu |
+
+**Rule of thumb** (this horizon and sampling): `local` when `geos × channels ≲ 14`, `cloud_gpu` when `geos × channels ≳ 137`, and `cloud_cpu` in between — so a national model (1 geo) stays local up to ~13 channels. Other cadences scale the boundaries: 3-year weekly (~156 periods) tips to `cloud_gpu` at `geos × channels ≳ 92`; monthly data keeps far more models on `cloud_cpu`. Longer histories or more posterior draws push runs toward the heavier tiers.
+
+The grid shows the *ideal* pick assuming **all three tiers are enabled**. A deployment that restricts `OPTIMIZATION_ALLOWED_TIERS` (the deployed default is `cloud_cpu` only) makes `auto` fall back to the nearest allowed tier, and an explicit `compute_tier` on `run_optimization` overrides `auto` entirely (subject to the allowed set).
+
 **Validation gates**
 
 ```bash
