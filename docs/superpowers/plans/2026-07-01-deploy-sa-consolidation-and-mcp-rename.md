@@ -440,10 +440,12 @@ Expected: `Apply complete!` with no changes to `terraform_data.service_account` 
 - [ ] **Step 8: Destroy the throwaway install**
 
 Run: `cd deploy/terraform && terraform destroy -var 'service_account_id=meridian-mcp' -auto-approve`
-Expected: `Destroy complete!`. Confirm the Cloud Run service/jobs and the `meridian-mcp` SA are gone:
+Expected: `Destroy complete!`. This tears down the Cloud Run service/jobs, Artifact Registry, and the three SA IAM bindings.
 
 Run: `gcloud iam service-accounts describe meridian-mcp@as-dev-anze.iam.gserviceaccount.com --project as-dev-anze`
-Expected: `NOT_FOUND` (exit non-zero) — the custom SA is torn down. Note: the shared models bucket (`create_bucket = false`) and the project's compute engine default SA are intentionally NOT deleted. Record the teardown as acceptance evidence.
+Expected: **the SA still exists** (exit 0), but is now inert — all three role bindings were removed by the destroy. The custom SA is created by an in-apply `gcloud` step inside `terraform_data.service_account` (mirroring the `terraform_data.build` image pattern in `builds.tf`), which has no destroy-time counterpart; `terraform destroy` therefore leaves the SA in place, exactly as it leaves built images in Artifact Registry. This is intended and consistent with the existing pattern — the next apply *adopts* the same SA. Delete it manually with `gcloud iam service-accounts delete meridian-mcp@as-dev-anze.iam.gserviceaccount.com --project as-dev-anze --quiet` if you want it gone. The shared models bucket (`create_bucket = false`) and the project's compute engine default SA are also intentionally NOT deleted. Record the teardown as acceptance evidence.
+
+> **Live acceptance result (2026-07-01, `as-dev-anze`):** All steps passed. Default-path plan = 11 resources, no SA machinery, output `365259031240-compute@developer.gserviceaccount.com (default compute engine SA)`. Custom-path apply = 15 resources; `terraform output service_account` = `meridian-mcp@as-dev-anze.iam.gserviceaccount.com`; Cloud Run service **and** CPU job both run as it. End-to-end smoke: run `geo-revenue-20260701T225509-4fbe48` queued→running→completed with a fresh CPU job execution (`meridian-opt-cpu-688qj`, 1/1 succeeded). Idempotence re-apply: SA machinery only refreshed (adopted, not recreated) — the only churn was the pre-existing `terraform_data.build` image rebuild (out of scope; `builds.tf` unchanged by this plan). Destroy: 15 destroyed, bindings removed, SA left inert (see above) and then manually deleted; bucket + compute-default SA preserved.
 
 ---
 
