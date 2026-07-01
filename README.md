@@ -35,7 +35,9 @@ It is designed for both local development and containerized deployment on Google
 
 ### Architecture
 
-A single `terraform apply` builds and pushes all three images via Cloud Build (content-hash tags), then provisions Artifact Registry, GCS, service accounts and IAM, the Cloud Run Service (MCP server), and the Cloud Run Jobs (CPU worker; GPU opt-in). Per-client inputs (`terraform.tfvars`, `backend.hcl`) are never committed. GPU is opt-in (`enable_gpu_job = true` + add `cloud_gpu` to `optimization_allowed_tiers` + L4 quota in the region). The default apply provisions the CPU worker only.
+A single `terraform apply` builds and pushes all three images via Cloud Build (content-hash tags), then provisions Artifact Registry, GCS, the Cloud Run Service (MCP server), and the Cloud Run Jobs (CPU worker; GPU opt-in). Per-client inputs (`terraform.tfvars`, `backend.hcl`) are never committed. GPU is opt-in (`enable_gpu_job = true` + add `cloud_gpu` to `optimization_allowed_tiers` + L4 quota in the region). The default apply provisions the CPU worker only.
+
+**Service account:** the service and jobs run as a single identity. By default (`service_account_id` unset) that is the project's compute engine default service account and Terraform creates/binds nothing — it relies on that SA's project `Editor` grant. Set `service_account_id` to a name (e.g. `meridian-mcp`) and Terraform instead creates or adopts a dedicated SA in the project and grants it least-privilege roles (`run.developer`, `storage.objectAdmin`, and `actAs` on itself). `terraform output service_account` reports which identity is in use. This replaces the previous two-SA (`meridian-mcp-server` + `meridian-opt-worker`) layout.
 
 ### Prerequisites
 

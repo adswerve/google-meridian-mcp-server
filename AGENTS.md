@@ -66,9 +66,10 @@ and persistence helpers so agents can inspect models and request structured outp
 - Cloud tiers require `REGISTRY_BACKEND=gcs`; validated at startup.
 
 ### Deployment (Terraform)
-The full stack (Cloud Run service + CPU/GPU jobs, Artifact Registry, GCS, IAM) is provisioned
+The full stack (Cloud Run service + CPU/GPU jobs, Artifact Registry, GCS) is provisioned
 per client via `deploy/terraform/`. A single `terraform apply` builds+pushes all three images
-via Cloud Build (content-hash tags), then provisions everything. Per-client `terraform.tfvars`
+via Cloud Build (content-hash tags), then provisions everything. The service and jobs share one identity: the compute engine default SA by default, or a
+dedicated SA (created/adopted with least-privilege roles) when `service_account_id` is set. Per-client `terraform.tfvars`
 and `backend.hcl` are uncommitted (`.example` committed); `.env` is local-dev only. Full runbook:
 [README.md § Deploy to Google Cloud](README.md#deploy-to-google-cloud-terraform). When editing
 `.tf`, use context7 (`/hashicorp/terraform-provider-google`) for current provider syntax.
