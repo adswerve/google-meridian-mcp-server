@@ -11,9 +11,14 @@ from google_meridian_mcp_server import server
 
 
 class _FakeFastMCP:
-    def __init__(self, name, lifespan):
+    def __init__(self, name, instructions=None, lifespan=None):
         self.name = name
+        self.instructions = instructions
         self.lifespan = lifespan
+        self.providers = []
+
+    def add_provider(self, provider, *, namespace=""):
+        self.providers.append(provider)
 
 
 def _runtime_config(backend: str) -> SimpleNamespace:
@@ -45,6 +50,8 @@ def test_create_server_registers_tools(monkeypatch: pytest.MonkeyPatch):
 
     assert isinstance(mcp, _FakeFastMCP)
     assert mcp.name == "Google Meridian MCP Server"
+    assert mcp.instructions == server._SERVER_INSTRUCTIONS
+    assert len(mcp.providers) == 1
     register_tools.assert_called_once_with(mcp)
 
 

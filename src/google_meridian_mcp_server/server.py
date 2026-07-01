@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastmcp import FastMCP
+from fastmcp.server.providers.skills import SkillsDirectoryProvider
 
 from google_meridian_mcp_server.bootstrap import build_model_catalog
 from google_meridian_mcp_server.config import load_config
@@ -15,6 +17,16 @@ from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.transport.tools import register_tools
 
 log = logging.getLogger(__name__)
+
+_SKILLS_ROOT = Path(__file__).resolve().parents[2] / "skills"
+
+_SERVER_INSTRUCTIONS = (
+    "Google Meridian marketing-mix-model analysis and budget optimization tools. "
+    "This server bundles a 'meridian-analyst' skill with orchestration, domain, and "
+    "scenario guidance. Read skill://meridian-analyst/SKILL.md before analysis — "
+    "especially for budget optimization, reallocation, or channel-performance "
+    "questions."
+)
 
 
 @asynccontextmanager
@@ -64,10 +76,12 @@ def create_server() -> FastMCP:
     """Build and return a configured FastMCP server instance."""
     mcp = FastMCP(
         "Google Meridian MCP Server",
+        instructions=_SERVER_INSTRUCTIONS,
         lifespan=_lifespan,
     )
 
     register_tools(mcp)
+    mcp.add_provider(SkillsDirectoryProvider(roots=_SKILLS_ROOT))
     return mcp
 
 
