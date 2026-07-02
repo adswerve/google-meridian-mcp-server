@@ -249,8 +249,9 @@ class OptimizerFacade(MeridianInterrogator):
             else self.get_data_inputs()["rf_media"]
         )
         names = [order[i] for i in zero_idx]
+        units = "media units" if family == "media" else "RF impressions"
         raise ValueError(
-            f"channel(s) {names} have zero media units in the chosen reference "
+            f"channel(s) {names} have zero {units} in the chosen reference "
             "window; pick a different reference window or horizon"
         )
 
