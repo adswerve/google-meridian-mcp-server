@@ -124,8 +124,17 @@ async def test_run_future_optimization_submit_envelope(client):
         },
     )
     data = res.data
-    assert data["status"] in ("queued", "running", "completed")
-    assert "run_id" in data and "compute_tier_resolved" in data
+    run_id = data.get("run_id")
+    try:
+        assert data["status"] in ("queued", "running", "completed")
+        assert run_id and "compute_tier_resolved" in data
+    finally:
+        # Reap the submitted run: cancel terminates the worker subprocess spawned
+        # by SubprocessExecutor, then delete removes the run record, so no
+        # orphaned process or on-disk artifact survives the test.
+        if run_id:
+            await client.call_tool("cancel_optimization", {"run_id": run_id})
+            await client.call_tool("delete_optimization", {"run_id": run_id})
 
 
 @pytest.mark.asyncio
