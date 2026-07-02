@@ -24,9 +24,10 @@ It is designed for both local development and containerized deployment on Google
 
 **Optimization**
 
-- `run_optimization` — submit a fixed-budget or target-ROAS run (returns immediately with a `run_id`).
+- `run_optimization` — submit a historical fixed-budget or target-ROAS/mROAS run (returns immediately with a `run_id`).
+- `run_future_optimization` — optimize a **future** budget under user-supplied assumptions: carries forward cost-per-media-unit, flighting, and revenue-per-KPI from a chosen reference window (`trailing` / `same_period_last_year` / `full_history_average`), optionally scaled by `cost_multipliers` / `revenue_per_kpi_multiplier` / `planned_allocation`. Meridian does **not** forecast demand — this optimizes under assumptions, not a prediction. Same async `run_id` lifecycle and management tools as `run_optimization`.
 - `get_optimization_status` — poll status: `queued → running → completed/failed`.
-- `get_optimization_result` — structured result: `summary`, `channel_tables`, `allocation`, `spend_delta`, `outcome_mode`, `response_curves`.
+- `get_optimization_result` — structured result: `summary`, `channel_tables`, `allocation`, `spend_delta`, `outcome_mode`, and `response_curves` (historical runs only — future runs omit curves, since Meridian cannot recompute them under future assumptions).
 - `list_optimizations` — list runs for a model with optional status filter.
 - `delete_optimization` — remove a completed or failed run from the registry.
 - `cancel_optimization` — best-effort cancel of a queued or running run.
@@ -37,7 +38,11 @@ The server bundles a `meridian-analyst` Agent Skill. When a connecting client su
 
 For clients that don't yet surface MCP skill resources, use the folder-drop fallback: copy the `skills/meridian-analyst/` directory verbatim into the client's skills folder (e.g. `.claude/skills/`). It's a standards-compliant Agent Skill (agentskills.io format) and needs no conversion.
 
-The skill teaches orchestration, model taxonomy, budget-optimization/reallocation, and channel-performance workflows. It does not replace the per-tool descriptions above, which remain the source of truth for parameters.
+The skill teaches orchestration, model taxonomy, budget optimization and reallocation (both **historical** `run_optimization` and **future** `run_future_optimization`), and channel-performance workflows.
+
+It includes a **consultative guidance layer** (`references/consultation.md`) for the common case where a non-expert user (marketer, CMO) asks a vague, high-level question ("optimize my Q4 budget", "where should I put more money?"). Instead of running on silent defaults, the skill has the agent: (1) elicit only the genuinely-unknowable gaps first — goal, budget change, hard constraints, the future period — in plain business language (no `cpmu`/`flighting`/`pct_of_spend` jargon); (2) propose a concrete plan with every remaining assumption named; (3) confirm before running when the request is ambiguous or high-stakes. It also carries a plain-language → tool-field translation table (e.g. "TV CPMs up ~15%" → `cost_multipliers {TV: 1.15}`; "plan like last December" → future tool, `same_period_last_year` reference).
+
+It does not replace the per-tool descriptions above, which remain the source of truth for parameters.
 
 ## Deploy to Google Cloud (Terraform)
 

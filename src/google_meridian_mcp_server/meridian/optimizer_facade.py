@@ -5,11 +5,21 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
+
 from google_meridian_mcp_server.domain.optimization import (
+    BaseOptimizationConfig,
     OptimizationConfig,
     to_optimize_kwargs,
 )
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
+
+
+def _best_effort(fn):
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001 - response curves are best-effort enrichment
+        return None
 
 
 def _sig6(value: float | None) -> float | None:
@@ -33,30 +43,248 @@ class OptimizerFacade(MeridianInterrogator):
         inputs = self.get_data_inputs()
         return list(inputs["media"]) + list(inputs["rf_media"])
 
-    def resolve_use_kpi(self, config: OptimizationConfig) -> bool:
+    def resolve_use_kpi(self, config: BaseOptimizationConfig) -> bool:
         if config.use_kpi is not None:
             return config.use_kpi
         return not self.has_revenue_per_kpi()
 
-    def run(self, config: OptimizationConfig) -> dict[str, Any]:
+    def execute(self, config) -> dict[str, Any]:
+        if getattr(config, "kind", "historical") == "future":
+            return self.run_future(config)
+        return self.run(config)
+
+    def _run(
+        self, config, build_kwargs, *, enrich_curves: bool = True
+    ) -> dict[str, Any]:
         from meridian.analysis import optimizer as optimizer_mod
 
         use_kpi = self.resolve_use_kpi(config)
-        kwargs = to_optimize_kwargs(
-            config, channel_order=self.channel_order(), use_kpi=use_kpi
+        opt = optimizer_mod.BudgetOptimizer(self._mmm)
+        kwargs = build_kwargs(config, opt, use_kpi)
+        results = opt.optimize(**kwargs)
+        curves = (
+            _best_effort(lambda: results.get_response_curves())
+            if enrich_curves
+            else None
         )
-        budget_optimizer = optimizer_mod.BudgetOptimizer(self._mmm)
-        results = budget_optimizer.optimize(**kwargs)
-        try:
-            curves = results.get_response_curves()
-        except Exception:  # noqa: BLE001 - response curves are best-effort enrichment
-            curves = None
         return self.build_result(
             results.nonoptimized_data,
             results.optimized_data,
             use_kpi=use_kpi,
             response_curves=curves,
         )
+
+    def run(self, config: OptimizationConfig) -> dict[str, Any]:
+        return self._run(config, self._historical_kwargs)
+
+    def _historical_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
+        return to_optimize_kwargs(
+            config, channel_order=self.channel_order(), use_kpi=use_kpi
+        )
+
+    def run_future(self, config) -> dict[str, Any]:
+        return self._run(config, self._future_kwargs, enrich_curves=False)
+
+    def validate_future(self, config) -> None:
+        """Pure up-front guards for future optimization: no `optimize()` call.
+
+        Runs the same checks `_future_kwargs` performs before building tensors,
+        so invalid future configs (bad start_date, infeasible reference window,
+        unknown channel keys, unsupported spend granularity) fail fast without
+        touching the model.
+        """
+        from google_meridian_mcp_server.meridian import future_data as fd
+
+        f = config.future
+        times = self.get_time_values()
+        cadence = fd.infer_cadence_days(times)
+        labels = fd.future_time_labels(f.start_date, f.horizon, cadence)
+        if labels[0] <= times[-1][:10]:
+            raise ValueError(
+                "future start_date must be after the last training period."
+            )
+        fd.reference_indices(f.reference.mode, f.horizon, f.start_date, times, cadence)
+
+        inputs = self.get_data_inputs()
+        if inputs["media"]:
+            self._spend_np("media_spend")  # cheap ndim guard; raises if not 3-D
+        if inputs["rf_media"]:
+            self._spend_np("rf_spend")  # cheap ndim guard; raises if not 3-D
+
+        media_order = self.get_data_inputs()["media"]
+        rf_order = self.get_data_inputs()["rf_media"]
+        fd.validate_channel_keys(f.cost_multipliers, media_order + rf_order)
+
+        fd.validate_channel_keys(f.planned_allocation, self.channel_order())
+
+    def _future_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
+        from google_meridian_mcp_server.meridian import future_data as fd
+
+        f = config.future
+        times = self.get_time_values()
+        cadence = fd.infer_cadence_days(times)
+        time_labels = fd.future_time_labels(f.start_date, f.horizon, cadence)
+        if time_labels[0] <= times[-1][:10]:
+            raise ValueError(
+                "future start_date must be after the last training period."
+            )
+        window = fd.reference_indices(
+            f.reference.mode, f.horizon, f.start_date, times, cadence
+        )
+
+        media_order = self.get_data_inputs()["media"]
+        rf_order = self.get_data_inputs()["rf_media"]
+        fd.validate_channel_keys(f.cost_multipliers, media_order + rf_order)
+        average = f.reference.mode == "full_history_average"
+
+        seeded_total = 0.0
+        tensor_kwargs: dict[str, Any] = {"time": time_labels}
+        if media_order:
+            tensor_kwargs["cpmu"] = fd.apply_cost_multipliers(
+                self._seed_cpmu(window), f.cost_multipliers, media_order
+            )
+            media_spend = self._seed_spend_flighting(
+                "media_spend", window, f.horizon, average
+            )
+            tensor_kwargs["media_spend"] = media_spend
+            seeded_total += float(np.asarray(media_spend).sum())
+        if rf_order:
+            tensor_kwargs["cprf"] = fd.apply_cost_multipliers(
+                self._seed_cprf(window), f.cost_multipliers, rf_order
+            )
+            rf_spend = self._seed_spend_flighting(
+                "rf_spend", window, f.horizon, average
+            )
+            tensor_kwargs["rf_spend"] = rf_spend
+            seeded_total += float(np.asarray(rf_spend).sum())
+        if self.has_revenue_per_kpi():
+            tensor_kwargs["revenue_per_kpi"] = (
+                self._seed_revenue_per_kpi(window, f.horizon, average)
+                * f.revenue_per_kpi_multiplier
+            )
+
+        new_data = opt.create_optimization_tensors(**tensor_kwargs)
+
+        carried = self._carried_allocation(window)  # {channel: weight}
+        pct = fd.normalize_planned_allocation(
+            f.planned_allocation, carried, self.channel_order()
+        )
+        fixed_budget = config.scenario.type == "fixed_budget"
+        scenario_budget = getattr(config.scenario, "budget", None)
+        # Budget defaults to the SEEDED future flighting total (horizon periods), NOT the
+        # raw reference-window total — the two differ for full_history_average.
+        budget = fd.resolve_budget(scenario_budget, fixed_budget, seeded_total)
+
+        kwargs = to_optimize_kwargs(
+            config, channel_order=self.channel_order(), use_kpi=use_kpi
+        )
+        kwargs.update(
+            new_data=new_data,
+            start_date=time_labels[0],
+            end_date=time_labels[-1],
+            pct_of_spend=pct,
+            budget=budget,
+        )
+        return kwargs
+
+    # -- private seed helpers (read self._mmm.input_data as NumPy) ------------
+
+    def _n_times(self) -> int:
+        return len(self.get_time_values())
+
+    def _trim_media(self, arr: np.ndarray) -> np.ndarray:
+        """Trim a media-family tensor to its final ``n_times`` slice.
+
+        media/reach/frequency are indexed by the longer ``media_time`` axis; only
+        the final ``n_times`` periods align to ``input_data.time``.
+        """
+        return arr[:, -self._n_times() :, :]
+
+    def _spend_np(self, kind: str) -> np.ndarray:
+        """Return a spend tensor as ``(n_geos, time, n_channels)`` float array."""
+        arr = np.asarray(getattr(self._mmm.input_data, kind).values, dtype=float)
+        if arr.ndim < 3:
+            raise ValueError("unsupported spend granularity for future optimization")
+        return arr
+
+    def _seed_cpmu(self, window: list[int]) -> np.ndarray:
+        spend = self._spend_np("media_spend")
+        media = self._trim_media(
+            np.asarray(self._mmm.input_data.media.values, dtype=float)
+        )
+        spend_sum = spend[:, window, :].sum(axis=(0, 1))
+        media_sum = media[:, window, :].sum(axis=(0, 1))
+        self._raise_on_zero_denominator(media_sum, "media")
+        return spend_sum / media_sum
+
+    def _seed_cprf(self, window: list[int]) -> np.ndarray:
+        spend = self._spend_np("rf_spend")
+        reach = self._trim_media(
+            np.asarray(self._mmm.input_data.reach.values, dtype=float)
+        )
+        frequency = self._trim_media(
+            np.asarray(self._mmm.input_data.frequency.values, dtype=float)
+        )
+        impressions = reach * frequency
+        spend_sum = spend[:, window, :].sum(axis=(0, 1))
+        impressions_sum = impressions[:, window, :].sum(axis=(0, 1))
+        self._raise_on_zero_denominator(impressions_sum, "rf")
+        return spend_sum / impressions_sum
+
+    def _raise_on_zero_denominator(self, denom_sum: np.ndarray, family: str) -> None:
+        """Guard against zero media units/impressions in the reference window.
+
+        A zero denominator (spend > 0 but zero summed media units or RF
+        impressions over the reference window) would silently produce inf/NaN
+        cost-per-unit that flows into ``create_optimization_tensors``/
+        ``optimize``, yielding a "completed" run full of null metrics. Raise a
+        clear, actionable error instead.
+        """
+        zero_idx = np.flatnonzero(np.asarray(denom_sum) == 0)
+        if zero_idx.size == 0:
+            return
+        order = (
+            self.get_data_inputs()["media"]
+            if family == "media"
+            else self.get_data_inputs()["rf_media"]
+        )
+        names = [order[i] for i in zero_idx]
+        units = "media units" if family == "media" else "RF impressions"
+        raise ValueError(
+            f"channel(s) {names} have zero {units} in the chosen reference "
+            "window; pick a different reference window or horizon"
+        )
+
+    def _seed_spend_flighting(
+        self, kind: str, window: list[int], horizon: int, average: bool
+    ) -> np.ndarray:
+        spend = self._spend_np(kind)
+        if average:
+            per_period = spend.mean(axis=1, keepdims=True)
+            return np.repeat(per_period, horizon, axis=1)
+        return spend[:, window, :]
+
+    def _seed_revenue_per_kpi(
+        self, window: list[int], horizon: int, average: bool
+    ) -> np.ndarray:
+        rpk = np.asarray(self._mmm.input_data.revenue_per_kpi.values, dtype=float)
+        if average:
+            per_period = rpk.mean(axis=1, keepdims=True)
+            return np.repeat(per_period, horizon, axis=1)
+        return rpk[:, window]
+
+    def _carried_allocation(self, window: list[int]) -> dict[str, float]:
+        inputs = self.get_data_inputs()
+        weights: dict[str, float] = {}
+        if inputs["media"]:
+            per_channel = self._spend_np("media_spend")[:, window, :].sum(axis=(0, 1))
+            for i, channel in enumerate(inputs["media"]):
+                weights[channel] = float(per_channel[i])
+        if inputs["rf_media"]:
+            per_channel = self._spend_np("rf_spend")[:, window, :].sum(axis=(0, 1))
+            for i, channel in enumerate(inputs["rf_media"]):
+                weights[channel] = float(per_channel[i])
+        return weights
 
     @staticmethod
     def build_result(

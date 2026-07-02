@@ -44,3 +44,31 @@ part; the base is not attributable to any channel.
 is a distribution, not a single number. The credible interval is the plausible
 range for the true value; a wide interval means high uncertainty. Always report
 it with the mean, and never present the mean as exact.
+
+**Reference window (`reference`, in `run_future_optimization`)** — The historical
+window whose cost-per-media-unit, flighting, and revenue-per-KPI are carried
+forward as the future period's cost structure. All three modes resolve against
+the model's **training data** — none of them have any notion of wall-clock
+"today": `trailing` (the last `horizon` periods of the training data, ending at
+the model's last training period — "keep recent conditions"; a model trained
+through 2025-06 anchors here regardless of the current date), `same_period_last_year`
+(the `horizon` periods exactly one year before `start_date` — "plan like the same
+season last year"), and `full_history_average` (the average over all training
+periods — "use a stable long-run baseline"). Routing detail: `taxonomy.md`.
+
+**Cost multiplier (`cost_multipliers`)** — A per-channel scaling factor applied to
+the reference window's carried-forward cost-per-media-unit in a future
+optimization. `1.15` = 15% more expensive; below `1.0` = cheaper. Raising a
+channel's cost multiplier makes it less efficient, so the optimizer shifts budget
+away from it; lowering it does the opposite. Channels omitted default to `1.0`.
+
+**Flighting** — The time-shape of spend across periods within a window (e.g. spend
+weighted toward the last two weeks of a quarter rather than spread evenly). In
+`run_future_optimization`, flighting is one of the things carried forward from the
+chosen reference window — it is not something you set directly.
+
+**Planned allocation (`planned_allocation`)** — Your intended future spend mix,
+supplied to `run_future_optimization`. It is the center that spend constraints
+bound around, and it appears as the "current"/baseline mix in the result (the
+future-run counterpart of `channel_tables.initial`). Unlisted channels are filled
+from the carried-forward mix and the vector is renormalized to sum to 1.

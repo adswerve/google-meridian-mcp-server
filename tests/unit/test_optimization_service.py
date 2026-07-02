@@ -6,7 +6,10 @@ from google_meridian_mcp_server.domain.optimization import RunStatus
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     LocalOptimizationRunRegistry,
 )
-from google_meridian_mcp_server.services.optimization_service import OptimizationService
+from google_meridian_mcp_server.services.optimization_service import (
+    InvalidOptimizationConfigError,
+    OptimizationService,
+)
 
 
 class _Posterior:
@@ -64,6 +67,28 @@ class _Catalog404(_Catalog):
         raise ModelNotFoundError(model_id)
 
 
+class _FutureFacade(_Facade):
+    """Fake facade whose validate_future raises ValueError only for unknown channels.
+
+    horizon <= 0 is already rejected by pydantic before the service calls
+    validate_future, so this fake does not need to re-check it.
+    """
+
+    def validate_future(self, config):
+        f = config.future
+        valid = set(self.get_data_inputs()["media"]) | set(
+            self.get_data_inputs()["rf_media"]
+        )
+        unknown = set(f.cost_multipliers or {}) - valid
+        if unknown:
+            raise ValueError(f"unknown channels: {sorted(unknown)}")
+        unknown_alloc = set(f.planned_allocation or {}) - set(self.channel_order())
+        if unknown_alloc:
+            raise ValueError(
+                f"planned_allocation has unknown channels: {sorted(unknown_alloc)}"
+            )
+
+
 class _Executor:
     def __init__(self):
         self.submitted = []
@@ -108,6 +133,23 @@ def _svc(tmp_path, catalog=None):
     )
     reg = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
     return OptimizationService(catalog or _Catalog(), reg, _Executor(), cfg), reg
+
+
+@pytest.fixture
+def service_with_fakes(tmp_path):
+    """OptimizationService wired with fakes exposing validate_future, for future-optimization tests."""
+    catalog = _Catalog()
+    catalog._f = _FutureFacade()
+    executor = _Executor()
+    cfg = RuntimeConfig(
+        persistence_backend="local",
+        local_models_root=str(tmp_path),
+        optimization_runs_root=str(tmp_path / "runs"),
+    )
+    registry = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
+    service = OptimizationService(catalog, registry, executor, cfg)
+    fakes = {"catalog": catalog, "executor": executor, "registry": registry}
+    return service, fakes
 
 
 def test_run_optimization_creates_queued_run(tmp_path):
@@ -294,3 +336,61 @@ def test_cancel_marks_canceled_and_terminates(tmp_path):
     assert result == {"run_id": run_id, "status": "canceled"}
     assert executor.terminated == [run_id]
     assert reg.get_state(run_id).status == RunStatus.CANCELED
+
+
+def test_run_future_optimization_returns_queued_envelope(service_with_fakes):
+    service, fakes = service_with_fakes
+    out = service.run_future_optimization(
+        "national-revenue",
+        {
+            "scenario": {"type": "fixed_budget"},
+            "future": {"start_date": "2099-01-01", "horizon": 4},
+        },
+    )
+    assert out["status"] == "queued"
+    assert out["reused"] is False
+    assert "run_id" in out
+
+
+def test_run_future_optimization_reuses_identical_run(service_with_fakes):
+    service, fakes = service_with_fakes
+    cfg = {
+        "scenario": {"type": "fixed_budget"},
+        "future": {"start_date": "2099-01-01", "horizon": 4},
+    }
+    first = service.run_future_optimization("national-revenue", cfg)
+    second = service.run_future_optimization("national-revenue", cfg)
+    assert second["reused"] is True
+    assert second["run_id"] == first["run_id"]
+
+
+def test_run_future_invalid_config_raises(service_with_fakes):
+    service, _ = service_with_fakes
+    with pytest.raises(InvalidOptimizationConfigError):
+        service.run_future_optimization(
+            "national-revenue",
+            {
+                "scenario": {"type": "fixed_budget"},
+                "future": {"start_date": "2099-01-01", "horizon": 0},
+            },
+        )
+
+
+def test_run_future_validate_future_error_becomes_invalid_config(service_with_fakes):
+    """FIX 7: a config that passes pydantic but fails facade.validate_future (unknown
+    cost_multipliers channel) must surface as InvalidOptimizationConfigError, not a
+    bare ValueError -- exercising the try/except conversion in run_future_optimization.
+    """
+    service, _ = service_with_fakes
+    with pytest.raises(InvalidOptimizationConfigError):
+        service.run_future_optimization(
+            "national-revenue",
+            {
+                "scenario": {"type": "fixed_budget"},
+                "future": {
+                    "start_date": "2099-01-01",
+                    "horizon": 4,
+                    "cost_multipliers": {"not_a_channel": 1.2},
+                },
+            },
+        )

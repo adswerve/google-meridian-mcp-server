@@ -31,11 +31,20 @@ See `references/taxonomy.md` for how each fact changes what is valid.
 
 ## Cardinal rules
 
-- **Optimization is asynchronous.** `run_optimization` returns a `run_id`, not an
-  answer. Poll `get_optimization_status` until status is `completed`, then call
-  `get_optimization_result`. Never treat the submit call as the result. Other
-  terminal states are `failed` and `canceled`. `cancel_optimization` stops a run;
-  `list_optimizations` and `delete_optimization` manage prior runs.
+- **Optimization is asynchronous.** Both `run_optimization` (historical window)
+  and `run_future_optimization` (a future window, under supplied assumptions)
+  return a `run_id`, not an answer. Poll `get_optimization_status` until status
+  is `completed`, then call `get_optimization_result`. Never treat the submit
+  call as the result. Other terminal states are `failed` and `canceled`. The
+  five run-id tools — `get_optimization_status`, `get_optimization_result`,
+  `list_optimizations`, `cancel_optimization`, `delete_optimization` — manage
+  runs from **either** tool identically; there is no separate lifecycle for
+  future runs. See `references/budget-optimization.md` for when to use which.
+- **Vague or high-stakes asks get a consultative pass first.** Before running an
+  optimization (historical or future), a spend-scenario what-if, or setting a
+  target on an ambiguous or high-stakes request, elicit the missing business
+  inputs and confirm the plan — see `references/consultation.md`. Do not run on
+  an unstated assumption.
 - **Match the objective to the model's revenue capability.** Revenue-capable
   models → optimize and report on ROAS/ROI (higher is better). No-revenue
   (KPI-only) models → use CPIK, cost per incremental KPI (lower is better —
@@ -65,7 +74,8 @@ reports `revenue` vs `kpi`. Full validity matrix and how to read it off
 
 | The question is about… | Go to |
 | --- | --- |
-| Whole-budget allocation or reallocation across channels, "how should I spend", target ROAS/mROAS | `references/budget-optimization.md` |
+| Whole-budget allocation or reallocation across channels, "how should I spend", target ROAS/mROAS, or planning a FUTURE period's budget | `references/budget-optimization.md` |
 | Channel ROI/performance, contribution, response curves, saturation, adstock, reach & frequency, single-channel spend what-ifs, model fit/diagnostics | `references/channel-performance.md` |
 | What the model types mean and which tools/metrics are valid where | `references/taxonomy.md` |
-| An unfamiliar term (ROAS, CPIK, adstock, incremental…) | `references/glossary.md` |
+| An unfamiliar term (ROAS, CPIK, adstock, incremental, reference window…) | `references/glossary.md` |
+| A vague, high-level, or high-stakes ask that needs clarifying before you run anything | `references/consultation.md` |
