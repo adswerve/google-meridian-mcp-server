@@ -6,10 +6,18 @@ import math
 from typing import Any
 
 from google_meridian_mcp_server.domain.optimization import (
+    BaseOptimizationConfig,
     OptimizationConfig,
     to_optimize_kwargs,
 )
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
+
+
+def _best_effort(fn):
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001 - response curves are best-effort enrichment
+        return None
 
 
 def _sig6(value: float | None) -> float | None:
@@ -33,29 +41,37 @@ class OptimizerFacade(MeridianInterrogator):
         inputs = self.get_data_inputs()
         return list(inputs["media"]) + list(inputs["rf_media"])
 
-    def resolve_use_kpi(self, config: OptimizationConfig) -> bool:
+    def resolve_use_kpi(self, config: BaseOptimizationConfig) -> bool:
         if config.use_kpi is not None:
             return config.use_kpi
         return not self.has_revenue_per_kpi()
 
-    def run(self, config: OptimizationConfig) -> dict[str, Any]:
+    def execute(self, config) -> dict[str, Any]:
+        if getattr(config, "kind", "historical") == "future":
+            return self.run_future(config)
+        return self.run(config)
+
+    def _run(self, config, build_kwargs) -> dict[str, Any]:
         from meridian.analysis import optimizer as optimizer_mod
 
         use_kpi = self.resolve_use_kpi(config)
-        kwargs = to_optimize_kwargs(
-            config, channel_order=self.channel_order(), use_kpi=use_kpi
-        )
-        budget_optimizer = optimizer_mod.BudgetOptimizer(self._mmm)
-        results = budget_optimizer.optimize(**kwargs)
-        try:
-            curves = results.get_response_curves()
-        except Exception:  # noqa: BLE001 - response curves are best-effort enrichment
-            curves = None
+        opt = optimizer_mod.BudgetOptimizer(self._mmm)
+        kwargs = build_kwargs(config, opt, use_kpi)
+        results = opt.optimize(**kwargs)
+        curves = _best_effort(lambda: results.get_response_curves())
         return self.build_result(
             results.nonoptimized_data,
             results.optimized_data,
             use_kpi=use_kpi,
             response_curves=curves,
+        )
+
+    def run(self, config: OptimizationConfig) -> dict[str, Any]:
+        return self._run(config, self._historical_kwargs)
+
+    def _historical_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
+        return to_optimize_kwargs(
+            config, channel_order=self.channel_order(), use_kpi=use_kpi
         )
 
     @staticmethod

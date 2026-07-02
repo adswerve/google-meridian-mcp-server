@@ -1,7 +1,13 @@
 # tests/unit/test_optimizer_facade.py
+from unittest.mock import MagicMock
+
 import numpy as np
 import xarray as xr
 
+from google_meridian_mcp_server.domain.optimization import (
+    FutureOptimizationConfig,
+    OptimizationConfig,
+)
 from google_meridian_mcp_server.meridian.optimizer_facade import OptimizerFacade
 
 
@@ -193,3 +199,21 @@ def test_response_curve_rows_shape_and_rounding():
     assert len(rows) == 6
     tv0 = next(r for r in rows if r["channel"] == "tv" and r["spend"] == 100.0)
     assert tv0["incremental_outcome"] == 300.0
+
+
+def test_execute_dispatches_by_kind(monkeypatch):
+    facade = OptimizerFacade.__new__(OptimizerFacade)  # no real model needed
+    facade.run = MagicMock(return_value={"ran": "historical"})
+    facade.run_future = MagicMock(return_value={"ran": "future"})
+
+    hist = OptimizationConfig.model_validate({"scenario": {"type": "fixed_budget"}})
+    fut = FutureOptimizationConfig.model_validate(
+        {
+            "scenario": {"type": "fixed_budget"},
+            "future": {"start_date": "2026-10-01", "horizon": 4},
+        }
+    )
+    assert facade.execute(hist) == {"ran": "historical"}
+    assert facade.execute(fut) == {"ran": "future"}
+    facade.run.assert_called_once_with(hist)
+    facade.run_future.assert_called_once_with(fut)
