@@ -266,7 +266,7 @@ def _invert(value: float) -> float:
 
 
 def to_optimize_kwargs(
-    config: OptimizationConfig, *, channel_order: list[str], use_kpi: bool
+    config: BaseOptimizationConfig, *, channel_order: list[str], use_kpi: bool
 ) -> dict[str, Any]:
     """Translate an OptimizationConfig into BudgetOptimizer.optimize() kwargs."""
     scenario = config.scenario
@@ -296,6 +296,8 @@ def to_optimize_kwargs(
         spend_lower = [constraint.bounds[ch].lower_pct for ch in channel_order]
         spend_upper = [constraint.bounds[ch].upper_pct for ch in channel_order]
 
+    start_date = getattr(config, "start_date", None)
+    end_date = getattr(config, "end_date", None)
     return {
         "fixed_budget": fixed_budget,
         "budget": budget,
@@ -304,7 +306,7 @@ def to_optimize_kwargs(
         "spend_constraint_lower": spend_lower,
         "spend_constraint_upper": spend_upper,
         "selected_geos": config.selected_geos,
-        "start_date": config.start_date.isoformat() if config.start_date else None,
-        "end_date": config.end_date.isoformat() if config.end_date else None,
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
         "use_kpi": use_kpi,
     }
