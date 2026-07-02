@@ -169,80 +169,87 @@ async def assert_live_future_optimization(client, model_id: str, *, overview) ->
         f"expected local tier, got {submit}"
     )
 
-    status = None
-    for _ in range(120):  # tiny fixtures finish fast; cap ~60s
-        status = await call(client, "get_optimization_status", {"run_id": run_id})
-        if status["status"] in ("completed", "failed"):
-            break
-        await asyncio.sleep(0.5)
-    assert status and status["status"] == "completed", f"run did not complete: {status}"
+    try:
+        status = None
+        for _ in range(120):  # tiny fixtures finish fast; cap ~60s
+            status = await call(client, "get_optimization_status", {"run_id": run_id})
+            if status["status"] in ("completed", "failed"):
+                break
+            await asyncio.sleep(0.5)
+        assert status and status["status"] == "completed", (
+            f"run did not complete: {status}"
+        )
 
-    result = await call(client, "get_optimization_result", {"run_id": run_id})
-    for key in (
-        "summary",
-        "channel_tables",
-        "allocation",
-        "spend_delta",
-        "outcome_mode",
-    ):
-        assert key in result, f"result missing '{key}': {result.keys()}"
-    assert {"initial", "optimized"} <= set(result["channel_tables"]), (
-        "missing channel tables"
-    )
+        result = await call(client, "get_optimization_result", {"run_id": run_id})
+        for key in (
+            "summary",
+            "channel_tables",
+            "allocation",
+            "spend_delta",
+            "outcome_mode",
+        ):
+            assert key in result, f"result missing '{key}': {result.keys()}"
+        assert {"initial", "optimized"} <= set(result["channel_tables"]), (
+            "missing channel tables"
+        )
 
-    # Reuse: identical submit returns the same run, flagged reused.
-    again = await call(
-        client,
-        "run_future_optimization",
-        {"model_id": model_id, "config": future_config},
-    )
-    assert again["reused"] is True and again["run_id"] == run_id, (
-        f"reuse failed: {again}"
-    )
+        # Reuse: identical submit returns the same run, flagged reused.
+        again = await call(
+            client,
+            "run_future_optimization",
+            {"model_id": model_id, "config": future_config},
+        )
+        assert again["reused"] is True and again["run_id"] == run_id, (
+            f"reuse failed: {again}"
+        )
 
-    # Adversarial: non-future start_date reaches the service -> flat envelope.
-    non_future_config = {
-        "scenario": {"type": "fixed_budget"},
-        "future": {
-            "start_date": "2020-01-01",
-            "horizon": 4,
-            "reference": {"mode": "trailing"},
-        },
-    }
-    non_future = await call(
-        client,
-        "run_future_optimization",
-        {"model_id": model_id, "config": non_future_config},
-    )
-    assert_error(
-        non_future,
-        "invalid_optimization_config",
-        f"{model_id}/future-non-future-start-date",
-    )
+        # Adversarial: non-future start_date reaches the service -> flat envelope.
+        non_future_config = {
+            "scenario": {"type": "fixed_budget"},
+            "future": {
+                "start_date": "2020-01-01",
+                "horizon": 4,
+                "reference": {"mode": "trailing"},
+            },
+        }
+        non_future = await call(
+            client,
+            "run_future_optimization",
+            {"model_id": model_id, "config": non_future_config},
+        )
+        assert_error(
+            non_future,
+            "invalid_optimization_config",
+            f"{model_id}/future-non-future-start-date",
+        )
 
-    # Adversarial: unknown channel in cost_multipliers -> flat envelope.
-    bad_channel_config = {
-        "scenario": {"type": "fixed_budget"},
-        "future": {
-            "start_date": "2099-01-01",
-            "horizon": 4,
-            "reference": {"mode": "trailing"},
-            "cost_multipliers": {"__no_such_channel__": 1.2},
-        },
-    }
-    bad_channel = await call(
-        client,
-        "run_future_optimization",
-        {"model_id": model_id, "config": bad_channel_config},
-    )
-    assert_error(
-        bad_channel,
-        "invalid_optimization_config",
-        f"{model_id}/future-unknown-cost-multiplier-channel",
-    )
+        # Adversarial: unknown channel in cost_multipliers -> flat envelope.
+        bad_channel_config = {
+            "scenario": {"type": "fixed_budget"},
+            "future": {
+                "start_date": "2099-01-01",
+                "horizon": 4,
+                "reference": {"mode": "trailing"},
+                "cost_multipliers": {"__no_such_channel__": 1.2},
+            },
+        }
+        bad_channel = await call(
+            client,
+            "run_future_optimization",
+            {"model_id": model_id, "config": bad_channel_config},
+        )
+        assert_error(
+            bad_channel,
+            "invalid_optimization_config",
+            f"{model_id}/future-unknown-cost-multiplier-channel",
+        )
+    finally:
+        # Always reap the happy-path run, even if a poll/reuse/adversarial
+        # assertion above raised -- otherwise its on-disk artifacts (record/
+        # state/result + fingerprint index pointer) would leak.
+        deleted = await call(client, "delete_optimization", {"run_id": run_id})
 
     # delete_optimization removes it; a subsequent status lookup must 404 (typed).
-    deleted = await call(client, "delete_optimization", {"run_id": run_id})
     assert deleted.get("deleted") is True and deleted.get("run_id") == run_id, (
         f"delete failed: {deleted}"
     )
