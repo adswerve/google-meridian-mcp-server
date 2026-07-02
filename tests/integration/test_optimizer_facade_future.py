@@ -101,8 +101,8 @@ def test_run_future_excludes_channel(national_revenue_facade):
     optimized = _spend_map(result["channel_tables"]["optimized"])
     # Excluded channel present in BOTH tables, pinned to 0.
     assert "ch_0" in initial and "ch_0" in optimized
-    assert initial["ch_0"] == 0 or initial["ch_0"] is None or initial["ch_0"] == 0.0
-    assert optimized["ch_0"] == 0 or optimized["ch_0"] == 0.0
+    assert initial["ch_0"] in (0, 0.0)
+    assert optimized["ch_0"] in (0, 0.0)
     # Remaining channels carry all the spend.
     assert sum(v for k, v in optimized.items() if k != "ch_0") > 0
     # Exact budget conservation: optimized spend across ALL channels equals the

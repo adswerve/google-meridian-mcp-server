@@ -141,6 +141,9 @@ def apply_exclusions(
     excluded: list[str] | None,
     channel_order: list[str],
 ) -> tuple[list[float], list[float], list[float]]:
+    """Zero out excluded channels' weights (renormalizing the rest) and clamp their
+    bounds to 0. Assumes channel names were already validated by
+    validate_excluded_channels."""
     n = len(channel_order)
     lower = (
         list(spend_lower)
@@ -152,7 +155,7 @@ def apply_exclusions(
         if isinstance(spend_upper, (list, tuple))
         else [spend_upper] * n
     )
-    if excluded is None:
+    if not excluded:
         return list(pct), lower, upper
     excluded_idx = {channel_order.index(ch) for ch in excluded}
     new_pct = [0.0 if i in excluded_idx else pct[i] for i in range(n)]

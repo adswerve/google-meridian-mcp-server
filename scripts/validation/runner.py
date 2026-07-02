@@ -222,6 +222,9 @@ async def assert_live_future_optimization(client, model_id: str, *, overview) ->
                 },
             },
         )
+        assert "error_code" not in excl_submit, (
+            f"{model_id}/exclude submit errored: {excl_submit}"
+        )
         excl_run_id = excl_submit["run_id"]
         try:
             excl_status = None
@@ -242,7 +245,7 @@ async def assert_live_future_optimization(client, model_id: str, *, overview) ->
             excl_spend = next(
                 r["spend"] for r in opt_rows if r["channel"] == first_channel
             )
-            assert excl_spend in (0, 0.0, None), (
+            assert excl_spend in (0, 0.0), (
                 f"{model_id}/exclude expected 0 spend for {first_channel}, "
                 f"got {excl_spend}"
             )

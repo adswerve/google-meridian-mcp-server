@@ -88,10 +88,11 @@ class OptimizerFacade(MeridianInterrogator):
     def validate_future(self, config) -> None:
         """Pure up-front guards for future optimization: no `optimize()` call.
 
-        Runs the same checks `_future_kwargs` performs before building tensors,
-        so invalid future configs (bad start_date, infeasible reference window,
-        unknown channel keys, unsupported spend granularity) fail fast without
-        touching the model.
+        Runs the pure submit-time guards (start_date, reference window,
+        channel-key validity, exclusion validity) so invalid future configs
+        fail fast without touching the model. A few build-time-only conditions
+        (e.g. a zero-spend reference window) are checked only in
+        `_future_kwargs` and instead surface as a FAILED run.
         """
         from google_meridian_mcp_server.meridian import future_data as fd
 

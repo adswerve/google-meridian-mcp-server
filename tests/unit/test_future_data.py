@@ -155,4 +155,4 @@ def test_apply_exclusions_per_channel_bounds_list():
 
 def test_apply_exclusions_all_zero_raises():
     with pytest.raises(ValueError, match="zero baseline"):
-        fd.apply_exclusions([0.0, 0.0], 0.3, 0.3, [], ["a", "b"])
+        fd.apply_exclusions([1.0, 0.0], 0.3, 0.3, ["a"], ["a", "b"])

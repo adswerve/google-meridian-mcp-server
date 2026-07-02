@@ -537,7 +537,7 @@ async def scenario_f6(client, national_overview: dict) -> dict:
         opt_row = next(
             r for r in result["channel_tables"]["optimized"] if r["channel"] == excluded
         )
-        assert opt_row["spend"] in (0, 0.0, None), (
+        assert opt_row["spend"] in (0, 0.0), (
             f"excluded channel {excluded!r} expected 0 optimized spend, "
             f"got {opt_row['spend']}"
         )

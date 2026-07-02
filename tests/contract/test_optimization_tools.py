@@ -199,7 +199,6 @@ async def test_run_future_optimization_excluded_channels_submits(client):
         assert run_id and "run_id" in data
     finally:
         if run_id:
-            await client.call_tool("cancel_optimization", {"run_id": run_id})
             await client.call_tool("delete_optimization", {"run_id": run_id})
 
 
