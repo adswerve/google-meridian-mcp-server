@@ -1,4 +1,4 @@
-# Google Meridian MCP Server [v0.3.0]
+# Google Meridian MCP Server [v0.3.1]
 
 FastMCP server exposing a focused set of Google Meridian model-analysis and budget-optimization tools for agents.
 
