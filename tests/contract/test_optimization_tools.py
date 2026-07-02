@@ -174,3 +174,74 @@ async def test_run_future_optimization_horizon_zero_is_protocol_error(client):
                 },
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_run_future_optimization_excluded_channels_submits(client):
+    res = await client.call_tool(
+        "run_future_optimization",
+        {
+            "model_id": "national-revenue",
+            "config": {
+                "scenario": {"type": "fixed_budget"},
+                "future": {
+                    "start_date": "2099-01-01",
+                    "horizon": 4,
+                    "excluded_channels": ["ch_0"],
+                },
+            },
+        },
+    )
+    data = res.data
+    run_id = data.get("run_id")
+    try:
+        assert data["status"] in ("queued", "running", "completed")
+        assert run_id and "run_id" in data
+    finally:
+        if run_id:
+            await client.call_tool("cancel_optimization", {"run_id": run_id})
+            await client.call_tool("delete_optimization", {"run_id": run_id})
+
+
+@pytest.mark.asyncio
+async def test_run_future_optimization_exclude_unknown_channel_errors(client):
+    res = await client.call_tool(
+        "run_future_optimization",
+        {
+            "model_id": "national-revenue",
+            "config": {
+                "scenario": {"type": "fixed_budget"},
+                "future": {
+                    "start_date": "2099-01-01",
+                    "horizon": 4,
+                    "excluded_channels": ["not_a_channel"],
+                },
+            },
+        },
+    )
+    assert res.data["error_code"] == "invalid_optimization_config"
+
+
+@pytest.mark.asyncio
+async def test_run_future_optimization_exclude_all_errors(client):
+    res = await client.call_tool(
+        "run_future_optimization",
+        {
+            "model_id": "national-revenue",
+            "config": {
+                "scenario": {"type": "fixed_budget"},
+                "future": {
+                    "start_date": "2099-01-01",
+                    "horizon": 4,
+                    "excluded_channels": [
+                        "ch_0",
+                        "ch_1",
+                        "ch_2",
+                        "rf_ch_0",
+                        "rf_ch_1",
+                    ],
+                },
+            },
+        },
+    )
+    assert res.data["error_code"] == "invalid_optimization_config"
