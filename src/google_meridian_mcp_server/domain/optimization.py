@@ -8,7 +8,7 @@ from datetime import date
 from enum import Enum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
 
 class RunStatus(str, Enum):
@@ -96,19 +96,27 @@ Constraint = Annotated[
 ]
 
 
-class OptimizationConfig(BaseModel):
+class TrailingReference(BaseModel):
+    mode: Literal["trailing"] = "trailing"
+
+
+class SamePeriodLastYearReference(BaseModel):
+    mode: Literal["same_period_last_year"]
+
+
+class FullHistoryAverageReference(BaseModel):
+    mode: Literal["full_history_average"]
+
+
+Reference = Annotated[
+    TrailingReference | SamePeriodLastYearReference | FullHistoryAverageReference,
+    Field(discriminator="mode"),
+]
+
+
+class BaseOptimizationConfig(BaseModel):
     scenario: Scenario
     constraint: Constraint = Field(default_factory=lambda: GlobalConstraint(pct=0.3))
-    start_date: date | None = Field(
-        default=None,
-        description="Inclusive start date (ISO-8601, e.g. '2023-01-01') of the "
-        "window to optimize over. Omit to use the model's full date range.",
-    )
-    end_date: date | None = Field(
-        default=None,
-        description="Inclusive end date (ISO-8601, e.g. '2023-12-31') of the "
-        "window to optimize over. Omit to use the model's full date range.",
-    )
     selected_geos: list[str] | None = Field(
         default=None,
         description="Subset of geo identifiers to optimize over (e.g. "
@@ -124,12 +132,93 @@ class OptimizationConfig(BaseModel):
     )
 
 
+class OptimizationConfig(BaseOptimizationConfig):
+    kind: Literal["historical"] = "historical"
+    start_date: date | None = Field(
+        default=None,
+        description="Inclusive start date (ISO-8601, e.g. '2023-01-01') of the "
+        "window to optimize over. Omit to use the model's full date range.",
+    )
+    end_date: date | None = Field(
+        default=None,
+        description="Inclusive end date (ISO-8601, e.g. '2023-12-31') of the "
+        "window to optimize over. Omit to use the model's full date range.",
+    )
+
+
+class FutureBlock(BaseModel):
+    start_date: date = Field(
+        description="First future period (inclusive, ISO-8601). Must be after the "
+        "model's last training period.",
+        examples=["2026-10-01"],
+    )
+    horizon: int = Field(
+        gt=0,
+        description="Number of future periods to plan, at the model's own cadence "
+        "(e.g. 13 = 13 weeks for a weekly model).",
+        examples=[13],
+    )
+    reference: Reference = Field(
+        default_factory=TrailingReference,
+        description="Which historical window seeds carried-forward cost, flighting, "
+        "revenue-per-KPI, and default budget. trailing = last `horizon` periods; "
+        "same_period_last_year = the `horizon` periods one year before start_date; "
+        "full_history_average = average over all training periods.",
+    )
+    cost_multipliers: dict[str, float] | None = Field(
+        default=None,
+        description="Optional per-channel multipliers on carried-forward cost per "
+        "media unit (1.2 = 20% more expensive; below 1.0 = cheaper). Channels omitted "
+        "default to 1.0. Keys must be valid paid/RF channels. Example: {'TV': 1.15}.",
+        examples=[{"TV": 1.15}],
+    )
+    revenue_per_kpi_multiplier: float = Field(
+        default=1.0,
+        gt=0,
+        description="Scales carried-forward revenue-per-KPI (revenue models only; "
+        "ignored when the model has no revenue-per-KPI). 1.1 = 10% higher value.",
+    )
+    planned_allocation: dict[str, float] | None = Field(
+        default=None,
+        description="Optional planned spend mix (the center that spend constraints "
+        "bound around, and the 'current' baseline in the result). Partial/unnormalized "
+        "dicts are accepted: missing channels are filled from the carried-forward mix "
+        "and the whole vector is renormalized to sum to 1. Example: {'TV': 0.4, 'Search': 0.35}.",
+        examples=[{"TV": 0.4, "Search": 0.35, "Social": 0.25}],
+    )
+
+    @field_validator("cost_multipliers", "planned_allocation")
+    @classmethod
+    def _positive_weights(cls, v):
+        if v and any(w <= 0 for w in v.values()):
+            raise ValueError("weights must be > 0")
+        return v
+
+
+class FutureOptimizationConfig(BaseOptimizationConfig):
+    kind: Literal["future"] = "future"
+    future: FutureBlock
+
+
+def _config_kind(v) -> str:
+    if isinstance(v, dict):
+        return v.get("kind", "historical")
+    return getattr(v, "kind", "historical")
+
+
+AnyOptimizationConfig = Annotated[
+    Annotated[OptimizationConfig, Tag("historical")]
+    | Annotated[FutureOptimizationConfig, Tag("future")],
+    Discriminator(_config_kind),
+]
+
+
 class OptimizationRun(BaseModel):
     run_id: str
     label: str
     note: str | None = None
     model_id: str
-    config: OptimizationConfig
+    config: AnyOptimizationConfig
     config_fingerprint: str
     compute_tier_requested: str
     compute_tier_resolved: str
