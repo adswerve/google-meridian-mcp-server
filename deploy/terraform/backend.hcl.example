@@ -1,0 +1,4 @@
+# Copy to backend.hcl (gitignored). Bucket must already exist in the client's
+# project (created in the bootstrap step). Use a per-client prefix.
+bucket = "your-client-tfstate"
+prefix = "meridian/state"

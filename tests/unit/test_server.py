@@ -11,9 +11,14 @@ from google_meridian_mcp_server import server
 
 
 class _FakeFastMCP:
-    def __init__(self, name, lifespan):
+    def __init__(self, name, instructions=None, lifespan=None):
         self.name = name
+        self.instructions = instructions
         self.lifespan = lifespan
+        self.providers = []
+
+    def add_provider(self, provider, *, namespace=""):
+        self.providers.append(provider)
 
 
 def _runtime_config(backend: str) -> SimpleNamespace:
@@ -27,6 +32,12 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         model_cache_root="/tmp/cache",
         result_cache_enabled=True,
         result_cache_ttl_seconds=30,
+        resolved_registry_backend="local",
+        optimization_runs_root="/tmp/optimizations",
+        optimization_max_parallel=2,
+        optimization_heartbeat_stale_seconds=120,
+        optimization_backend_local="subprocess",
+        optimization_allowed_tiers=("local",),
     )
 
 
@@ -39,49 +50,31 @@ def test_create_server_registers_tools(monkeypatch: pytest.MonkeyPatch):
 
     assert isinstance(mcp, _FakeFastMCP)
     assert mcp.name == "Google Meridian MCP Server"
+    assert mcp.instructions == server._SERVER_INSTRUCTIONS
+    assert len(mcp.providers) == 1
     register_tools.assert_called_once_with(mcp)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("backend", "provider_attr", "provider_args"),
-    [
-        ("local", "LocalModelProvider", ("/models",)),
-        ("gcs", "GcsModelProvider", ("bucket", "models")),
-    ],
-)
+@pytest.mark.parametrize("backend", ["local", "gcs"])
 async def test_lifespan_selects_expected_provider(
     monkeypatch: pytest.MonkeyPatch,
     backend: str,
-    provider_attr: str,
-    provider_args: tuple[object, ...],
 ):
-    provider = object()
-    discovery_cache = object()
-    materialization_cache = object()
     model_catalog = object()
     result_cache = object()
 
     monkeypatch.setattr(server, "load_config", lambda: _runtime_config(backend))
-    monkeypatch.setattr(server, "LocalModelProvider", mock.Mock(return_value=provider))
-    monkeypatch.setattr(server, "GcsModelProvider", mock.Mock(return_value=provider))
     monkeypatch.setattr(
-        server, "DiscoveryCache", mock.Mock(return_value=discovery_cache)
+        server, "build_model_catalog", mock.Mock(return_value=model_catalog)
     )
-    monkeypatch.setattr(
-        server, "MaterializationCache", mock.Mock(return_value=materialization_cache)
-    )
-    monkeypatch.setattr(server, "ModelCatalog", mock.Mock(return_value=model_catalog))
     monkeypatch.setattr(server, "ResultCache", mock.Mock(return_value=result_cache))
 
     async with server._lifespan(SimpleNamespace()) as state:
         assert state["model_catalog"] is model_catalog
         assert state["result_cache"] is result_cache
 
-    getattr(server, provider_attr).assert_called_once_with(*provider_args)
-    server.DiscoveryCache.assert_called_once_with(provider, 60)
-    server.MaterializationCache.assert_called_once_with(provider, "/tmp/cache")
-    server.ModelCatalog.assert_called_once_with(discovery_cache, materialization_cache)
+    server.build_model_catalog.assert_called_once()
     server.ResultCache.assert_called_once_with(enabled=True, ttl_seconds=30)
 
 
