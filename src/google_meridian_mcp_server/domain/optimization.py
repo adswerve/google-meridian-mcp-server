@@ -186,6 +186,15 @@ class FutureBlock(BaseModel):
         "and the whole vector is renormalized to sum to 1. Example: {'TV': 0.4, 'Search': 0.35}.",
         examples=[{"TV": 0.4, "Search": 0.35, "Social": 0.25}],
     )
+    excluded_channels: list[str] | None = Field(
+        default=None,
+        description="Channels to fully pause/exclude from the future plan (spend "
+        "forced to 0; their budget is reallocated across the remaining channels, "
+        "total budget unchanged). Keys must be valid paid/RF channels and must NOT "
+        "also appear in planned_allocation or cost_multipliers. Cannot exclude every "
+        "channel. Example: ['TV'].",
+        examples=[["TV"]],
+    )
 
     @field_validator("cost_multipliers", "planned_allocation")
     @classmethod

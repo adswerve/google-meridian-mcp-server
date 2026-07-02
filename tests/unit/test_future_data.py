@@ -94,3 +94,65 @@ def test_resolve_budget_prefers_explicit_then_seeded_then_none():
     assert fd.resolve_budget(1000.0, True, 800.0) == 1000.0
     assert fd.resolve_budget(None, True, 800.0) == 800.0
     assert fd.resolve_budget(None, False, 800.0) is None
+
+
+ORDER = ["ch_0", "ch_1", "ch_2", "rf_ch_0", "rf_ch_1"]
+
+
+def test_validate_excluded_channels_ok():
+    fd.validate_excluded_channels(["ch_0"], None, None, ORDER)  # no raise
+
+
+def test_validate_excluded_channels_none_is_noop():
+    fd.validate_excluded_channels(None, {"ch_0": 0.5}, {"ch_0": 1.2}, ORDER)
+
+
+def test_validate_excluded_channels_unknown():
+    with pytest.raises(ValueError, match="unknown"):
+        fd.validate_excluded_channels(["nope"], None, None, ORDER)
+
+
+def test_validate_excluded_channels_overlap_planned():
+    with pytest.raises(ValueError, match="planned_allocation"):
+        fd.validate_excluded_channels(["ch_0"], {"ch_0": 0.4}, None, ORDER)
+
+
+def test_validate_excluded_channels_overlap_cost():
+    with pytest.raises(ValueError, match="cost_multipliers"):
+        fd.validate_excluded_channels(["ch_1"], None, {"ch_1": 1.5}, ORDER)
+
+
+def test_validate_excluded_channels_all_excluded():
+    with pytest.raises(ValueError, match="every channel"):
+        fd.validate_excluded_channels(list(ORDER), None, None, ORDER)
+
+
+def test_apply_exclusions_none_returns_inputs_as_lists():
+    pct = [0.2, 0.2, 0.2, 0.2, 0.2]
+    new_pct, lo, hi = fd.apply_exclusions(pct, 0.3, 0.3, None, ORDER)
+    assert new_pct == pct
+    assert lo == [0.3] * 5 and hi == [0.3] * 5
+
+
+def test_apply_exclusions_zeroes_and_renormalizes_global_bounds():
+    pct = [0.2, 0.2, 0.2, 0.2, 0.2]
+    new_pct, lo, hi = fd.apply_exclusions(pct, 0.3, 0.3, ["ch_0"], ORDER)
+    assert new_pct[0] == 0.0
+    assert lo[0] == 0.0 and hi[0] == 0.0
+    assert abs(sum(new_pct) - 1.0) < 1e-9
+    assert all(abs(w - 0.25) < 1e-9 for w in new_pct[1:])  # 0.2/0.8
+    assert lo[1:] == [0.3] * 4 and hi[1:] == [0.3] * 4
+
+
+def test_apply_exclusions_per_channel_bounds_list():
+    pct = [0.2, 0.2, 0.2, 0.2, 0.2]
+    lower = [0.1, 0.2, 0.3, 0.4, 0.5]
+    upper = [0.5, 0.4, 0.3, 0.2, 0.1]
+    new_pct, lo, hi = fd.apply_exclusions(pct, lower, upper, ["ch_2"], ORDER)
+    assert new_pct[2] == 0.0 and lo[2] == 0.0 and hi[2] == 0.0
+    assert lo[0] == 0.1 and hi[0] == 0.5  # untouched
+
+
+def test_apply_exclusions_all_zero_raises():
+    with pytest.raises(ValueError, match="zero baseline"):
+        fd.apply_exclusions([1.0, 0.0], 0.3, 0.3, ["a"], ["a", "b"])

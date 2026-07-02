@@ -114,3 +114,26 @@ def test_future_block_rejects_nonpositive_multiplier():
                 },
             }
         )
+
+
+def test_future_block_accepts_excluded_channels():
+    from google_meridian_mcp_server.domain.optimization import FutureOptimizationConfig
+
+    cfg = FutureOptimizationConfig.model_validate(
+        {
+            "scenario": {"type": "fixed_budget"},
+            "future": {
+                "start_date": "2099-01-01",
+                "horizon": 4,
+                "excluded_channels": ["TV"],
+            },
+        }
+    )
+    assert cfg.future.excluded_channels == ["TV"]
+
+
+def test_future_block_excluded_channels_defaults_none():
+    from google_meridian_mcp_server.domain.optimization import FutureBlock
+
+    fb = FutureBlock.model_validate({"start_date": "2099-01-01", "horizon": 4})
+    assert fb.excluded_channels is None
