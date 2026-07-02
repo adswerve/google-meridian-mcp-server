@@ -104,3 +104,63 @@ def resolve_budget(
     if scenario_budget is not None:
         return scenario_budget
     return seeded_flighting_total
+
+
+def validate_excluded_channels(
+    excluded: list[str] | None,
+    planned_allocation: dict[str, float] | None,
+    cost_multipliers: dict[str, float] | None,
+    channel_order: list[str],
+) -> None:
+    if not excluded:
+        return
+    unknown = [ch for ch in excluded if ch not in channel_order]
+    if unknown:
+        raise ValueError(f"excluded_channels has unknown channels: {unknown}")
+    excluded_set = set(excluded)
+    if planned_allocation:
+        overlap = sorted(excluded_set & set(planned_allocation))
+        if overlap:
+            raise ValueError(
+                f"channels cannot be both excluded and in planned_allocation: {overlap}"
+            )
+    if cost_multipliers:
+        overlap = sorted(excluded_set & set(cost_multipliers))
+        if overlap:
+            raise ValueError(
+                f"channels cannot be both excluded and in cost_multipliers: {overlap}"
+            )
+    if set(channel_order) <= excluded_set:
+        raise ValueError("cannot exclude every channel; at least one must remain.")
+
+
+def apply_exclusions(
+    pct: list[float],
+    spend_lower,
+    spend_upper,
+    excluded: list[str] | None,
+    channel_order: list[str],
+) -> tuple[list[float], list[float], list[float]]:
+    n = len(channel_order)
+    lower = (
+        list(spend_lower)
+        if isinstance(spend_lower, (list, tuple))
+        else [spend_lower] * n
+    )
+    upper = (
+        list(spend_upper)
+        if isinstance(spend_upper, (list, tuple))
+        else [spend_upper] * n
+    )
+    if excluded is None:
+        return list(pct), lower, upper
+    excluded_idx = {channel_order.index(ch) for ch in excluded}
+    new_pct = [0.0 if i in excluded_idx else pct[i] for i in range(n)]
+    total = sum(new_pct)
+    if total <= 0:
+        raise ValueError("excluding these channels leaves zero baseline weight.")
+    new_pct = [w / total for w in new_pct]
+    for i in excluded_idx:
+        lower[i] = 0.0
+        upper[i] = 0.0
+    return new_pct, lower, upper
