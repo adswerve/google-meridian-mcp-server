@@ -107,7 +107,9 @@ async def call(client, name: str, args: dict) -> Any:
     return _unwrap(_content_to_obj(res))
 
 
-async def poll_to_terminal(client, run_id: str, *, cap: int = 240, interval: float = 0.5):
+async def poll_to_terminal(
+    client, run_id: str, *, cap: int = 240, interval: float = 0.5
+):
     status = None
     for _ in range(cap):
         status = await call(client, "get_optimization_status", {"run_id": run_id})
@@ -118,7 +120,9 @@ async def poll_to_terminal(client, run_id: str, *, cap: int = 240, interval: flo
 
 
 def assert_well_formed(result: dict, label: str) -> None:
-    assert isinstance(result, dict), f"{label}: expected dict result, got {type(result)}"
+    assert isinstance(result, dict), (
+        f"{label}: expected dict result, got {type(result)}"
+    )
     assert "error_code" not in result, f"{label}: unexpected error {result}"
     assert "outcome_mode" in result, f"{label}: missing 'outcome_mode'"
     optimized = (result.get("channel_tables") or {}).get("optimized")
@@ -147,14 +151,18 @@ async def scenario_h1(client, channels: list[str]) -> dict:
         "scenario": {"type": "fixed_budget"},
         "constraint": {"mode": "global", "pct": 0.3},
     }
+    # Every run_id we create (initial submit, reuse resubmit, force_rerun
+    # resubmit) is appended here BEFORE any assertion on that response runs,
+    # so a failing assertion can never leak an orphaned run in `finally`.
+    created_run_ids: list[str] = []
     submit = await call(
         client, "run_optimization", {"model_id": NATIONAL, "config": config}
     )
     assert "error_code" not in submit, f"submit error: {submit}"
     run_id = submit["run_id"]
+    created_run_ids.append(run_id)
     assert submit["compute_tier_resolved"] == "local", f"expected local tier: {submit}"
 
-    forced_run_id: str | None = None
     try:
         status = await poll_to_terminal(client, run_id)
         assert status["status"] == "completed", f"did not complete: {status}"
@@ -166,6 +174,8 @@ async def scenario_h1(client, channels: list[str]) -> dict:
         again = await call(
             client, "run_optimization", {"model_id": NATIONAL, "config": config}
         )
+        if again.get("run_id"):
+            created_run_ids.append(again["run_id"])
         assert again.get("reused") is True and again["run_id"] == run_id, (
             f"reuse-by-fingerprint failed: {again}"
         )
@@ -176,17 +186,25 @@ async def scenario_h1(client, channels: list[str]) -> dict:
             "run_optimization",
             {"model_id": NATIONAL, "config": config, "force_rerun": True},
         )
+        if forced.get("run_id"):
+            created_run_ids.append(forced["run_id"])
         assert forced.get("reused") is False and forced["run_id"] != run_id, (
             f"force_rerun failed: {forced}"
         )
-        forced_run_id = forced["run_id"]
         return result
     finally:
-        if forced_run_id:
-            await call(client, "cancel_optimization", {"run_id": forced_run_id})
-            await call(client, "delete_optimization", {"run_id": forced_run_id})
-        await call(client, "cancel_optimization", {"run_id": run_id})
-        await call(client, "delete_optimization", {"run_id": run_id})
+        # Best-effort sweep of every run created above, deduped (the reuse
+        # resubmit returns the same run_id as the initial submit) so a
+        # cancel/delete failure on one run never blocks cleanup of the rest.
+        for rid in dict.fromkeys(created_run_ids):
+            try:
+                await call(client, "cancel_optimization", {"run_id": rid})
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
+            try:
+                await call(client, "delete_optimization", {"run_id": rid})
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
 
 
 async def scenario_h2(client, channels: list[str], *, budget: float) -> dict:
@@ -421,7 +439,9 @@ async def scenario_f5(client, national_overview: dict) -> None:
         },
     }
     res_a = await call(
-        client, "run_future_optimization", {"model_id": NATIONAL, "config": non_future_cfg}
+        client,
+        "run_future_optimization",
+        {"model_id": NATIONAL, "config": non_future_cfg},
     )
     assert res_a.get("error_code") == "invalid_optimization_config", (
         f"(a) non-future start_date: expected flat envelope, got {res_a}"
@@ -537,9 +557,7 @@ async def run_qa() -> int:
                 "H2 fixed_budget(+20%)+per_channel-freeze[happy]",
                 scenario_h2(client, national_channels, budget=h2_budget),
             )
-            await _run_scenario(
-                report, "H3 target_roas[happy]", scenario_h3(client)
-            )
+            await _run_scenario(report, "H3 target_roas[happy]", scenario_h3(client))
             await _run_scenario(
                 report,
                 "H4 per_channel-missing-channel[adversarial->invalid_optimization_config]",
