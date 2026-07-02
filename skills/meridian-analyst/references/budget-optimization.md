@@ -4,7 +4,7 @@ The playbook for every "how should I spend / reallocate / hit a target" question
 Optimization runs on the **budget-optimization module**: it is asynchronous and it
 reallocates spend across the model's channels to improve the objective the model
 supports (ROAS for revenue-capable models, CPIK for KPI-only — see
-`references/taxonomy.md`). This file routes the question, runs the lifecycle, reads
+`taxonomy.md`). This file routes the question, runs the lifecycle, reads
 the result, and handles forward-looking planning. It does **not** restate
 `run_optimization`'s input schema — call the tool for field types, defaults, and
 validation; the names below are for routing and interpretation only.
@@ -18,7 +18,9 @@ list.
 
 `run_optimization` takes one **scenario** (the objective) and one **constraint**
 (how far each channel may move), plus optional window/geo knobs. Map the business
-question to them:
+question to them. The `constraint` is optional — if the user gives no movement
+limit, omit it and the tool applies a sensible default band; only set one when
+they state a real limit.
 
 | User question | Routing |
 | --- | --- |
@@ -48,7 +50,7 @@ between channels" tool. Express it one of two ways:
   marginal ROI you *gain* on B. If B's marginal ROI at the added dollars exceeds
   A's marginal ROI at the dollars removed, the shift is net-positive; otherwise it
   destroys outcome. (`get_spend_scenario` is a single-channel what-if; deeper
-  single-channel analysis lives in `references/channel-performance.md`.)
+  single-channel analysis lives in `channel-performance.md`.)
 - **A `per_channel` constraint in `run_optimization`** that lets only A and B move
   (pin the rest) and read the outcome delta. Prefer this when you want the module
   to find the best split rather than testing one fixed amount.
@@ -56,7 +58,7 @@ between channels" tool. Express it one of two ways:
 **2. Saturation / headroom is a reasoning step, not a tool call.** No tool returns
 "saturated: true". You derive it by reading **two** things together:
 - `get_response_curves` — is the channel's curve still climbing or has it flattened
-  (see "saturation" in `references/glossary.md`)?
+  (see "saturation" in `glossary.md`)?
 - **Marginal ROI** (`mroi` in the result, or `marginal_roi` from analysis) — a
   channel whose marginal ROI has dropped below your target/hurdle is **past the
   plateau → over-invested**; a channel with high marginal ROI and a still-rising
@@ -129,7 +131,7 @@ change.
 Both `target_*` scenarios are **flexible-budget**: to hit the target the module may
 recommend spending *more or less overall*, so total spend can change — unlike
 `fixed_budget`, which holds the total. The objective family follows the model's
-revenue capability (`references/taxonomy.md`); a `use_kpi` knob can force
+revenue capability (`taxonomy.md`); a `use_kpi` knob can force
 revenue-vs-KPI objective, but only override it with a clear reason.
 - **`global` constraint** — one symmetric band (e.g. ±20%) on every channel; the
   simple default for "keep the plan realistic."

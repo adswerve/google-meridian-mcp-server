@@ -58,4 +58,4 @@ overview is authoritative over any assumption from this document.
 models optimize ROAS, KPI-only models optimize CPIK. A ROAS-style target given
 against a KPI-only model is interpreted as a CPIK target automatically. Normally
 let the model's native objective apply; override only with a clear reason. Full
-workflow: `references/budget-optimization.md`.
+workflow: `budget-optimization.md`.

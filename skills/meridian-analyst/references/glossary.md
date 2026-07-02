@@ -1,7 +1,7 @@
 # Glossary
 
 Marketer-facing definitions for the terms used across this skill. For which
-metrics are valid on which model, see `references/taxonomy.md`.
+metrics are valid on which model, see `taxonomy.md`.
 
 **ROAS / ROI (`roi`)** — Return on ad spend: incremental revenue driven per unit
 of spend (3.0 = $3 of revenue per $1 spent). Higher is better. Defined only for

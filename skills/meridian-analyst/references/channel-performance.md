@@ -4,16 +4,16 @@ The playbook for questions about **one channel or a comparison across channels**
 ROI/efficiency ranking, contribution, carryover, saturation, reach & frequency,
 single-channel spend what-ifs, and whether the model can be trusted. For
 **whole-budget allocation/reallocation** ("how should I split my budget", target
-ROAS/mROAS), stop and use `references/budget-optimization.md` instead — that is a
+ROAS/mROAS), stop and use `budget-optimization.md` instead — that is a
 different (asynchronous) tool.
 
 Before anything here, complete the golden path (`list_models` →
 `get_model_overview`) and read `available_tool_options`: it is authoritative over
 this file for which tools/metrics are legal on **this** model. If a tool or metric
 is not listed there, do not call it. Revenue-vs-KPI and RF gating are summarized in
-context below; the full matrix is `references/taxonomy.md`. Terms (ROAS, mROI,
+context below; the full matrix is `taxonomy.md`. Terms (ROAS, mROI,
 CPIK, adstock, contribution, saturation, base vs. incremental) are defined in
-`references/glossary.md` — this file interprets results, it does not re-teach them.
+`glossary.md` — this file interprets results, it does not re-teach them.
 
 These tools are **read-only and synchronous**: call, get the answer. They also do
 not restate their own input schemas here — call the tool for parameter types,
@@ -39,7 +39,7 @@ result.
 **`get_channel_summary` — ranking and efficiency.** One row per channel for the
 metric you request. `roi`/`marginal_roi` exist **only on revenue-capable models**;
 on a KPI-only model they return `metric_not_supported` — fall back to
-`cpik`/`marginal_cpik`, which are valid everywhere (`references/taxonomy.md`).
+`cpik`/`marginal_cpik`, which are valid everywhere (`taxonomy.md`).
 Direction depends on the metric: **ROI higher is better; CPIK lower is better** —
 state which you ranked on, because they sort in opposite directions. Average ROI
 answers "which channel paid off historically"; **marginal** ROI answers "where does
@@ -74,7 +74,7 @@ tool for "what if we double search spend". **Saturation is a reading, not a flag
 no field says `saturated: true`; you infer it from the curve's shape, and confirm
 with marginal ROI from `get_channel_summary` (a channel is over-invested when its
 curve has flattened *and* marginal ROI has fallen below your hurdle — the full
-headroom-vs-saturation reasoning is `references/budget-optimization.md`, teaching
+headroom-vs-saturation reasoning is `budget-optimization.md`, teaching
 point 2). Reading beyond the historical spend range is the least reliable part of
 the curve — treat large extrapolations skeptically.
 
@@ -83,7 +83,7 @@ across weekly frequency levels plus the optimal frequency per channel — use it
 answer "how many times should each person see the ad". It is gated on model
 *structure*: only models with reach/frequency channels expose it. On a non-RF model
 it is absent from `available_tool_options` and returns `metric_not_supported` — this
-is independent of the revenue axis (`references/taxonomy.md`); do not offer frequency
+is independent of the revenue axis (`taxonomy.md`); do not offer frequency
 advice for a non-RF model. On a **KPI-only** RF model, this `roi` is still returned
 (higher is better) but is expressed in **KPI units per spend, not revenue** —
 Meridian computes it against the model's native objective, unlike
@@ -105,7 +105,7 @@ Judge the increase on `marginal_efficiency`, not `efficiency`: a channel with gr
 base ROI can still have poor marginal ROI once saturated. There is **no
 "move budget from A to B" tool** — model a shift as two scenarios (A lower, B higher)
 and compare B's `marginal_efficiency` on the added dollars against A's on the removed
-ones (see `references/budget-optimization.md`, teaching point 1).
+ones (see `budget-optimization.md`, teaching point 1).
 
 **`get_model_fit` — model trust.** Per time period it returns `expected` (model),
 `actual` (observed), `baseline` (no-media), and `residual` (`actual − expected`),
@@ -129,4 +129,4 @@ Meridian is Bayesian: every estimate is a distribution. `get_channel_summary`,
 report the interval with the mean.** A wide interval means low confidence, not a
 precise number — and a ranking whose channels' intervals overlap heavily is not a
 reliable ranking, so say the order is uncertain rather than presenting a false
-precise winner. (Full discipline: `references/glossary.md`, "credible interval".)
+precise winner. (Full discipline: `glossary.md`, "credible interval".)
