@@ -20,6 +20,7 @@ Thumbs.db
 
 .github/
 references/
+docs/
 # Skill references are served as MCP resources and must be tracked.
 !skills/meridian-analyst/references/
 !skills/meridian-analyst/references/**
