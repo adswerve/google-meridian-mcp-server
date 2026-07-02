@@ -32,6 +32,9 @@ class _FakeFacade:
             raise RuntimeError("optimize blew up")
         return self._result
 
+    def execute(self, config):
+        return self.run(config)
+
 
 class _FakeCatalog:
     def __init__(self, facade):
@@ -108,6 +111,9 @@ class _SlowFacade:
         time.sleep(0.6)  # longer than the test heartbeat interval
         return {"outcome_mode": "revenue", "summary": {}}
 
+    def execute(self, config):
+        return self.run(config)
+
 
 class _Catalog:
     def get_optimizer_facade(self, model_id):
@@ -143,6 +149,50 @@ def test_worker_emits_heartbeats_during_optimize(tmp_path):
     # initial running write + >=1 background heartbeat + terminal
     assert len(heartbeats) >= 3
     assert registry.states[-1].status == RunStatus.COMPLETED
+
+
+def test_worker_uses_execute_for_dispatch(tmp_path):
+    """Worker calls facade.execute() for dispatch, not facade.run() directly."""
+    calls = {}
+
+    class FakeFacadeForDispatch:
+        def execute(self, config):
+            calls["execute"] = config
+            return {"summary": {}, "outcome_mode": "revenue"}
+
+        def run(self, config):  # must NOT be called directly by the worker
+            calls["run"] = config
+            return {}
+
+    class FakeCatalogForDispatch:
+        def get_optimizer_facade(self, model_id):
+            return FakeFacadeForDispatch()
+
+    cfg = OptimizationConfig.model_validate({"scenario": {"type": "fixed_budget"}})
+    record = OptimizationRun(
+        run_id="m-1",
+        label="l",
+        model_id="m",
+        config=cfg,
+        config_fingerprint="fp",
+        compute_tier_requested="auto",
+        compute_tier_resolved="local",
+        backend="tensorflow",
+        size_score=1,
+        created_at="2026-06-29T00:00:00+00:00",
+        meridian_version="1.7.0",
+        server_version="0.1.0",
+    )
+    registry = _RecordingRegistry(record)
+    rc = run_worker(
+        record.run_id,
+        registry=registry,
+        catalog=FakeCatalogForDispatch(),
+        backend="tensorflow",
+    )
+    assert rc == 0
+    assert "execute" in calls
+    assert "run" not in calls
 
 
 def test_catalog_get_optimizer_facade_returns_and_caches(monkeypatch):

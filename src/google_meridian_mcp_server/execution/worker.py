@@ -89,7 +89,7 @@ def run_worker(
                 heartbeat_at=_now(),
             )
         )
-        result = facade.run(record.config)
+        result = facade.execute(record.config)
         phase_box["phase"] = RunPhase.UPLOADING
         phase_box["progress"] = 0.95
         registry.write_result(run_id, result)

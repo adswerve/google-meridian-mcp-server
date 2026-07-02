@@ -9,6 +9,8 @@ from typing import Any
 from google_meridian_mcp_server.domain.errors import MeridianMcpError
 from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import (
+    BaseOptimizationConfig,
+    FutureOptimizationConfig,
     OptimizationConfig,
     OptimizationRun,
     RunStatus,
@@ -40,7 +42,7 @@ def _slug(model_id: str) -> str:
     return model_id.replace("/", "-")
 
 
-def _default_label(model_id: str, config: OptimizationConfig) -> str:
+def _default_label(model_id: str, config: BaseOptimizationConfig) -> str:
     return f"{_slug(model_id)} {config.scenario.type}"
 
 
@@ -83,6 +85,60 @@ class OptimizationService:
         except ValueError as exc:
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
+        return self._submit(
+            model_id,
+            config,
+            facade=facade,
+            label=label,
+            note=note,
+            compute_tier=compute_tier,
+            force_rerun=force_rerun,
+        )
+
+    def run_future_optimization(
+        self,
+        model_id: str,
+        config_dict: dict,
+        *,
+        label: str | None = None,
+        note: str | None = None,
+        compute_tier: str = "auto",
+        force_rerun: bool = False,
+    ) -> dict[str, Any]:
+        facade = self._catalog.get_optimizer_facade(
+            model_id
+        )  # raises ModelNotFoundError
+        try:
+            config = FutureOptimizationConfig.model_validate(config_dict)
+        except Exception as exc:  # pydantic ValidationError
+            raise InvalidOptimizationConfigError(str(exc)) from exc
+
+        try:
+            facade.validate_future(config)  # pure guards, no optimize()
+        except ValueError as exc:
+            raise InvalidOptimizationConfigError(str(exc)) from exc
+
+        return self._submit(
+            model_id,
+            config,
+            facade=facade,
+            label=label,
+            note=note,
+            compute_tier=compute_tier,
+            force_rerun=force_rerun,
+        )
+
+    def _submit(
+        self,
+        model_id: str,
+        config: BaseOptimizationConfig,
+        *,
+        facade: Any,
+        label: str | None,
+        note: str | None,
+        compute_tier: str,
+        force_rerun: bool,
+    ) -> dict[str, Any]:
         fingerprint = config_fingerprint(model_id, config)
         if not force_rerun:
             existing_id = self._registry.find_by_fingerprint(fingerprint)
