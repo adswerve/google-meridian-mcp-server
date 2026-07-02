@@ -84,11 +84,18 @@ def assert_summary(payload, label: str, *, required_keys, outcome_mode: str) -> 
 async def assert_live_optimization(client, model_id: str, *, overview) -> None:
     import asyncio
 
-    config = {"scenario": {"type": "fixed_budget"}, "constraint": {"mode": "global", "pct": 0.2}}
-    submit = await call(client, "run_optimization", {"model_id": model_id, "config": config})
+    config = {
+        "scenario": {"type": "fixed_budget"},
+        "constraint": {"mode": "global", "pct": 0.2},
+    }
+    submit = await call(
+        client, "run_optimization", {"model_id": model_id, "config": config}
+    )
     assert "error_code" not in submit, f"submit error: {submit}"
     run_id = submit["run_id"]
-    assert submit["compute_tier_resolved"] == "local", f"expected local tier, got {submit}"
+    assert submit["compute_tier_resolved"] == "local", (
+        f"expected local tier, got {submit}"
+    )
 
     status = None
     for _ in range(120):  # tiny fixtures finish fast; cap ~60s
@@ -99,13 +106,25 @@ async def assert_live_optimization(client, model_id: str, *, overview) -> None:
     assert status and status["status"] == "completed", f"run did not complete: {status}"
 
     result = await call(client, "get_optimization_result", {"run_id": run_id})
-    for key in ("summary", "channel_tables", "allocation", "spend_delta", "outcome_mode"):
+    for key in (
+        "summary",
+        "channel_tables",
+        "allocation",
+        "spend_delta",
+        "outcome_mode",
+    ):
         assert key in result, f"result missing '{key}': {result.keys()}"
-    assert {"initial", "optimized"} <= set(result["channel_tables"]), "missing channel tables"
+    assert {"initial", "optimized"} <= set(result["channel_tables"]), (
+        "missing channel tables"
+    )
 
     # Reuse: identical submit returns the same run, flagged reused.
-    again = await call(client, "run_optimization", {"model_id": model_id, "config": config})
-    assert again["reused"] is True and again["run_id"] == run_id, f"reuse failed: {again}"
+    again = await call(
+        client, "run_optimization", {"model_id": model_id, "config": config}
+    )
+    assert again["reused"] is True and again["run_id"] == run_id, (
+        f"reuse failed: {again}"
+    )
 
     # list_optimizations must surface this run for the model.
     listing = await call(client, "list_optimizations", {"model_id": model_id})
@@ -123,6 +142,114 @@ async def assert_live_optimization(client, model_id: str, *, overview) -> None:
     )
     gone = await call(client, "get_optimization_status", {"run_id": run_id})
     assert_error(gone, "optimization_run_not_found", f"{model_id}/deleted-run-status")
+
+
+async def assert_live_future_optimization(client, model_id: str, *, overview) -> None:
+    import asyncio
+
+    # 2099-01-01 is always safely after any fixture's last training period, so
+    # the "trailing" reference window (last `horizon` periods before start_date)
+    # is always covered by history.
+    future_config = {
+        "scenario": {"type": "fixed_budget"},
+        "future": {
+            "start_date": "2099-01-01",
+            "horizon": 4,
+            "reference": {"mode": "trailing"},
+        },
+    }
+    submit = await call(
+        client,
+        "run_future_optimization",
+        {"model_id": model_id, "config": future_config},
+    )
+    assert "error_code" not in submit, f"submit error: {submit}"
+    run_id = submit["run_id"]
+    assert submit["compute_tier_resolved"] == "local", (
+        f"expected local tier, got {submit}"
+    )
+
+    status = None
+    for _ in range(120):  # tiny fixtures finish fast; cap ~60s
+        status = await call(client, "get_optimization_status", {"run_id": run_id})
+        if status["status"] in ("completed", "failed"):
+            break
+        await asyncio.sleep(0.5)
+    assert status and status["status"] == "completed", f"run did not complete: {status}"
+
+    result = await call(client, "get_optimization_result", {"run_id": run_id})
+    for key in (
+        "summary",
+        "channel_tables",
+        "allocation",
+        "spend_delta",
+        "outcome_mode",
+    ):
+        assert key in result, f"result missing '{key}': {result.keys()}"
+    assert {"initial", "optimized"} <= set(result["channel_tables"]), (
+        "missing channel tables"
+    )
+
+    # Reuse: identical submit returns the same run, flagged reused.
+    again = await call(
+        client,
+        "run_future_optimization",
+        {"model_id": model_id, "config": future_config},
+    )
+    assert again["reused"] is True and again["run_id"] == run_id, (
+        f"reuse failed: {again}"
+    )
+
+    # Adversarial: non-future start_date reaches the service -> flat envelope.
+    non_future_config = {
+        "scenario": {"type": "fixed_budget"},
+        "future": {
+            "start_date": "2020-01-01",
+            "horizon": 4,
+            "reference": {"mode": "trailing"},
+        },
+    }
+    non_future = await call(
+        client,
+        "run_future_optimization",
+        {"model_id": model_id, "config": non_future_config},
+    )
+    assert_error(
+        non_future,
+        "invalid_optimization_config",
+        f"{model_id}/future-non-future-start-date",
+    )
+
+    # Adversarial: unknown channel in cost_multipliers -> flat envelope.
+    bad_channel_config = {
+        "scenario": {"type": "fixed_budget"},
+        "future": {
+            "start_date": "2099-01-01",
+            "horizon": 4,
+            "reference": {"mode": "trailing"},
+            "cost_multipliers": {"__no_such_channel__": 1.2},
+        },
+    }
+    bad_channel = await call(
+        client,
+        "run_future_optimization",
+        {"model_id": model_id, "config": bad_channel_config},
+    )
+    assert_error(
+        bad_channel,
+        "invalid_optimization_config",
+        f"{model_id}/future-unknown-cost-multiplier-channel",
+    )
+
+    # delete_optimization removes it; a subsequent status lookup must 404 (typed).
+    deleted = await call(client, "delete_optimization", {"run_id": run_id})
+    assert deleted.get("deleted") is True and deleted.get("run_id") == run_id, (
+        f"delete failed: {deleted}"
+    )
+    gone = await call(client, "get_optimization_status", {"run_id": run_id})
+    assert_error(
+        gone, "optimization_run_not_found", f"{model_id}/deleted-future-run-status"
+    )
 
 
 def assert_cloud_live_optimization(service, model_id: str) -> None:
@@ -157,7 +284,13 @@ def assert_cloud_live_optimization(service, model_id: str) -> None:
     )
 
     result = service.get_result(run_id)
-    for key in ("summary", "channel_tables", "allocation", "spend_delta", "outcome_mode"):
+    for key in (
+        "summary",
+        "channel_tables",
+        "allocation",
+        "spend_delta",
+        "outcome_mode",
+    ):
         assert key in result, f"result missing '{key}': {list(result.keys())}"
     assert {"initial", "optimized"} <= set(result["channel_tables"]), (
         f"missing channel tables: {list(result['channel_tables'])}"
@@ -323,12 +456,22 @@ async def run_matrix(client) -> Report:
             except AssertionError as exc:
                 report.fail(label, str(exc))
 
+            future_label = f"{model_id}/run_future_optimization[live,local,subprocess]"
+            try:
+                await assert_live_future_optimization(
+                    client, model_id, overview=overview
+                )
+                report.ok(future_label)
+            except AssertionError as exc:
+                report.fail(future_label, str(exc))
+
         # Adversarial: result for unknown run_id must return typed error.
         if model_id == "national-revenue":
             label = "GLOBAL/ADV/result-not-found"
             try:
-                payload = await call(client, "get_optimization_result",
-                                     {"run_id": "does-not-exist"})
+                payload = await call(
+                    client, "get_optimization_result", {"run_id": "does-not-exist"}
+                )
                 assert_error(payload, "optimization_run_not_found", label)
                 report.ok(label)
             except AssertionError as exc:
