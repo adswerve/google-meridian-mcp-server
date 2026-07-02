@@ -72,3 +72,9 @@ supplied to `run_future_optimization`. It is the center that spend constraints
 bound around, and it appears as the "current"/baseline mix in the result (the
 future-run counterpart of `channel_tables.initial`). Unlisted channels are filled
 from the carried-forward mix and the vector is renormalized to sum to 1.
+
+**Excluded channels (`excluded_channels`)** — A list of channels to fully pause
+in a future optimization: their spend is forced to 0 and reallocated across the
+remaining channels (total budget unchanged). This is the *only* way to zero a
+channel — a `0/0` spend constraint freezes a channel at its current spend, and
+`cost_multipliers`/`planned_allocation` reject 0. Future runs only.

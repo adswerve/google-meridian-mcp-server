@@ -82,6 +82,7 @@ an assumption you are making**, before the run.
 - A planned spend mix, if the user already has one in mind → `planned_allocation`.
 - Which historical window best represents the future: a recent trend, the same
   season last year, or a stable long-run average → `reference`.
+- Any channel to **pause entirely** next period → `excluded_channels`.
 
 ## Plain language → tool-field translation
 
@@ -93,7 +94,7 @@ an assumption you are making**, before the run.
 | "Keep pushing spend as long as the next dollar still returns at least 1.5x" | `scenario: {type: "target_mroas", target_value: 1.5}` |
 | "Don't let any channel move more than 20%" | `constraint: {mode: "global", pct: 0.2}` |
 | "We're locked into our search contract, it can't change" | `constraint: {mode: "per_channel", bounds: {Search: {lower_pct: 0, upper_pct: 0}, ...}}` |
-| "Pause / stop channel X entirely next quarter" | **Not** `planned_allocation: {"X": 0}` or `cost_multipliers: {"X": 0}` — both are rejected by validation (must be `> 0`). Use `constraint: {mode: "per_channel", bounds: {X: {lower_pct: 0, upper_pct: 0}, ...}}` to freeze X's spend at 0; every other channel still needs an entry in `bounds`. |
+| "Pause / stop channel X entirely next quarter" | `run_future_optimization`, `future.excluded_channels: ["X"]`. X's spend is forced to 0 and its budget is spent across the remaining channels ("pause TV, spend it elsewhere") — total budget unchanged. Do **not** use `planned_allocation`/`cost_multipliers` (reject `0`) or `0/0` constraint bounds (those **freeze X at its current spend**, they do not pause it). Historical `run_optimization` cannot fully exclude a channel — only future runs can. |
 | "Just look at our California and New York markets" | `selected_geos: ["US-CA", "US-NY"]` |
 | "Plan next quarter starting October 1st for 13 weeks" | `run_future_optimization`, `future.start_date: "2026-10-01"`, `future.horizon: 13` |
 | "TV CPMs are expected to be up about 15%" | `future.cost_multipliers: {"TV": 1.15}` |
@@ -118,8 +119,9 @@ an assumption you are making**, before the run.
   said "optimize my $2M Q4 budget, freeze Search, target 3x ROAS," you have goal,
   budget, constraint, and window already; restate the plan in one line and go,
   don't re-ask for things already given.
-- **Reaching for a zero weight to exclude a channel** — "pause TV entirely" does
-  not become `planned_allocation: {"TV": 0}` or `cost_multipliers: {"TV": 0}`;
-  both are rejected outright (these fields require values `> 0`). A full
-  exclusion is a `per_channel` **constraint** with that channel's bounds frozen
-  at `0`/`0`, not a weight of zero — see the translation table above.
+- **Confusing freeze with exclude.** "Pause channel X entirely" is
+  `future.excluded_channels: ["X"]` in a **future** run — not
+  `planned_allocation: {"X": 0}`/`cost_multipliers: {"X": 0}` (both rejected,
+  must be `> 0`) and not a `0/0` `per_channel` constraint (that **freezes X at
+  its current spend** — the opposite of pausing). Historical runs cannot fully
+  exclude a channel; if the user needs that, plan it as a future run.

@@ -183,6 +183,7 @@ the `media_time` axis (≥ `n_times`) → trim to the last `n_times` before wind
 present (national = size 1); the fixed-budget default is the seeded reference-window total, not the
 full-history total. All three assumption knobs were empirically verified to move the optimized
 allocation; `validate_future` must never reject a config the worker path would accept.
+`future.excluded_channels` is the only real exclusion path (spend→0, reallocated, total unchanged); a `0/0` constraint only freezes, it does not exclude.
 
 ## Model Overview Expectations
 The overview tool should tell an agent:
