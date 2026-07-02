@@ -1,6 +1,7 @@
 import pytest
 
 from google_meridian_mcp_server.domain.optimization import (
+    FutureOptimizationConfig,
     OptimizationConfig,
     to_optimize_kwargs,
 )
@@ -85,3 +86,19 @@ def test_per_channel_missing_channel_raises():
             channel_order=CHANNELS,
             use_kpi=False,
         )
+
+
+def test_to_optimize_kwargs_on_future_config_omits_historical_dates():
+    cfg = FutureOptimizationConfig.model_validate(
+        {
+            "scenario": {"type": "fixed_budget", "budget": 1000.0},
+            "constraint": {"mode": "global", "pct": 0.25},
+            "future": {"start_date": "2026-10-01", "horizon": 13},
+        }
+    )
+    kw = to_optimize_kwargs(cfg, channel_order=CHANNELS, use_kpi=False)
+    # base translation still works…
+    assert kw["fixed_budget"] is True and kw["budget"] == 1000.0
+    assert kw["spend_constraint_lower"] == 0.25
+    # …and no historical window is emitted for a future config.
+    assert kw["start_date"] is None and kw["end_date"] is None

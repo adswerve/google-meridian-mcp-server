@@ -59,3 +59,23 @@ models optimize ROAS, KPI-only models optimize CPIK. A ROAS-style target given
 against a KPI-only model is interpreted as a CPIK target automatically. Normally
 let the model's native objective apply; override only with a clear reason. Full
 workflow: `budget-optimization.md`.
+
+## Future optimization: two independent axes of input
+
+`run_future_optimization` splits its inputs into two axes that move
+independently — knowing which axis a business statement belongs to is what lets
+you translate it into the right field.
+
+| Axis | Covers | Set by |
+| --- | --- | --- |
+| **Allocation axis** | The budget total and the spend mix you intend to run | `scenario` (same as `run_optimization`) + `planned_allocation` |
+| **Cost-structure axis** | Cost-per-media-unit, flighting, and revenue-per-KPI — always carried forward from a historical window, never entered directly | `future.reference`, optionally scaled by `future.cost_multipliers` / `future.revenue_per_kpi_multiplier` |
+
+A statement like "we plan to spend $2M, weighted toward search" is an
+**allocation-axis** input (`scenario.budget` + `planned_allocation`). A statement
+like "TV is getting 15% more expensive" or "plan like last year's holiday season"
+is a **cost-structure-axis** input (`cost_multipliers` or `reference`
+respectively) — there is no way to set cost-per-media-unit or flighting directly;
+they only ever come from the chosen `reference` window. See `glossary.md`
+("reference window", "cost multiplier", "flighting", "planned allocation") for
+term definitions and `budget-optimization.md` for the full field reference.

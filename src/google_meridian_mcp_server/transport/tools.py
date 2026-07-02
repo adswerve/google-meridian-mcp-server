@@ -18,7 +18,10 @@ from google_meridian_mcp_server.domain.filters import (
     TrainingDataset,
     normalize_filters,
 )
-from google_meridian_mcp_server.domain.optimization import OptimizationConfig
+from google_meridian_mcp_server.domain.optimization import (
+    FutureOptimizationConfig,
+    OptimizationConfig,
+)
 from google_meridian_mcp_server.services.analysis_service import AnalysisService
 from google_meridian_mcp_server.services.model_catalog_service import (
     ModelCatalogService,
@@ -452,14 +455,74 @@ def register_tools(mcp: FastMCP) -> None:
         except MeridianMcpError as error:
             return _error_response(error)
 
+    @mcp.tool
+    async def run_future_optimization(
+        model_id: Annotated[
+            str, Field(min_length=1, description="Model identifier from list_models.")
+        ],
+        config: Annotated[
+            FutureOptimizationConfig,
+            Field(
+                description=(
+                    "Future optimization: same scenario + constraint as run_optimization, PLUS a "
+                    "`future` block {start_date, horizon, reference, cost_multipliers?, "
+                    "revenue_per_kpi_multiplier?, planned_allocation?}. start_date is the first future "
+                    "period (after the model's last training date); horizon is the number of periods at "
+                    "the model's cadence. reference selects the historical window carried forward for "
+                    "cost/flighting/revenue/default-budget: {mode:'trailing'|'same_period_last_year'|"
+                    "'full_history_average'}. cost_multipliers scale per-channel cost-per-media-unit; "
+                    "planned_allocation sets your planned mix (partial dicts are normalized). "
+                    "Valid channels/geos: get_model_overview.available_tool_options.run_optimization."
+                )
+            ),
+        ],
+        ctx: Context,
+        label: Annotated[
+            str | None,
+            Field(description="Human-readable label; omit to auto-generate."),
+        ] = None,
+        note: Annotated[
+            str | None,
+            Field(description="Optional free-text intent; stored with the run."),
+        ] = None,
+        compute_tier: Annotated[
+            Literal["auto", "local", "cloud_cpu", "cloud_gpu"],
+            Field(
+                description="Where to run; 'auto' (default) picks the cheapest allowed backend."
+            ),
+        ] = "auto",
+        force_rerun: Annotated[
+            bool,
+            Field(
+                description="Force fresh computation even if an identical prior run exists."
+            ),
+        ] = False,
+    ) -> dict[str, Any]:
+        """Optimize a FUTURE budget under explicit assumptions (not a demand forecast). Answers "how should I split next quarter's budget?" or "if TV CPMs rise 20%, what's the best future mix?". Meridian does not forecast the future: this carries forward a chosen historical reference window's costs/flighting/revenue (optionally scaled by cost_multipliers / revenue_per_kpi_multiplier) and optimizes the allocation over a future window you define with start_date + horizon. Long-running: returns a run_id immediately — poll get_optimization_status until 'completed', then get_optimization_result. Identical prior runs are reused unless force_rerun=true."""
+        try:
+            return _optimization_service(ctx).run_future_optimization(
+                model_id,
+                config.model_dump(mode="json"),
+                label=label,
+                note=note,
+                compute_tier=compute_tier,
+                force_rerun=force_rerun,
+            )
+        except MeridianMcpError as error:
+            return _error_response(error)
+
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     async def get_optimization_status(
         run_id: Annotated[
-            str, Field(min_length=1, description="run_id from run_optimization.")
+            str,
+            Field(
+                min_length=1,
+                description="run_id from run_optimization or run_future_optimization.",
+            ),
         ],
         ctx: Context,
     ) -> dict[str, Any]:
-        """Poll a run started by run_optimization. Returns status (queued/running/completed/failed/canceled), current phase, last heartbeat, elapsed time, and an error object if it failed. Call repeatedly until status is 'completed', then call get_optimization_result."""
+        """Poll a run started by run_optimization or run_future_optimization. Returns status (queued/running/completed/failed/canceled), current phase, last heartbeat, elapsed time, and an error object if it failed. Call repeatedly until status is 'completed', then call get_optimization_result."""
         try:
             return _optimization_service(ctx).get_status(run_id)
         except MeridianMcpError as error:
@@ -468,7 +531,11 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     async def get_optimization_result(
         run_id: Annotated[
-            str, Field(min_length=1, description="run_id from run_optimization.")
+            str,
+            Field(
+                min_length=1,
+                description="run_id from run_optimization or run_future_optimization.",
+            ),
         ],
         ctx: Context,
     ) -> dict[str, Any]:
