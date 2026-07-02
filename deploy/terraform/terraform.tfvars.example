@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Terraform builds and pushes
+# the three images during `apply` (via Cloud Build); there are no image tags to set.
+
+project_id = "your-client-project"
+region     = "us-central1"
+
+gcs_bucket = "your-client-meridian"
+# create_bucket        = true        # set false to reuse an existing bucket
+# bucket_force_destroy = false       # true only for throwaway test installs
+# gcs_models_prefix       = "models/"
+# optimization_gcs_prefix = "optimizations/"
+
+# artifact_registry_repo = "meridian"
+# enable_gpu_job = true              # default false; to enable GPU: set true AND add cloud_gpu to optimization_allowed_tiers AND ensure L4 quota in the region
+
+# service_account_id = "meridian-mcp"   # blank = project compute engine default SA (nothing created; relies on its Editor grant). Set a name to create/adopt a dedicated SA and bind least-privilege roles.
+
+# optimization_allowed_tiers = "cloud_cpu"   # add cloud_gpu when GPU job is enabled
+# allow_unauthenticated      = false          # true only for the live tooling test

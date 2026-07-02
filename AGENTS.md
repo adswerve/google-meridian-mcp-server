@@ -48,6 +48,31 @@ and persistence helpers so agents can inspect models and request structured outp
 - `RESULT_CACHE_ENABLED` defaults to true.
 - `RESULT_CACHE_TTL_SECONDS` is optional but must be positive when set.
 - `DISCOVERY_TTL_SECONDS` must be positive.
+- `REGISTRY_BACKEND` — `local` (Phase 1) or `gcs` (Phase 2); defaults to `PERSISTENCE_BACKEND`.
+- `OPTIMIZATION_RUNS_ROOT` — local directory for run manifests, state files, and results; default `./optimizations`.
+- `OPTIMIZATION_GCS_PREFIX` — GCS prefix for run files when `REGISTRY_BACKEND=gcs`; Phase 2.
+- `OPTIMIZATION_ALLOWED_TIERS` — comma-separated permitted tiers (`local`, `cloud_cpu`, `cloud_gpu`); default `local`.
+- `OPTIMIZATION_DEFAULT_TIER` — `auto` (heuristic) or a fixed tier name; default `auto`.
+- `OPTIMIZATION_MAX_PARALLEL` — maximum concurrent optimization workers per server process; default `2`.
+- `OPTIMIZATION_SIZE_THRESHOLDS` — two comma-separated integers (`small,large`) for the `auto` tier heuristic; default `10000000,100000000`.
+- `OPTIMIZATION_BACKEND_LOCAL` — JAX backend for local workers (`tensorflow` or `jax`); default `tensorflow`.
+- `OPTIMIZATION_BACKEND_CLOUD_CPU` — JAX backend for cloud CPU workers; default `jax`.
+- `OPTIMIZATION_BACKEND_CLOUD_GPU` — JAX backend for cloud GPU workers; default `jax`.
+- `OPTIMIZATION_HEARTBEAT_STALE_SECONDS` — seconds without a heartbeat before a running worker is reconciled as crashed; default `60`.
+- `CLOUD_RUN_PROJECT` — GCP project for Cloud Run Jobs; required when any cloud tier is allowed.
+- `CLOUD_RUN_REGION` — region for Cloud Run Jobs; required when any cloud tier is allowed.
+- `CLOUD_RUN_JOB_CPU` — Cloud Run Job name for the `cloud_cpu` tier.
+- `CLOUD_RUN_JOB_GPU` — Cloud Run Job name for the `cloud_gpu` tier.
+- Cloud tiers require `REGISTRY_BACKEND=gcs`; validated at startup.
+
+### Deployment (Terraform)
+The full stack (Cloud Run service + CPU/GPU jobs, Artifact Registry, GCS) is provisioned
+per client via `deploy/terraform/`. A single `terraform apply` builds+pushes all three images
+via Cloud Build (content-hash tags), then provisions everything. The service and jobs share one identity: the compute engine default SA by default, or a
+dedicated SA (created/adopted with least-privilege roles) when `service_account_id` is set. Per-client `terraform.tfvars`
+and `backend.hcl` are uncommitted (`.example` committed); `.env` is local-dev only. Full runbook:
+[README.md § Deploy to Google Cloud](README.md#deploy-to-google-cloud-terraform). When editing
+`.tf`, use context7 (`/hashicorp/terraform-provider-google`) for current provider syntax.
 
 ## Common Commands
 - `uv run python -m google_meridian_mcp_server.server`
@@ -91,6 +116,17 @@ error-path checks, and exits non-zero on any mismatch.
   for kpi-only; an unknown channel returns `missing_model_data`.
   `get_model_fit` is valid on all variants and additionally honors a `geos`
   filter (validated end-to-end); an unknown geo returns `missing_model_data`.
+- The suite also gates the optimization module end-to-end (subprocess worker,
+  `national-revenue` + `geo-revenue`): `run_optimization` → poll
+  `get_optimization_status` → `get_optimization_result` → `list_optimizations` →
+  `delete_optimization` → verify-gone, plus fingerprint reuse and the
+  `optimization_run_not_found` path. A **local cloud-executor gate** (faked
+  `jobs.run`, real worker, local-dir registry reset each run) covers the full
+  cloud launch/liveness/cancel contract with no GCP project. A **cross-backend
+  JAX gate** auto-runs when `jax` imports (else skips), confirming `tensorflow`
+  and `jax` results agree. A **real Cloud Run smoke** (`scripts.validation.cloud_smoke`;
+  `CLOUD_SMOKE=1`, `COMPUTE_TIER`, `MODEL_ID`) runs against live `as-dev-anze`;
+  CPU real-smoke verified PASSING.
 - Showcase ↔ tool parity is tracked in `docs/meridian-mcp-showcase-parity.md`.
 
 ## Module Map
@@ -110,6 +146,17 @@ error-path checks, and exits non-zero on any mismatch.
 - **services/analysis_service.py** — filter normalization; dispatch; result-cache integration; model-overview shaping.
 - **transport/tools.py** — registers FastMCP tools; converts domain errors to standard error payload.
 - **server.py** — lifespan startup; provider selection; `create_server()`, `mcp`, `run_server()`.
+- **domain/optimization.py** — enums (`RunStatus`, `RunPhase`, `ComputeTier`, `OutcomeMode`); Pydantic models `OptimizationConfig`, `OptimizationRun`, `OptimizationRunState`, `OptimizationRunSummary`; helpers `config_fingerprint`, `to_optimize_kwargs`.
+- **persistence/optimization_run_registry.py** — `OptimizationRunRegistry` ABC; `LocalOptimizationRunRegistry` (3-file layout per run: manifest, state, result; fingerprint index for reuse); `GcsOptimizationRunRegistry` (same 3-file + fingerprint layout on GCS; generation-guarded state writes via `write_state(*, expected_generation)` + `get_state_generation`); `RunNotFoundError`, `ResultNotReadyError`.
+- **execution/routing.py** — `model_size_features`, `size_score`, `resolve_tier`; maps problem size to cheapest allowed compute tier; reads `OPTIMIZATION_SIZE_THRESHOLDS` and `OPTIMIZATION_ALLOWED_TIERS`.
+- **execution/base_executor.py** — `BaseExecutor` ABC; concurrency gate (max-parallel semaphore), launch lifecycle, crash reconciliation via stale-heartbeat detection; `_fail_if_unfinished` no-ops on a deleted run (`RunNotFoundError` guard) so deleting a just-completed (unreaped) run can't break a later submit.
+- **execution/subprocess_executor.py** — `SubprocessExecutor` (local tier); spawns a worker subprocess per run; passes run_id and config via env; crash/orphan reconciliation of runs left non-terminal by a server restart runs at startup.
+- **execution/cloud_run_executor.py** — `CloudRunJobExecutor` (cloud tiers); launches worker as a Cloud Run Job execution (CPU or NVIDIA L4 GPU); selects per-tier JAX backend (`OPTIMIZATION_BACKEND_CLOUD_CPU`/`_GPU`); worker heartbeat thread + stale-heartbeat detection is the cloud crash signal; startup orphan reconcile handles runs left in-flight across server restarts.
+- **execution/worker.py** — `run_worker`; loads the model, calls `OptimizerFacade.run`, writes result/state to registry; one function, no server imports.
+- **meridian/optimizer_facade.py** — `OptimizerFacade` (extends `MeridianInterrogator`); wraps Meridian `BudgetOptimizer`; shapes `OptimizationResults` into the structured result dict (`summary`, `channel_tables`, `allocation`, `spend_delta`, `outcome_mode`, `response_curves`).
+- **deploy/** — `Dockerfile.worker` (CPU), `Dockerfile.worker.gpu` (GPU; adds `jax[cuda12]` self-contained CUDA wheels — Cloud Run L4 provides the driver); images are built automatically by `terraform apply` via Cloud Build. Infrastructure provisioning is via `deploy/terraform/` (Terraform module).
+- **services/optimization_service.py** — `OptimizationService`; orchestrates submission (fingerprint reuse check → routing → executor launch), status/result reads, list, delete.
+- **bootstrap.py** — `build_model_catalog` (provider + caches → `ModelCatalog`) and `build_registry` (backend selection → `OptimizationRunRegistry`); shared by server lifespan and worker.
 
 ## Current Tool Surface
 - `list_models`
@@ -123,6 +170,20 @@ error-path checks, and exits non-zero on any mismatch.
 - `get_reach_frequency`
 - `get_channel_data`
 - `get_spend_scenario`
+- `run_optimization`
+- `get_optimization_status`
+- `get_optimization_result`
+- `list_optimizations`
+- `delete_optimization`
+- `cancel_optimization`
+
+### Optimization module — Phase 2 (implemented)
+Plan `docs/superpowers/plans/2026-06-30-optimization-module-phase2.md`; design
+`docs/superpowers/specs/2026-06-29-optimization-tool-design.md`. Fully shipped — see Module Map
+(GCS registry with generation-guarded writes, `CloudRunJobExecutor`, `cancel_optimization`,
+`response_curves`) + Live Validation. Images build in-apply via Cloud Build (content-hash tags);
+one `terraform apply` build→provision→smoke→destroy verified end-to-end on `as-dev-anze` (CPU
+tier), zero residual.
 
 ## Model Overview Expectations
 The overview tool should tell an agent:
@@ -162,9 +223,9 @@ The overview tool should tell an agent:
   (`apply_saturation`/`get_data`); `get_carryover` remains unused.
 
 ## Current Test Coverage
-- **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache.
+- **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache; optimization domain/registry/routing/executor/cloud-executor/facade/service/worker.
 - **integration/** — provider filesystem behavior and cache interaction.
-- **contract/** — supported enums and public tool-surface expectations; `test_meridian_modelfit_contract.py` guards Meridian's private `ModelFit._transform_data_to_dataframe` signature plus the long-frame schema constants (`type`/`mean`/`ci_lo`/`ci_hi`/`expected`/`baseline`/`actual`) that `get_model_fit` depends on.
+- **contract/** — supported enums and public tool-surface expectations; `test_meridian_modelfit_contract.py` guards Meridian's private `ModelFit._transform_data_to_dataframe` signature plus the long-frame schema constants (`type`/`mean`/`ci_lo`/`ci_hi`/`expected`/`baseline`/`actual`) that `get_model_fit` depends on; `test_optimization_tools.py` guards tool registration and `readOnlyHint` annotations for all 6 optimization tools.
 
 ## Editing Guidance
 - Reuse `MeridianInterrogator` for shared model metadata and data extraction.

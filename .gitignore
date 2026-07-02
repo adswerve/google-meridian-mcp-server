@@ -20,7 +20,23 @@ Thumbs.db
 
 .github/
 references/
+# Skill references are served as MCP resources and must be tracked.
+!skills/meridian-analyst/references/
+!skills/meridian-analyst/references/**
 .superpowers/
 uv.lock
 .vscode/
 models/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Terraform (per-client inputs + state are never committed)
+deploy/terraform/**/.terraform/*
+deploy/terraform/**/.terraform.lock.hcl
+deploy/terraform/**/*.tfstate
+deploy/terraform/**/*.tfstate.*
+deploy/terraform/**/*.tfvars
+!deploy/terraform/**/*.tfvars.example
+deploy/terraform/**/backend.hcl
+!deploy/terraform/**/backend.hcl.example
+crash.log
