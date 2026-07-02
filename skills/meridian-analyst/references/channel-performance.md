@@ -29,7 +29,7 @@ result.
 | Base vs. incremental — what media caused vs. what would happen anyway | `get_contribution` **+** baseline | media = incremental contribution; baseline = `get_channel_summary` baseline view |
 | Carryover / how long an effect lasts after exposure | `get_adstock_decay` | decay curve (and shape parameter) per channel |
 | Saturation / diminishing returns / "what if we spend more or less" | `get_response_curves` | outcome across a *range* of spend per channel |
-| Reach & frequency, optimal frequency | `get_reach_frequency` | ROI across frequency levels + optimal frequency (**RF models only**) |
+| Reach & frequency, optimal frequency | `get_reach_frequency` | ROI across frequency levels + optimal frequency (**RF models only**; on a KPI-only model this `roi` is KPI units per spend, not revenue) |
 | Single-channel spend what-if ("add $X/week to search → ROI?") | `get_spend_scenario` | base vs. new outcome + the efficiency triplet |
 | Does the model fit / can I trust it | `get_model_fit` | expected vs. actual, baseline, residual over time |
 | All raw series for one channel (spend, impressions, reach/freq) | `get_channel_data` | one table per channel; use `get_training_data` for non-channel series |
@@ -84,7 +84,11 @@ answer "how many times should each person see the ad". It is gated on model
 *structure*: only models with reach/frequency channels expose it. On a non-RF model
 it is absent from `available_tool_options` and returns `metric_not_supported` — this
 is independent of the revenue axis (`references/taxonomy.md`); do not offer frequency
-advice for a non-RF model.
+advice for a non-RF model. On a **KPI-only** RF model, this `roi` is still returned
+(higher is better) but is expressed in **KPI units per spend, not revenue** —
+Meridian computes it against the model's native objective, unlike
+`get_channel_summary`'s `roi`/`marginal_roi`, which are revenue-only and unavailable
+there.
 
 **`get_spend_scenario` — single-channel what-if.** Simulates one channel at a base
 and an increased spend level. **Inputs are PER TIME UNIT** (e.g. per week), not a
@@ -118,10 +122,11 @@ percentage.
 ## Credible intervals — say the range, not just the point
 
 Meridian is Bayesian: every estimate is a distribution. `get_channel_summary`,
-`get_contribution`, `get_response_curves`, `get_reach_frequency`, and
-`get_model_fit` report means with `ci_lo`/`ci_hi`; `get_spend_scenario`'s
-`base_outcome`/`new_outcome` carry the interval too. **Always report the interval
-with the mean.** A wide interval means low confidence, not a precise number — and a
-ranking whose channels' intervals overlap heavily is not a reliable ranking, so say
-the order is uncertain rather than presenting a false precise winner. (Full
-discipline: `references/glossary.md`, "credible interval".)
+`get_contribution`, `get_response_curves`, `get_reach_frequency`,
+`get_adstock_decay`, and `get_model_fit` report means with `ci_lo`/`ci_hi`;
+`get_spend_scenario`'s `base_outcome`/`new_outcome` carry the interval too
+(`get_channel_data` is a raw series, not an estimate, so it has no CI). **Always
+report the interval with the mean.** A wide interval means low confidence, not a
+precise number — and a ranking whose channels' intervals overlap heavily is not a
+reliable ranking, so say the order is uncertain rather than presenting a false
+precise winner. (Full discipline: `references/glossary.md`, "credible interval".)
