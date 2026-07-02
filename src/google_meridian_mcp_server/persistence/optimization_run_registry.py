@@ -37,6 +37,12 @@ class ResultNotReadyError(MeridianMcpError):
 
 def build_config_summary(run: OptimizationRun) -> str:
     cfg = run.config
+    if getattr(cfg, "kind", "historical") == "future":
+        f = cfg.future
+        return (
+            f"future {cfg.scenario.type} • {f.horizon} periods from "
+            f"{f.start_date.isoformat()} • {f.reference.mode}"
+        )
     scenario = cfg.scenario.type
     dates = f"{cfg.start_date or 'start'}..{cfg.end_date or 'end'}"
     geos = "all geos" if not cfg.selected_geos else f"{len(cfg.selected_geos)} geos"
