@@ -79,6 +79,31 @@ class OptimizerFacade(MeridianInterrogator):
     def run_future(self, config) -> dict[str, Any]:
         return self._run(config, self._future_kwargs)
 
+    def validate_future(self, config) -> None:
+        """Pure up-front guards for future optimization: no `optimize()` call.
+
+        Runs the same checks `_future_kwargs` performs before building tensors,
+        so invalid future configs (bad start_date, infeasible reference window,
+        unknown channel keys) fail fast without touching the model.
+        """
+        from google_meridian_mcp_server.meridian import future_data as fd
+
+        f = config.future
+        times = self.get_time_values()
+        cadence = fd.infer_cadence_days(times)
+        labels = fd.future_time_labels(f.start_date, f.horizon, cadence)
+        if labels[0] <= times[-1][:10]:
+            raise ValueError(
+                "future start_date must be after the last training period."
+            )
+        fd.reference_indices(f.reference.mode, f.horizon, f.start_date, times, cadence)
+
+        media_order = self.get_data_inputs()["media"]
+        rf_order = self.get_data_inputs()["rf_media"]
+        fd.validate_channel_keys(f.cost_multipliers, media_order + rf_order)
+
+        fd.normalize_planned_allocation(f.planned_allocation, {}, self.channel_order())
+
     def _future_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
         from google_meridian_mcp_server.meridian import future_data as fd
 
