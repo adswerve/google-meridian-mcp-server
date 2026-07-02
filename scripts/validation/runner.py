@@ -97,46 +97,56 @@ async def assert_live_optimization(client, model_id: str, *, overview) -> None:
         f"expected local tier, got {submit}"
     )
 
-    status = None
-    for _ in range(120):  # tiny fixtures finish fast; cap ~60s
-        status = await call(client, "get_optimization_status", {"run_id": run_id})
-        if status["status"] in ("completed", "failed"):
-            break
-        await asyncio.sleep(0.5)
-    assert status and status["status"] == "completed", f"run did not complete: {status}"
+    try:
+        status = None
+        for _ in range(120):  # tiny fixtures finish fast; cap ~60s
+            status = await call(client, "get_optimization_status", {"run_id": run_id})
+            if status["status"] in ("completed", "failed"):
+                break
+            await asyncio.sleep(0.5)
+        assert status and status["status"] == "completed", (
+            f"run did not complete: {status}"
+        )
 
-    result = await call(client, "get_optimization_result", {"run_id": run_id})
-    for key in (
-        "summary",
-        "channel_tables",
-        "allocation",
-        "spend_delta",
-        "outcome_mode",
-    ):
-        assert key in result, f"result missing '{key}': {result.keys()}"
-    assert {"initial", "optimized"} <= set(result["channel_tables"]), (
-        "missing channel tables"
-    )
+        result = await call(client, "get_optimization_result", {"run_id": run_id})
+        for key in (
+            "summary",
+            "channel_tables",
+            "allocation",
+            "spend_delta",
+            "outcome_mode",
+        ):
+            assert key in result, f"result missing '{key}': {result.keys()}"
+        assert {"initial", "optimized"} <= set(result["channel_tables"]), (
+            "missing channel tables"
+        )
 
-    # Reuse: identical submit returns the same run, flagged reused.
-    again = await call(
-        client, "run_optimization", {"model_id": model_id, "config": config}
-    )
-    assert again["reused"] is True and again["run_id"] == run_id, (
-        f"reuse failed: {again}"
-    )
+        # Reuse: identical submit returns the same run, flagged reused.
+        again = await call(
+            client, "run_optimization", {"model_id": model_id, "config": config}
+        )
+        assert again["reused"] is True and again["run_id"] == run_id, (
+            f"reuse failed: {again}"
+        )
 
-    # list_optimizations must surface this run for the model.
-    listing = await call(client, "list_optimizations", {"model_id": model_id})
-    assert "error_code" not in listing, f"list_optimizations error: {listing}"
-    listed_ids = {r["run_id"] for r in listing["runs"]}
-    assert run_id in listed_ids, f"run {run_id} not in list_optimizations: {listed_ids}"
-    assert listing["count"] == len(listing["runs"]), (
-        f"list count mismatch: {listing['count']} != {len(listing['runs'])}"
-    )
+        # list_optimizations must surface this run for the model.
+        listing = await call(client, "list_optimizations", {"model_id": model_id})
+        assert "error_code" not in listing, f"list_optimizations error: {listing}"
+        listed_ids = {r["run_id"] for r in listing["runs"]}
+        assert run_id in listed_ids, (
+            f"run {run_id} not in list_optimizations: {listed_ids}"
+        )
+        assert listing["count"] == len(listing["runs"]), (
+            f"list count mismatch: {listing['count']} != {len(listing['runs'])}"
+        )
+    finally:
+        # Always reap the happy-path run, even if a poll/reuse/list assertion
+        # above raised -- otherwise its on-disk artifacts (record/state/result
+        # + fingerprint index pointer) would leak. Mirrors
+        # assert_live_future_optimization's pattern above.
+        deleted = await call(client, "delete_optimization", {"run_id": run_id})
 
     # delete_optimization removes it; a subsequent status lookup must 404 (typed).
-    deleted = await call(client, "delete_optimization", {"run_id": run_id})
     assert deleted.get("deleted") is True and deleted.get("run_id") == run_id, (
         f"delete failed: {deleted}"
     )

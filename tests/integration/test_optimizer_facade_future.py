@@ -4,14 +4,14 @@ import pytest
 
 from google_meridian_mcp_server.domain.optimization import FutureOptimizationConfig
 
-pytestmark = pytest.mark.integration  # register in pyproject (see Step 0)
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
 def national_revenue_facade():
     # Reuse the validation fixtures + loader; build-if-missing.
     from google_meridian_mcp_server.meridian.optimizer_facade import OptimizerFacade
-    from scripts.validation.fixtures import ensure_fixture_model  # helper (Task 11)
+    from scripts.validation.fixtures import ensure_fixture_model
 
     mmm = ensure_fixture_model("national-revenue")
     return OptimizerFacade(mmm)
@@ -35,6 +35,25 @@ def test_run_future_trailing_default_wellformed(national_revenue_facade):
     assert result["outcome_mode"] in ("revenue", "kpi")
     assert {"summary", "channel_tables", "allocation", "spend_delta"} <= result.keys()
     assert result["channel_tables"]["optimized"]  # non-empty rows
+
+
+def test_run_future_omits_response_curves(national_revenue_facade):
+    """FIX I1: Meridian's get_response_curves ignores new_data's future
+    media/media_spend and would silently return curves reflecting historical
+    flighting/cost, contradicting the future run's own assumptions -- so a
+    future run must omit `response_curves` entirely rather than ship a
+    misleading enrichment. The historical `run()` path is unchanged and still
+    enriches with response curves."""
+    facade = national_revenue_facade
+    future_result = facade.run_future(_future_cfg(facade))
+    assert "response_curves" not in future_result
+
+    from google_meridian_mcp_server.domain.optimization import OptimizationConfig
+
+    historical_result = facade.run(
+        OptimizationConfig.model_validate({"scenario": {"type": "fixed_budget"}})
+    )
+    assert "response_curves" in historical_result
 
 
 def test_run_future_cost_multiplier_shifts_away(national_revenue_facade):

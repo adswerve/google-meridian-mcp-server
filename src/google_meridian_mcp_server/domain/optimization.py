@@ -268,7 +268,8 @@ def _invert(value: float) -> float:
 def to_optimize_kwargs(
     config: BaseOptimizationConfig, *, channel_order: list[str], use_kpi: bool
 ) -> dict[str, Any]:
-    """Translate an OptimizationConfig into BudgetOptimizer.optimize() kwargs."""
+    """Translate a BaseOptimizationConfig (historical or future) into
+    BudgetOptimizer.optimize() kwargs."""
     scenario = config.scenario
     fixed_budget = scenario.type == "fixed_budget"
     budget = scenario.budget if scenario.type == "fixed_budget" else None

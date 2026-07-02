@@ -221,6 +221,11 @@ optimization lifecycle" above), plus one additional required block: `future`.
   "per_channel constraint" row above and `consultation.md`'s translation
   table).
 
+**Future runs omit `response_curves`.** Unlike `run_optimization`, a
+`run_future_optimization` result never includes `response_curves` — Meridian
+cannot recompute response curves under the future run's own cost/flighting
+assumptions, so lean on `channel_tables`/`allocation`/`summary` for the plan.
+
 Everything else — `scenario` (`fixed_budget`/`target_roas`/`target_mroas`),
 `constraint` (`global`/`per_channel`), `selected_geos`, `use_kpi` — works the
 same way as in `run_optimization` (see the scenario library above), **with one

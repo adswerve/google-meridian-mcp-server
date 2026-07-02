@@ -53,14 +53,20 @@ class OptimizerFacade(MeridianInterrogator):
             return self.run_future(config)
         return self.run(config)
 
-    def _run(self, config, build_kwargs) -> dict[str, Any]:
+    def _run(
+        self, config, build_kwargs, *, enrich_curves: bool = True
+    ) -> dict[str, Any]:
         from meridian.analysis import optimizer as optimizer_mod
 
         use_kpi = self.resolve_use_kpi(config)
         opt = optimizer_mod.BudgetOptimizer(self._mmm)
         kwargs = build_kwargs(config, opt, use_kpi)
         results = opt.optimize(**kwargs)
-        curves = _best_effort(lambda: results.get_response_curves())
+        curves = (
+            _best_effort(lambda: results.get_response_curves())
+            if enrich_curves
+            else None
+        )
         return self.build_result(
             results.nonoptimized_data,
             results.optimized_data,
@@ -77,14 +83,15 @@ class OptimizerFacade(MeridianInterrogator):
         )
 
     def run_future(self, config) -> dict[str, Any]:
-        return self._run(config, self._future_kwargs)
+        return self._run(config, self._future_kwargs, enrich_curves=False)
 
     def validate_future(self, config) -> None:
         """Pure up-front guards for future optimization: no `optimize()` call.
 
         Runs the same checks `_future_kwargs` performs before building tensors,
         so invalid future configs (bad start_date, infeasible reference window,
-        unknown channel keys) fail fast without touching the model.
+        unknown channel keys, unsupported spend granularity) fail fast without
+        touching the model.
         """
         from google_meridian_mcp_server.meridian import future_data as fd
 
@@ -97,6 +104,12 @@ class OptimizerFacade(MeridianInterrogator):
                 "future start_date must be after the last training period."
             )
         fd.reference_indices(f.reference.mode, f.horizon, f.start_date, times, cadence)
+
+        inputs = self.get_data_inputs()
+        if inputs["media"]:
+            self._spend_np("media_spend")  # cheap ndim guard; raises if not 3-D
+        if inputs["rf_media"]:
+            self._spend_np("rf_spend")  # cheap ndim guard; raises if not 3-D
 
         media_order = self.get_data_inputs()["media"]
         rf_order = self.get_data_inputs()["rf_media"]
@@ -165,8 +178,6 @@ class OptimizerFacade(MeridianInterrogator):
         kwargs = to_optimize_kwargs(
             config, channel_order=self.channel_order(), use_kpi=use_kpi
         )
-        kwargs.pop("start_date", None)
-        kwargs.pop("end_date", None)
         kwargs.update(
             new_data=new_data,
             start_date=time_labels[0],
@@ -203,6 +214,7 @@ class OptimizerFacade(MeridianInterrogator):
         )
         spend_sum = spend[:, window, :].sum(axis=(0, 1))
         media_sum = media[:, window, :].sum(axis=(0, 1))
+        self._raise_on_zero_denominator(media_sum, "media")
         return spend_sum / media_sum
 
     def _seed_cprf(self, window: list[int]) -> np.ndarray:
@@ -216,7 +228,31 @@ class OptimizerFacade(MeridianInterrogator):
         impressions = reach * frequency
         spend_sum = spend[:, window, :].sum(axis=(0, 1))
         impressions_sum = impressions[:, window, :].sum(axis=(0, 1))
+        self._raise_on_zero_denominator(impressions_sum, "rf")
         return spend_sum / impressions_sum
+
+    def _raise_on_zero_denominator(self, denom_sum: np.ndarray, family: str) -> None:
+        """Guard against zero media units/impressions in the reference window.
+
+        A zero denominator (spend > 0 but zero summed media units or RF
+        impressions over the reference window) would silently produce inf/NaN
+        cost-per-unit that flows into ``create_optimization_tensors``/
+        ``optimize``, yielding a "completed" run full of null metrics. Raise a
+        clear, actionable error instead.
+        """
+        zero_idx = np.flatnonzero(np.asarray(denom_sum) == 0)
+        if zero_idx.size == 0:
+            return
+        order = (
+            self.get_data_inputs()["media"]
+            if family == "media"
+            else self.get_data_inputs()["rf_media"]
+        )
+        names = [order[i] for i in zero_idx]
+        raise ValueError(
+            f"channel(s) {names} have zero media units in the chosen reference "
+            "window; pick a different reference window or horizon"
+        )
 
     def _seed_spend_flighting(
         self, kind: str, window: list[int], horizon: int, average: bool
