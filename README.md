@@ -31,6 +31,14 @@ It is designed for both local development and containerized deployment on Google
 - `delete_optimization` — remove a completed or failed run from the registry.
 - `cancel_optimization` — best-effort cancel of a queued or running run.
 
+## Bundled skill
+
+The server bundles a `meridian-analyst` Agent Skill. When a connecting client supports the MCP skills provider, it's discoverable over the resource URI `skill://meridian-analyst/SKILL.md`.
+
+For clients that don't yet surface MCP skill resources, use the folder-drop fallback: copy the `skills/meridian-analyst/` directory verbatim into the client's skills folder (e.g. `.claude/skills/`). It's a standards-compliant Agent Skill (agentskills.io format) and needs no conversion.
+
+The skill teaches orchestration, model taxonomy, budget-optimization/reallocation, and channel-performance workflows. It does not replace the per-tool descriptions above, which remain the source of truth for parameters.
+
 ## Deploy to Google Cloud (Terraform)
 
 ### Architecture
