@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
+
 from google_meridian_mcp_server.domain.optimization import (
     BaseOptimizationConfig,
     OptimizationConfig,
@@ -73,6 +75,154 @@ class OptimizerFacade(MeridianInterrogator):
         return to_optimize_kwargs(
             config, channel_order=self.channel_order(), use_kpi=use_kpi
         )
+
+    def run_future(self, config) -> dict[str, Any]:
+        return self._run(config, self._future_kwargs)
+
+    def _future_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
+        from google_meridian_mcp_server.meridian import future_data as fd
+
+        f = config.future
+        times = self.get_time_values()
+        cadence = fd.infer_cadence_days(times)
+        time_labels = fd.future_time_labels(f.start_date, f.horizon, cadence)
+        if time_labels[0] <= times[-1][:10]:
+            raise ValueError(
+                "future start_date must be after the last training period."
+            )
+        window = fd.reference_indices(
+            f.reference.mode, f.horizon, f.start_date, times, cadence
+        )
+
+        media_order = self.get_data_inputs()["media"]
+        rf_order = self.get_data_inputs()["rf_media"]
+        fd.validate_channel_keys(f.cost_multipliers, media_order + rf_order)
+        average = f.reference.mode == "full_history_average"
+
+        seeded_total = 0.0
+        tensor_kwargs: dict[str, Any] = {"time": time_labels}
+        if media_order:
+            tensor_kwargs["cpmu"] = fd.apply_cost_multipliers(
+                self._seed_cpmu(window), f.cost_multipliers, media_order
+            )
+            media_spend = self._seed_spend_flighting(
+                "media_spend", window, f.horizon, average
+            )
+            tensor_kwargs["media_spend"] = media_spend
+            seeded_total += float(np.asarray(media_spend).sum())
+        if rf_order:
+            tensor_kwargs["cprf"] = fd.apply_cost_multipliers(
+                self._seed_cprf(window), f.cost_multipliers, rf_order
+            )
+            rf_spend = self._seed_spend_flighting(
+                "rf_spend", window, f.horizon, average
+            )
+            tensor_kwargs["rf_spend"] = rf_spend
+            seeded_total += float(np.asarray(rf_spend).sum())
+        if self.has_revenue_per_kpi():
+            tensor_kwargs["revenue_per_kpi"] = (
+                self._seed_revenue_per_kpi(window, f.horizon, average)
+                * f.revenue_per_kpi_multiplier
+            )
+
+        new_data = opt.create_optimization_tensors(**tensor_kwargs)
+
+        carried = self._carried_allocation(window)  # {channel: weight}
+        pct = fd.normalize_planned_allocation(
+            f.planned_allocation, carried, self.channel_order()
+        )
+        fixed_budget = config.scenario.type == "fixed_budget"
+        scenario_budget = getattr(config.scenario, "budget", None)
+        # Budget defaults to the SEEDED future flighting total (horizon periods), NOT the
+        # raw reference-window total — the two differ for full_history_average.
+        budget = fd.resolve_budget(scenario_budget, fixed_budget, seeded_total)
+
+        kwargs = to_optimize_kwargs(
+            config, channel_order=self.channel_order(), use_kpi=use_kpi
+        )
+        kwargs.pop("start_date", None)
+        kwargs.pop("end_date", None)
+        kwargs.update(
+            new_data=new_data,
+            start_date=time_labels[0],
+            end_date=time_labels[-1],
+            pct_of_spend=pct,
+            budget=budget,
+        )
+        return kwargs
+
+    # -- private seed helpers (read self._mmm.input_data as NumPy) ------------
+
+    def _n_times(self) -> int:
+        return len(self.get_time_values())
+
+    def _trim_media(self, arr: np.ndarray) -> np.ndarray:
+        """Trim a media-family tensor to its final ``n_times`` slice.
+
+        media/reach/frequency are indexed by the longer ``media_time`` axis; only
+        the final ``n_times`` periods align to ``input_data.time``.
+        """
+        return arr[:, -self._n_times() :, :]
+
+    def _spend_np(self, kind: str) -> np.ndarray:
+        """Return a spend tensor as ``(n_geos, time, n_channels)`` float array."""
+        arr = np.asarray(getattr(self._mmm.input_data, kind).values, dtype=float)
+        if arr.ndim < 3:
+            raise ValueError("unsupported spend granularity for future optimization")
+        return arr
+
+    def _seed_cpmu(self, window: list[int]) -> np.ndarray:
+        spend = self._spend_np("media_spend")
+        media = self._trim_media(
+            np.asarray(self._mmm.input_data.media.values, dtype=float)
+        )
+        spend_sum = spend[:, window, :].sum(axis=(0, 1))
+        media_sum = media[:, window, :].sum(axis=(0, 1))
+        return spend_sum / media_sum
+
+    def _seed_cprf(self, window: list[int]) -> np.ndarray:
+        spend = self._spend_np("rf_spend")
+        reach = self._trim_media(
+            np.asarray(self._mmm.input_data.reach.values, dtype=float)
+        )
+        frequency = self._trim_media(
+            np.asarray(self._mmm.input_data.frequency.values, dtype=float)
+        )
+        impressions = reach * frequency
+        spend_sum = spend[:, window, :].sum(axis=(0, 1))
+        impressions_sum = impressions[:, window, :].sum(axis=(0, 1))
+        return spend_sum / impressions_sum
+
+    def _seed_spend_flighting(
+        self, kind: str, window: list[int], horizon: int, average: bool
+    ) -> np.ndarray:
+        spend = self._spend_np(kind)
+        if average:
+            per_period = spend.mean(axis=1, keepdims=True)
+            return np.repeat(per_period, horizon, axis=1)
+        return spend[:, window, :]
+
+    def _seed_revenue_per_kpi(
+        self, window: list[int], horizon: int, average: bool
+    ) -> np.ndarray:
+        rpk = np.asarray(self._mmm.input_data.revenue_per_kpi.values, dtype=float)
+        if average:
+            per_period = rpk.mean(axis=1, keepdims=True)
+            return np.repeat(per_period, horizon, axis=1)
+        return rpk[:, window]
+
+    def _carried_allocation(self, window: list[int]) -> dict[str, float]:
+        inputs = self.get_data_inputs()
+        weights: dict[str, float] = {}
+        if inputs["media"]:
+            per_channel = self._spend_np("media_spend")[:, window, :].sum(axis=(0, 1))
+            for i, channel in enumerate(inputs["media"]):
+                weights[channel] = float(per_channel[i])
+        if inputs["rf_media"]:
+            per_channel = self._spend_np("rf_spend")[:, window, :].sum(axis=(0, 1))
+            for i, channel in enumerate(inputs["rf_media"]):
+                weights[channel] = float(per_channel[i])
+        return weights
 
     @staticmethod
     def build_result(
