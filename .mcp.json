@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "meridian-mcp": {
-      "type": "url",
-      "url": "https://meridian-mcp-server-px6atnevbq-uc.a.run.app/mcp"
-    }
-  }
-}
