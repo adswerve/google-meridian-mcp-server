@@ -102,7 +102,7 @@ class OptimizerFacade(MeridianInterrogator):
         rf_order = self.get_data_inputs()["rf_media"]
         fd.validate_channel_keys(f.cost_multipliers, media_order + rf_order)
 
-        fd.normalize_planned_allocation(f.planned_allocation, {}, self.channel_order())
+        fd.validate_channel_keys(f.planned_allocation, self.channel_order())
 
     def _future_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
         from google_meridian_mcp_server.meridian import future_data as fd

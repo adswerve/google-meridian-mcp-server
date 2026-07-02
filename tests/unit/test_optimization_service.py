@@ -374,3 +374,23 @@ def test_run_future_invalid_config_raises(service_with_fakes):
                 "future": {"start_date": "2099-01-01", "horizon": 0},
             },
         )
+
+
+def test_run_future_validate_future_error_becomes_invalid_config(service_with_fakes):
+    """FIX 7: a config that passes pydantic but fails facade.validate_future (unknown
+    cost_multipliers channel) must surface as InvalidOptimizationConfigError, not a
+    bare ValueError -- exercising the try/except conversion in run_future_optimization.
+    """
+    service, _ = service_with_fakes
+    with pytest.raises(InvalidOptimizationConfigError):
+        service.run_future_optimization(
+            "national-revenue",
+            {
+                "scenario": {"type": "fixed_budget"},
+                "future": {
+                    "start_date": "2099-01-01",
+                    "horizon": 4,
+                    "cost_multipliers": {"not_a_channel": 1.2},
+                },
+            },
+        )
