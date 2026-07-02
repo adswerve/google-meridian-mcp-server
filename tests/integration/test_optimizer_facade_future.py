@@ -87,3 +87,33 @@ def test_run_future_cost_multiplier_shifts_away(national_revenue_facade):
         f"channel {channel!r} optimized spend increased despite a 100x cost "
         "multiplier — the future cost assumption is being ignored"
     )
+
+
+def _spend_map(rows):
+    return {r["channel"]: r["spend"] for r in rows}
+
+
+def test_run_future_excludes_channel(national_revenue_facade):
+    facade = national_revenue_facade
+    result = facade.run_future(_future_cfg(facade, excluded_channels=["ch_0"]))
+    initial = _spend_map(result["channel_tables"]["initial"])
+    optimized = _spend_map(result["channel_tables"]["optimized"])
+    # Excluded channel present in BOTH tables, pinned to 0.
+    assert "ch_0" in initial and "ch_0" in optimized
+    assert initial["ch_0"] == 0 or initial["ch_0"] is None or initial["ch_0"] == 0.0
+    assert optimized["ch_0"] == 0 or optimized["ch_0"] == 0.0
+    # Remaining channels carry all the spend.
+    assert sum(v for k, v in optimized.items() if k != "ch_0") > 0
+
+
+def test_run_future_exclude_unknown_channel_raises(national_revenue_facade):
+    facade = national_revenue_facade
+    with pytest.raises(ValueError, match="unknown"):
+        facade.validate_future(_future_cfg(facade, excluded_channels=["nope"]))
+
+
+def test_run_future_exclude_all_raises(national_revenue_facade):
+    facade = national_revenue_facade
+    every = facade.channel_order()
+    with pytest.raises(ValueError, match="every channel"):
+        facade.validate_future(_future_cfg(facade, excluded_channels=every))

@@ -117,6 +117,13 @@ class OptimizerFacade(MeridianInterrogator):
 
         fd.validate_channel_keys(f.planned_allocation, self.channel_order())
 
+        fd.validate_excluded_channels(
+            f.excluded_channels,
+            f.planned_allocation,
+            f.cost_multipliers,
+            self.channel_order(),
+        )
+
     def _future_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
         from google_meridian_mcp_server.meridian import future_data as fd
 
@@ -169,6 +176,17 @@ class OptimizerFacade(MeridianInterrogator):
         pct = fd.normalize_planned_allocation(
             f.planned_allocation, carried, self.channel_order()
         )
+
+        if f.excluded_channels:
+            fd.validate_excluded_channels(
+                f.excluded_channels,
+                f.planned_allocation,
+                f.cost_multipliers,
+                self.channel_order(),
+            )
+            if pct is None:
+                total_carried = sum(carried.values())
+                pct = [carried[ch] / total_carried for ch in self.channel_order()]
         fixed_budget = config.scenario.type == "fixed_budget"
         scenario_budget = getattr(config.scenario, "budget", None)
         # Budget defaults to the SEEDED future flighting total (horizon periods), NOT the
@@ -185,6 +203,19 @@ class OptimizerFacade(MeridianInterrogator):
             pct_of_spend=pct,
             budget=budget,
         )
+        if f.excluded_channels:
+            new_pct, lower, upper = fd.apply_exclusions(
+                pct,
+                kwargs["spend_constraint_lower"],
+                kwargs["spend_constraint_upper"],
+                f.excluded_channels,
+                self.channel_order(),
+            )
+            kwargs.update(
+                pct_of_spend=new_pct,
+                spend_constraint_lower=lower,
+                spend_constraint_upper=upper,
+            )
         return kwargs
 
     # -- private seed helpers (read self._mmm.input_data as NumPy) ------------
