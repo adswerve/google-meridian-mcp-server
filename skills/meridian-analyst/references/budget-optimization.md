@@ -35,7 +35,7 @@ they state a real limit.
 | "Don't move any channel more than ±X% / freeze channel Z" | `constraint`: `global` (one pct band on every channel) vs. `per_channel` (explicit lower/upper bounds; freeze = set both to 0) |
 | "Optimize just for Q4 / a specific window" | `start_date` / `end_date` |
 | "Reallocate within specific regions only" | `selected_geos` (geo models only; ignored by national) |
-| "Plan NEXT quarter's budget (forward-looking)" | Forward-planning approximation — see the final section; **always** attach its caveats |
+| "Plan NEXT quarter's budget (forward-looking)" | `run_future_optimization` — see the "Forward-looking planning" section; **always** attach its caveats |
 
 The valid **scenario** types are exactly `fixed_budget`, `target_roas`,
 `target_mroas`. The valid **constraint** modes are exactly `global` and
@@ -146,33 +146,108 @@ edges of historical spend.
 
 ## Forward-looking planning (plan NEXT period's budget)
 
-Be honest with the user first: **MMM optimization is backward-looking.** It fits on
-historical data and recommends the best *reallocation of past spend* — it is not a
-forecast of the future. The server does **not** expose Meridian's `new_data`
-scenario-planning input, so true forward scenario planning is a documented
-limitation of this server. Do not claim or attempt it.
+Be honest with the user first: **Meridian does not forecast demand, costs, or
+prices.** There is no crystal ball here — `run_future_optimization` optimizes an
+allocation for a future window **under assumptions the user (or you, on their
+behalf) supplies**; it does not predict what those assumptions should be. For
+vague or high-stakes forward asks, elicit the assumptions first — see
+`consultation.md`.
 
-You can still give a defensible forward approximation using only the existing
-knobs:
+Use **`run_future_optimization`**, not `run_optimization`, whenever the question
+is about a period **after** the model's last training date ("next quarter",
+"next year's holiday season", "if TV gets more expensive"). It shares the exact
+same scenario/constraint vocabulary and async lifecycle as `run_optimization`
+(submit → poll `get_optimization_status` → `get_optimization_result` — see "The
+optimization lifecycle" above), plus one additional required block: `future`.
 
-1. Set `budget` (a `fixed_budget` scenario) to the **planned future total**.
-2. Set `start_date` / `end_date` to a **recent window that resembles expected
-   future conditions** — e.g. optimize over last year's Q4 to inform this year's
-   Q4, so seasonality and price environment are comparable.
-3. Apply the **real planning constraints** (contracts, channel freezes, max
-   movement) via `global` / `per_channel`.
-4. Read the plan through **marginal ROI (`mroi`)**, not average ROI: the forward
-   question is "where does the *next* dollar work hardest," and marginal ROI is
-   what survives extrapolation best.
+**When to use which tool:**
+- **`run_optimization`** — reallocate spend the model already observed (historical
+  window, defaults to full training range). Use for "how should I have spent" /
+  "how should I reallocate now within data I have."
+- **`run_future_optimization`** — allocate spend for a window **beyond** the
+  model's training data. Use for "how should I split next quarter's budget" /
+  "plan for a future period."
+
+**The `future` block, in plain terms:**
+- **`start_date`** (date, required) — first day of the future period; must be
+  after the model's last training date.
+- **`horizon`** (integer periods, required, must be a positive integer `> 0`) —
+  how many periods to plan, at the model's own cadence (e.g. `13` = 13 weeks on
+  a weekly model, not 13 days).
+- **`reference`** (optional, default `trailing`; one of three modes — see
+  `glossary.md` "reference window" and `taxonomy.md` for routing detail) — which
+  historical window's cost-per-media-unit, flighting (time-shape of spend), and
+  revenue-per-KPI get carried forward as the future's cost structure:
+  - `trailing` (default) — the last `horizon` periods of the training data,
+    ending at the model's last training period (**not** wall-clock today — a
+    model trained through 2025-06 anchors here regardless of the current
+    date). Best for "keep recent conditions."
+  - `same_period_last_year` — the `horizon` periods exactly one year before
+    `start_date`. Best for seasonal planning ("plan like last December").
+  - `full_history_average` — the average over the whole training range. Best
+    when recent data is noisy or unrepresentative.
+- **`cost_multipliers`** (optional `dict[channel, float]`, default 1.0 per
+  channel, **values must be `> 0`**) — scales the carried-forward
+  cost-per-media-unit per channel; `1.15` = 15% more expensive, `0.9` = 10%
+  cheaper. Example: expecting TV CPMs to rise 15% → `{"TV": 1.15}`. A
+  multiplier above 1 makes a channel less efficient, so the optimizer shifts
+  spend away from it; below 1 does the opposite. A multiplier of `0` is
+  **rejected** by validation, not treated as "free" — there is no way to zero
+  out a channel's cost this way.
+- **`revenue_per_kpi_multiplier`** (optional float, default `1.0`, **must be
+  `> 0`**) — scales carried-forward revenue-per-KPI (revenue-capable models
+  only; ignored on KPI-only models). `1.1` = prices/LTV expected 10% higher.
+- **`planned_allocation`** (optional `dict[channel, float]`, default: the
+  carried-forward mix, **values must be `> 0`**) — your intended future spend
+  mix; it is the center that spend constraints bound around, and shows up as
+  the "current"/baseline mix in the result (comparable to `channel_tables.initial`
+  in a historical run). Partial dicts are accepted — unlisted channels are
+  filled from the carried-forward mix and the whole vector is renormalized to
+  sum to 1.
+- **Omitted `budget` in a `fixed_budget` scenario, for a future run** — unlike
+  `run_optimization` (where an omitted budget defaults to the model's full
+  historical total), here it defaults to the chosen `reference` window's
+  carried-forward spend total, seeded/scaled to the `horizon` length. Different
+  `reference` modes therefore imply materially different default budgets (e.g.
+  `same_period_last_year` seeds from last year's same-quarter spend total,
+  `full_history_average` seeds from a horizon-scaled long-run average) — if the
+  user did not give an explicit number, say out loud what total you are
+  assuming and why.
+- **Excluding a channel entirely is not a zero weight.** `planned_allocation`
+  and `cost_multipliers` both reject `0` (and any value `<= 0`) by validation —
+  writing `{"TV": 0}` to "pause TV next quarter" raises an error, it does not
+  zero the channel out. To fully exclude a channel from the future plan, use a
+  `per_channel` **constraint** with that channel's bounds frozen at 0 (see the
+  "per_channel constraint" row above and `consultation.md`'s translation
+  table).
+
+Everything else — `scenario` (`fixed_budget`/`target_roas`/`target_mroas`),
+`constraint` (`global`/`per_channel`), `selected_geos`, `use_kpi` — works the
+same way as in `run_optimization` (see the scenario library above), **with one
+exception**: in a `fixed_budget` scenario, an omitted `budget` does **not**
+default to the model's full historical total the way it does in
+`run_optimization` — see the bullet above for what it defaults to instead.
+Channel and geo names still come from
+`get_model_overview.available_tool_options.run_optimization`.
 
 **Mandated caveats — attach ALL of these to every forward recommendation:**
-- It assumes CPMs, prices/LTV, and the response-curve shapes stay stable into the
-  planned period; if any shift, the plan degrades.
-- **Extrapolation risk:** pushing a channel beyond its historical spend range is
-  the least reliable part of the curve — treat large increases skeptically.
-- The numbers forecast **incremental outcome** (the lift media causes), **not the
-  absolute future KPI/revenue** — baseline demand, seasonality, and price are not
-  being predicted here.
+- Meridian is **not forecasting** cost, price, demand, or seasonality — every
+  number in the `future` block (or its defaults) is a supplied assumption, not a
+  prediction. The optimizer is only as good as those assumptions.
+- **State which `reference` window was used and why** — it silently determines
+  the carried-forward cost/flighting/revenue-per-KPI *and*, whenever a
+  `fixed_budget` scenario's `budget` is left unset, the assumed total budget
+  for the plan too (the reference window's carried-forward spend total,
+  scoped to the horizon). So the user should know whether the plan assumes
+  "recent conditions," "same season last year," or "a stable long-run
+  average" — and, if no explicit budget number was given, what total spend
+  is implicitly being assumed as a result.
+- **Extrapolation risk:** pushing a channel beyond its historical spend range (or
+  applying a large `cost_multipliers`/`revenue_per_kpi_multiplier` shift) is the
+  least reliable part of the curve — treat large moves skeptically.
+- The numbers are **incremental outcome under the assumed cost structure**, not
+  the absolute future KPI/revenue — baseline demand and macro price shifts are
+  not modeled.
 - **Validate large moves with a geo or holdout experiment** before committing real
   budget; the model informs the hypothesis, the experiment confirms it.
 
