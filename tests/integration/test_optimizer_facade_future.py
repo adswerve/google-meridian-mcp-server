@@ -39,13 +39,32 @@ def test_run_future_trailing_default_wellformed(national_revenue_facade):
 
 def test_run_future_cost_multiplier_shifts_away(national_revenue_facade):
     facade = national_revenue_facade
-    channel = facade.channel_order()[0]
+    # Use a media channel, not RF: RF channels can sit at their spend-constraint
+    # floor, so a *cost increase* can't move them lower and the test would pass
+    # trivially even if the cost path were broken.
+    channel = facade.get_data_inputs()["media"][0]
     base = facade.run_future(_future_cfg(facade))
-    bumped = facade.run_future(_future_cfg(facade, cost_multipliers={channel: 3.0}))
+    # A large multiplier makes the effect unambiguous.
+    bumped = facade.run_future(_future_cfg(facade, cost_multipliers={channel: 100.0}))
 
     def opt_spend(res, ch):
         rows = {r["channel"]: r["spend"] for r in res["channel_tables"]["optimized"]}
         return rows[ch]
 
-    # Tripling one channel's cost should not increase its optimized spend.
-    assert opt_spend(bumped, channel) <= opt_spend(base, channel) + 1e-6
+    def opt_allocation(res):
+        return {r["channel"]: r["spend"] for r in res["channel_tables"]["optimized"]}
+
+    # (a) The full optimized allocation must differ from baseline. This is the
+    # teeth of the test: if the cost multiplier were ignored, `bumped` would be
+    # identical to `base` and this assertion would catch it.
+    assert opt_allocation(bumped) != opt_allocation(base), (
+        "cost multiplier had no effect on the optimized allocation — the "
+        "future cost assumption is being ignored"
+    )
+
+    # (b) Making one channel 100x more expensive should not increase its own
+    # optimized spend.
+    assert opt_spend(bumped, channel) <= opt_spend(base, channel) + 1e-6, (
+        f"channel {channel!r} optimized spend increased despite a 100x cost "
+        "multiplier — the future cost assumption is being ignored"
+    )
