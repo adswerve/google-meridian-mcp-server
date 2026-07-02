@@ -93,6 +93,7 @@ def _spend_map(rows):
     return {r["channel"]: r["spend"] for r in rows}
 
 
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_run_future_excludes_channel(national_revenue_facade):
     facade = national_revenue_facade
     result = facade.run_future(_future_cfg(facade, excluded_channels=["ch_0"]))
@@ -104,6 +105,13 @@ def test_run_future_excludes_channel(national_revenue_facade):
     assert optimized["ch_0"] == 0 or optimized["ch_0"] == 0.0
     # Remaining channels carry all the spend.
     assert sum(v for k, v in optimized.items() if k != "ch_0") > 0
+    # Exact budget conservation: optimized spend across ALL channels equals the
+    # optimized total budget, and the excluded channel contributes exactly 0.
+    total_opt = sum(v for v in optimized.values() if v is not None)
+    budget = result["summary"]["optimized_budget"]
+    assert abs(total_opt - budget) <= 1e-6 * max(budget, 1.0), (
+        f"excluded budget leaked: channels sum {total_opt} != budget {budget}"
+    )
 
 
 def test_run_future_exclude_unknown_channel_raises(national_revenue_facade):

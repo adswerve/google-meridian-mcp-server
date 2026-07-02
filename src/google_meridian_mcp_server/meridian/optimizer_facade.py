@@ -178,6 +178,9 @@ class OptimizerFacade(MeridianInterrogator):
         )
 
         if f.excluded_channels:
+            # Re-validated here (not only in validate_future) because execute()/
+            # run_future reach _future_kwargs without necessarily calling
+            # validate_future first.
             fd.validate_excluded_channels(
                 f.excluded_channels,
                 f.planned_allocation,
@@ -186,6 +189,11 @@ class OptimizerFacade(MeridianInterrogator):
             )
             if pct is None:
                 total_carried = sum(carried.values())
+                if total_carried <= 0:
+                    raise ValueError(
+                        "reference window has zero spend; cannot build a baseline "
+                        "allocation for excluded channels — pick a different reference."
+                    )
                 pct = [carried[ch] / total_carried for ch in self.channel_order()]
         fixed_budget = config.scenario.type == "fixed_budget"
         scenario_budget = getattr(config.scenario, "budget", None)
