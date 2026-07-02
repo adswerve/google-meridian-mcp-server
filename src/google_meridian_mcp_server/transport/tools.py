@@ -472,6 +472,8 @@ def register_tools(mcp: FastMCP) -> None:
                     "cost/flighting/revenue/default-budget: {mode:'trailing'|'same_period_last_year'|"
                     "'full_history_average'}. cost_multipliers scale per-channel cost-per-media-unit; "
                     "planned_allocation sets your planned mix (partial dicts are normalized). "
+                    "Set `future.excluded_channels` to a list of channels to fully pause (spend "
+                    "forced to 0; their budget reallocates across the rest, total unchanged). "
                     "Valid channels/geos: get_model_overview.available_tool_options.run_optimization."
                 )
             ),

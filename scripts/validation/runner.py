@@ -203,6 +203,55 @@ async def assert_live_future_optimization(client, model_id: str, *, overview) ->
             "missing channel tables"
         )
 
+        # Exclusion: pause the first channel; assert it is pinned to 0 spend.
+        first_channel = overview["available_tool_options"]["run_optimization"][
+            "channels"
+        ][0]
+        excl_submit = await call(
+            client,
+            "run_future_optimization",
+            {
+                "model_id": model_id,
+                "config": {
+                    "scenario": {"type": "fixed_budget"},
+                    "future": {
+                        "start_date": "2099-01-01",
+                        "horizon": 4,
+                        "excluded_channels": [first_channel],
+                    },
+                },
+            },
+        )
+        assert "error_code" not in excl_submit, (
+            f"{model_id}/exclude submit errored: {excl_submit}"
+        )
+        excl_run_id = excl_submit["run_id"]
+        try:
+            excl_status = None
+            for _ in range(120):  # tiny fixtures finish fast; cap ~60s
+                excl_status = await call(
+                    client, "get_optimization_status", {"run_id": excl_run_id}
+                )
+                if excl_status["status"] in ("completed", "failed"):
+                    break
+                await asyncio.sleep(0.5)
+            assert excl_status and excl_status["status"] == "completed", (
+                f"{model_id}/exclude expected completed, got {excl_status}"
+            )
+            excl_result = await call(
+                client, "get_optimization_result", {"run_id": excl_run_id}
+            )
+            opt_rows = excl_result["channel_tables"]["optimized"]
+            excl_spend = next(
+                r["spend"] for r in opt_rows if r["channel"] == first_channel
+            )
+            assert excl_spend in (0, 0.0), (
+                f"{model_id}/exclude expected 0 spend for {first_channel}, "
+                f"got {excl_spend}"
+            )
+        finally:
+            await call(client, "delete_optimization", {"run_id": excl_run_id})
+
         # Reuse: identical submit returns the same run, flagged reused.
         again = await call(
             client,

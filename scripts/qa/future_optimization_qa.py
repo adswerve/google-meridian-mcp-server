@@ -1,18 +1,20 @@
-"""Final QA gate: drive BOTH optimization tools through 10 live scenarios.
+"""Final QA gate: drive BOTH optimization tools through 11 live scenarios.
 
 Standalone script. Builds/reuses the tiny fitted-model fixtures under
 ``models/_validation`` (same ones scripts/validation/live_validate.py and the
 contract tests use), wires an in-process ``Client(mcp)`` against the LOCAL
-tier only, and exercises 5 ``run_optimization`` (historical) + 5
+tier only, and exercises 5 ``run_optimization`` (historical) + 6
 ``run_future_optimization`` (future) scenarios per spec section 13.1: happy
 paths assert a completed run with a well-formed result; adversarial cases
 assert the *right layer* fails (flat ``invalid_optimization_config`` envelope
-at submit, a failed terminal run, or a protocol-level ``ToolError``).
+at submit, a failed terminal run, or a protocol-level ``ToolError``). The 6th
+future scenario covers ``future.excluded_channels``, pinning a channel's
+optimized spend to 0.
 
 Usage:
   OPTIMIZATION_ALLOWED_TIERS=local uv run python scripts/qa/future_optimization_qa.py
 
-Prints a per-scenario PASS/FAIL table, ending ``FUTURE-OPT QA PASSED (10/10)``
+Prints a per-scenario PASS/FAIL table, ending ``FUTURE-OPT QA PASSED (11/11)``
 and exiting 0 iff every scenario passes; otherwise exits 1.
 """
 
@@ -302,7 +304,7 @@ async def scenario_h5(client) -> None:
 
 
 # --------------------------------------------------------------------------
-# run_future_optimization scenarios (spec 13.1, 5 scenarios)
+# run_future_optimization scenarios (spec 13.1, 5 scenarios + 1 exclusion)
 # --------------------------------------------------------------------------
 
 
@@ -507,6 +509,43 @@ async def scenario_f5(client, national_overview: dict) -> None:
         )
 
 
+async def scenario_f6(client, national_overview: dict) -> dict:
+    """future.excluded_channels pins the excluded channel to 0 optimized
+    spend, reallocating its budget across the remaining channels -> happy."""
+    channels = national_overview["media_channels"] + national_overview["rf_channels"]
+    excluded = channels[0]
+    config = {
+        "scenario": {"type": "fixed_budget"},
+        "future": {
+            "start_date": FAR_FUTURE,
+            "horizon": 4,
+            "excluded_channels": [excluded],
+        },
+    }
+    submit = await call(
+        client, "run_future_optimization", {"model_id": NATIONAL, "config": config}
+    )
+    assert "error_code" not in submit, f"submit error: {submit}"
+    run_id = submit["run_id"]
+    try:
+        status = await poll_to_terminal(client, run_id)
+        assert status["status"] == "completed", f"did not complete: {status}"
+
+        result = await call(client, "get_optimization_result", {"run_id": run_id})
+        assert_well_formed(result, "F6")
+
+        opt_row = next(
+            r for r in result["channel_tables"]["optimized"] if r["channel"] == excluded
+        )
+        assert opt_row["spend"] in (0, 0.0), (
+            f"excluded channel {excluded!r} expected 0 optimized spend, "
+            f"got {opt_row['spend']}"
+        )
+        return result
+    finally:
+        await call(client, "delete_optimization", {"run_id": run_id})
+
+
 # --------------------------------------------------------------------------
 # Driver
 # --------------------------------------------------------------------------
@@ -569,7 +608,7 @@ async def run_qa() -> int:
                 scenario_h5(client),
             )
 
-            print("=== run_future_optimization scenarios (5) ===")
+            print("=== run_future_optimization scenarios (6) ===")
             await _run_scenario(
                 report,
                 "F1 trailing/horizon=13/default-multipliers[happy]",
@@ -595,6 +634,11 @@ async def run_qa() -> int:
                 "F5 adversarial(non-future,unknown-channel,insufficient-history)"
                 "+protocol-error(horizon<=0)",
                 scenario_f5(client, national_overview),
+            )
+            await _run_scenario(
+                report,
+                "F6 excluded_channels[happy, excluded channel pinned to 0 spend]",
+                scenario_f6(client, national_overview),
             )
     finally:
         shutil.rmtree(tmp_runs_root, ignore_errors=True)

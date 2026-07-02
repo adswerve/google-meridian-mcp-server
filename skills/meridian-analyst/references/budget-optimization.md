@@ -204,6 +204,13 @@ optimization lifecycle" above), plus one additional required block: `future`.
   in a historical run). Partial dicts are accepted — unlisted channels are
   filled from the carried-forward mix and the whole vector is renormalized to
   sum to 1.
+- **`excluded_channels`** (optional `list[str]`, default none) — channels to
+  fully pause for the future window; their spend is forced to 0 and their share
+  of the budget is reallocated across the remaining channels (total unchanged).
+  Must be valid paid/RF channels and must **not** also appear in
+  `planned_allocation` or `cost_multipliers`; you cannot exclude every channel.
+  Example: expecting to go dark on TV next quarter → `{"excluded_channels":
+  ["TV"]}`.
 - **Omitted `budget` in a `fixed_budget` scenario, for a future run** — unlike
   `run_optimization` (where an omitted budget defaults to the model's full
   historical total), here it defaults to the chosen `reference` window's
@@ -213,13 +220,15 @@ optimization lifecycle" above), plus one additional required block: `future`.
   `full_history_average` seeds from a horizon-scaled long-run average) — if the
   user did not give an explicit number, say out loud what total you are
   assuming and why.
-- **Excluding a channel entirely is not a zero weight.** `planned_allocation`
-  and `cost_multipliers` both reject `0` (and any value `<= 0`) by validation —
-  writing `{"TV": 0}` to "pause TV next quarter" raises an error, it does not
-  zero the channel out. To fully exclude a channel from the future plan, use a
-  `per_channel` **constraint** with that channel's bounds frozen at 0 (see the
-  "per_channel constraint" row above and `consultation.md`'s translation
-  table).
+- **Pausing / excluding a channel entirely** is `future.excluded_channels`, a
+  list of channels to force to 0 spend for the future window. Their budget is
+  reallocated across the remaining channels (total budget unchanged — "pause
+  TV, spend it elsewhere"), and they still appear in the result with spend 0.
+  `planned_allocation` and `cost_multipliers` both reject `0` (must be `> 0`),
+  and a `0/0` `per_channel` constraint **freezes a channel at its current
+  spend** rather than pausing it — so neither can exclude a channel. Only
+  future runs support full exclusion; historical `run_optimization` supports
+  freeze (`0/0`) but not exclusion.
 
 **Future runs omit `response_curves`.** Unlike `run_optimization`, a
 `run_future_optimization` result never includes `response_curves` — Meridian

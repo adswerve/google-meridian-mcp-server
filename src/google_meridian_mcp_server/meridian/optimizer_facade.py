@@ -88,10 +88,11 @@ class OptimizerFacade(MeridianInterrogator):
     def validate_future(self, config) -> None:
         """Pure up-front guards for future optimization: no `optimize()` call.
 
-        Runs the same checks `_future_kwargs` performs before building tensors,
-        so invalid future configs (bad start_date, infeasible reference window,
-        unknown channel keys, unsupported spend granularity) fail fast without
-        touching the model.
+        Runs the pure submit-time guards (start_date, reference window,
+        channel-key validity, exclusion validity) so invalid future configs
+        fail fast without touching the model. A few build-time-only conditions
+        (e.g. a zero-spend reference window) are checked only in
+        `_future_kwargs` and instead surface as a FAILED run.
         """
         from google_meridian_mcp_server.meridian import future_data as fd
 
@@ -116,6 +117,13 @@ class OptimizerFacade(MeridianInterrogator):
         fd.validate_channel_keys(f.cost_multipliers, media_order + rf_order)
 
         fd.validate_channel_keys(f.planned_allocation, self.channel_order())
+
+        fd.validate_excluded_channels(
+            f.excluded_channels,
+            f.planned_allocation,
+            f.cost_multipliers,
+            self.channel_order(),
+        )
 
     def _future_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
         from google_meridian_mcp_server.meridian import future_data as fd
@@ -169,6 +177,25 @@ class OptimizerFacade(MeridianInterrogator):
         pct = fd.normalize_planned_allocation(
             f.planned_allocation, carried, self.channel_order()
         )
+
+        if f.excluded_channels:
+            # Re-validated here (not only in validate_future) because execute()/
+            # run_future reach _future_kwargs without necessarily calling
+            # validate_future first.
+            fd.validate_excluded_channels(
+                f.excluded_channels,
+                f.planned_allocation,
+                f.cost_multipliers,
+                self.channel_order(),
+            )
+            if pct is None:
+                total_carried = sum(carried.values())
+                if total_carried <= 0:
+                    raise ValueError(
+                        "reference window has zero spend; cannot build a baseline "
+                        "allocation for excluded channels — pick a different reference."
+                    )
+                pct = [carried[ch] / total_carried for ch in self.channel_order()]
         fixed_budget = config.scenario.type == "fixed_budget"
         scenario_budget = getattr(config.scenario, "budget", None)
         # Budget defaults to the SEEDED future flighting total (horizon periods), NOT the
@@ -185,6 +212,19 @@ class OptimizerFacade(MeridianInterrogator):
             pct_of_spend=pct,
             budget=budget,
         )
+        if f.excluded_channels:
+            new_pct, lower, upper = fd.apply_exclusions(
+                pct,
+                kwargs["spend_constraint_lower"],
+                kwargs["spend_constraint_upper"],
+                f.excluded_channels,
+                self.channel_order(),
+            )
+            kwargs.update(
+                pct_of_spend=new_pct,
+                spend_constraint_lower=lower,
+                spend_constraint_upper=upper,
+            )
         return kwargs
 
     # -- private seed helpers (read self._mmm.input_data as NumPy) ------------
