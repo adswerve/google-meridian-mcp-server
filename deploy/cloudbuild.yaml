@@ -1,0 +1,25 @@
+# Reusable Cloud Build config for the Meridian images.
+#
+# `gcloud builds submit --tag` can only build the root ./Dockerfile, so the
+# worker images (which use deploy/Dockerfile.worker[.gpu]) need an explicit
+# `docker build -f`. This config parameterizes both the Dockerfile and the
+# destination image tag so all three images build the same way:
+#
+#   REPO=us-central1-docker.pkg.dev/<project>/meridian
+#   gcloud builds submit --project <project> --config deploy/cloudbuild.yaml \
+#     --substitutions=_DOCKERFILE=Dockerfile,_IMAGE=$REPO/server:latest .
+#   gcloud builds submit --project <project> --config deploy/cloudbuild.yaml \
+#     --substitutions=_DOCKERFILE=deploy/Dockerfile.worker,_IMAGE=$REPO/opt-cpu:latest .
+#   gcloud builds submit --project <project> --config deploy/cloudbuild.yaml \
+#     --substitutions=_DOCKERFILE=deploy/Dockerfile.worker.gpu,_IMAGE=$REPO/opt-gpu:latest .
+#
+# The worker images bundle Meridian + JAX and are multi-GB, so build on a
+# larger machine with extra disk and a long timeout.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "${_DOCKERFILE}", "-t", "${_IMAGE}", "."]
+images: ["${_IMAGE}"]
+options:
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 100
+timeout: 2400s
