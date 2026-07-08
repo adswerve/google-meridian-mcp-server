@@ -429,8 +429,8 @@ def register_tools(mcp: FastMCP) -> None:
             Field(
                 description="Where to run the optimization. 'auto' (default) picks "
                 "the cheapest allowed backend from the problem size; 'local' runs "
-                "in-process; 'cloud_cpu'/'cloud_gpu' dispatch a Cloud Run Job "
-                "(only if the server enables those tiers).",
+                "in a subprocess on the server host; 'cloud_cpu'/'cloud_gpu' dispatch "
+                "a Cloud Run Job (only if the server enables those tiers).",
             ),
         ] = "auto",
         force_rerun: Annotated[
