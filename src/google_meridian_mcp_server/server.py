@@ -76,9 +76,17 @@ async def _lifespan(server: FastMCP):
         env_base={
             "MERIDIAN_BACKEND": os.getenv("MERIDIAN_BACKEND", "tensorflow"),
             "PERSISTENCE_BACKEND": cfg.persistence_backend,
-            **({"LOCAL_MODELS_ROOT": cfg.local_models_root} if cfg.local_models_root else {}),
+            **(
+                {"LOCAL_MODELS_ROOT": cfg.local_models_root}
+                if cfg.local_models_root
+                else {}
+            ),
             **({"GCS_BUCKET": cfg.gcs_bucket} if cfg.gcs_bucket else {}),
-            **({"GCS_MODELS_PREFIX": cfg.gcs_models_prefix} if cfg.gcs_models_prefix else {}),
+            **(
+                {"GCS_MODELS_PREFIX": cfg.gcs_models_prefix}
+                if cfg.gcs_models_prefix
+                else {}
+            ),
             "MODEL_CACHE_ROOT": cfg.model_cache_root,
         },
     )

@@ -1,4 +1,5 @@
 """Shared launch mechanics for Meridian worker subprocesses (no Meridian import)."""
+
 from __future__ import annotations
 
 import contextlib
@@ -29,7 +30,7 @@ class BaseSubprocessExecutor:
     def child_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = dict(os.environ)
         for k, v in _HYGIENE_DEFAULTS.items():
-            env.setdefault(k, v)          # never clobber operator-set values
+            env.setdefault(k, v)  # never clobber operator-set values
         env.update(self._env_base)
         if extra:
             env.update(extra)

@@ -1,4 +1,5 @@
 """Local-tier optimization executor: async job lifecycle + subprocess mechanics."""
+
 from __future__ import annotations
 
 import subprocess

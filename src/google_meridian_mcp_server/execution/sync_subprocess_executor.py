@@ -1,4 +1,5 @@
 """Synchronous (await-inline) analysis runner over a throwaway worker subprocess."""
+
 from __future__ import annotations
 
 import asyncio
@@ -20,8 +21,17 @@ _LOG_TAIL = 4096
 
 
 class SyncSubprocessExecutor(BaseSubprocessExecutor):
-    def __init__(self, *, semaphore, run_timeout, queue_wait_timeout,
-                 max_response_bytes, workdir_root, worker_argv_prefix=None, env_base=None):
+    def __init__(
+        self,
+        *,
+        semaphore,
+        run_timeout,
+        queue_wait_timeout,
+        max_response_bytes,
+        workdir_root,
+        worker_argv_prefix=None,
+        env_base=None,
+    ):
         super().__init__(worker_argv_prefix=worker_argv_prefix, env_base=env_base)
         self._sem = semaphore
         self._run_timeout = run_timeout
@@ -33,7 +43,9 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
 
     async def run(self, operation, model_id, params) -> dict:
         try:
-            await asyncio.wait_for(self._sem.acquire(), timeout=self._queue_wait_timeout)
+            await asyncio.wait_for(
+                self._sem.acquire(), timeout=self._queue_wait_timeout
+            )
         except asyncio.TimeoutError:
             raise ServerBusyError() from None
         try:
@@ -44,8 +56,10 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
     async def _run_locked(self, operation, model_id, params) -> dict:
         self._root.mkdir(parents=True, exist_ok=True)
         workdir = Path(tempfile.mkdtemp(dir=self._root))
-        req, resp, logp = workdir/"req.json", workdir/"resp.json", workdir/"log"
-        req.write_text(json.dumps({"operation": operation, "model_id": model_id, "params": params}))
+        req, resp, logp = workdir / "req.json", workdir / "resp.json", workdir / "log"
+        req.write_text(
+            json.dumps({"operation": operation, "model_id": model_id, "params": params})
+        )
         proc, keep, deferred_cleanup = None, False, False
         log_file = open(logp, "w")  # noqa: SIM115
         try:
@@ -56,9 +70,13 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
             # no pid in self._live for kill_group/shutdown() to find. Shielding
             # lets the spawn finish so a deferred teardown can kill+reap it and
             # only THEN remove the workdir (never before the child is dead).
-            spawn_task = asyncio.ensure_future(asyncio.create_subprocess_exec(
-                *self.worker_argv("analysis", str(req), str(resp)),
-                env=self.child_env(None), **self.popen_redirect_kwargs(log_file)))
+            spawn_task = asyncio.ensure_future(
+                asyncio.create_subprocess_exec(
+                    *self.worker_argv("analysis", str(req), str(resp)),
+                    env=self.child_env(None),
+                    **self.popen_redirect_kwargs(log_file),
+                )
+            )
             try:
                 proc = await asyncio.shield(spawn_task)
             except asyncio.CancelledError:
@@ -67,7 +85,8 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 # must NOT rmtree/close underneath the still-launching child.
                 deferred_cleanup = True
                 spawn_task.add_done_callback(
-                    lambda t: self._on_spawn_after_cancel(t, workdir, log_file))
+                    lambda t: self._on_spawn_after_cancel(t, workdir, log_file)
+                )
                 raise
             self._live.add(proc.pid)
             try:
@@ -77,8 +96,9 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 with contextlib.suppress(Exception):
                     await proc.wait()
                 keep = True
-                raise WorkerTimeoutError(f"exceeded {self._run_timeout}s",
-                                         {"log_tail": self._tail(logp)}) from None
+                raise WorkerTimeoutError(
+                    f"exceeded {self._run_timeout}s", {"log_tail": self._tail(logp)}
+                ) from None
             except asyncio.CancelledError:
                 self.kill_group(proc.pid)
                 with contextlib.suppress(Exception):
@@ -101,18 +121,28 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
     def _decode(self, rc, resp, logp):
         # returns (result, keep_workdir). keep=True only on infra failure.
         if not resp.exists():
-            raise WorkerFailedError(f"no response (exit {rc})", {"log_tail": self._tail(logp)})
+            raise WorkerFailedError(
+                f"no response (exit {rc})", {"log_tail": self._tail(logp)}
+            )
         if resp.stat().st_size > self._max_bytes:
-            raise WorkerFailedError("response too large", {"bytes": resp.stat().st_size})
+            raise WorkerFailedError(
+                "response too large", {"bytes": resp.stat().st_size}
+            )
         try:
             payload = json.loads(resp.read_text())
         except json.JSONDecodeError:
-            raise WorkerFailedError(f"bad response (exit {rc})", {"log_tail": self._tail(logp)}) from None
+            raise WorkerFailedError(
+                f"bad response (exit {rc})", {"log_tail": self._tail(logp)}
+            ) from None
         if payload.get("ok"):
             return payload["result"], False
         if "error" in payload:
-            raise MeridianMcpError.from_payload(payload["error"])   # domain error: keep=False (workdir removed)
-        raise WorkerFailedError(f"malformed response (exit {rc})", {"log_tail": self._tail(logp)})
+            raise MeridianMcpError.from_payload(
+                payload["error"]
+            )  # domain error: keep=False (workdir removed)
+        raise WorkerFailedError(
+            f"malformed response (exit {rc})", {"log_tail": self._tail(logp)}
+        )
 
     def _on_spawn_after_cancel(self, spawn_task, workdir, log_file) -> None:
         """Sync done-callback for a shielded spawn whose caller was cancelled.

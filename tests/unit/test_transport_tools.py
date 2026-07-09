@@ -131,10 +131,10 @@ async def test_register_tools_passes_through_provided_filters(
 
     analysis_service = SimpleNamespace(
         get_channel_summary=_async(
-            lambda model_id, output_type, filters: captured.update(
-                {"filters": filters}
+            lambda model_id, output_type, filters: (
+                captured.update({"filters": filters})
+                or {"model_id": model_id, "output_type": output_type}
             )
-            or {"model_id": model_id, "output_type": output_type}
         ),
     )
     monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
@@ -199,9 +199,7 @@ async def test_register_tools_exposes_get_spend_scenario(
         captured["filters"] = filters
         return {"model_id": model_id, "channel": channel, "outcome_mode": "revenue"}
 
-    analysis_service = SimpleNamespace(
-        get_spend_scenario=_async(_get_spend_scenario)
-    )
+    analysis_service = SimpleNamespace(get_spend_scenario=_async(_get_spend_scenario))
     monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
 
     tools_module.register_tools(mcp)

@@ -372,11 +372,15 @@ class AnalysisService:
             "base_spend": base_spend,
             "spend_increase": spend_increase,
             "new_spend": new_spend,
-            "spend_increase_pct": AnalysisService._safe_ratio(100.0 * spend_increase, base_spend),
+            "spend_increase_pct": AnalysisService._safe_ratio(
+                100.0 * spend_increase, base_spend
+            ),
             "base_outcome": base_outcome,
             "new_outcome": new_outcome,
             "expected_outcome_increase": delta,
-            "expected_outcome_increase_pct": AnalysisService._safe_ratio(100.0 * delta, b),
+            "expected_outcome_increase_pct": AnalysisService._safe_ratio(
+                100.0 * delta, b
+            ),
             "efficiency": efficiency,
             "marginal_efficiency": marginal_efficiency,
             "efficiency_at_new": efficiency_at_new,

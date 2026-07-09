@@ -162,9 +162,9 @@ class TestRoundMeasure:
 
 class TestNormalizeDatasetSelection:
     def test_deduplicates_dataset_selection(self):
-        assert AnalysisService._normalize_dataset_selection(
-            "m1", ["kpi", "kpi"]
-        ) == ["kpi"]
+        assert AnalysisService._normalize_dataset_selection("m1", ["kpi", "kpi"]) == [
+            "kpi"
+        ]
 
     def test_wraps_single_string(self):
         assert AnalysisService._normalize_dataset_selection("m1", "kpi") == ["kpi"]
@@ -188,7 +188,9 @@ async def test_get_contribution_routes():
     op, mid, params = r.calls[0]
     assert op == "get_contribution" and mid == "m1"
     assert params["output_type"] == "contribution_metrics"
-    assert params["filters"]["geos"] == [] and params["filters"]["aggregate_times"] is True
+    assert (
+        params["filters"]["geos"] == [] and params["filters"]["aggregate_times"] is True
+    )
     assert params["filters"] == DEFAULT_FILTERS
 
 
@@ -394,7 +396,12 @@ def test_decorate_overview_advertises_spend_scenario_channels():
 
 @pytest.mark.parametrize(
     "method_name",
-    ["get_contribution", "get_channel_summary", "get_adstock_decay", "get_response_curves"],
+    [
+        "get_contribution",
+        "get_channel_summary",
+        "get_adstock_decay",
+        "get_response_curves",
+    ],
 )
 async def test_invalid_output_type_no_spawn(method_name):
     r = FakeRunner()

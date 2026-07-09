@@ -85,9 +85,7 @@ async def test_unknown_model_id_maps_across_boundary(real_runner):
 
 
 async def test_channel_data_matches_golden(real_runner, fixture_model_id):
-    got = await real_runner.run(
-        "get_channel_data", fixture_model_id, {"filters": {}}
-    )
+    got = await real_runner.run("get_channel_data", fixture_model_id, {"filters": {}})
     golden = GOLDENS_DIR / f"{fixture_model_id}__get_channel_data.json"
     expected = json.loads(golden.read_text())
 

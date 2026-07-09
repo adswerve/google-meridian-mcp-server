@@ -89,9 +89,10 @@ def test_unknown_op_raises():
 
 
 def test_sanitize_nan():
-    assert analysis_ops.sanitize_nan(
-        {"a": float("nan"), "b": [float("inf"), 1.0]}
-    ) == {"a": None, "b": [None, 1.0]}
+    assert analysis_ops.sanitize_nan({"a": float("nan"), "b": [float("inf"), 1.0]}) == {
+        "a": None,
+        "b": [None, 1.0],
+    }
 
 
 # --- generic dispatch coverage across all 4 dispatch-table ops ---------------
@@ -647,7 +648,12 @@ def test_get_spend_scenario_rf_channel_type():
         catalog,
         "get_spend_scenario",
         "m1",
-        {"channel": "video", "spend_increase": 10.0, "base_spend": 100.0, "filters": {}},
+        {
+            "channel": "video",
+            "spend_increase": 10.0,
+            "base_spend": 100.0,
+            "filters": {},
+        },
     )
     assert out["channel_type"] == "rf"
 
@@ -743,7 +749,12 @@ def test_get_spend_scenario_unknown_channel_raises():
             catalog,
             "get_spend_scenario",
             "m1",
-            {"channel": "ghost", "spend_increase": 10.0, "base_spend": None, "filters": {}},
+            {
+                "channel": "ghost",
+                "spend_increase": 10.0,
+                "base_spend": None,
+                "filters": {},
+            },
         )
 
 

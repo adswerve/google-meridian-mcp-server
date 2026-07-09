@@ -12,7 +12,11 @@ class MeridianMcpError(Exception):
         self.details = details or {}
 
     def to_payload(self) -> dict:
-        return {"error_code": self.error_code, "message": str(self), "details": self.details}
+        return {
+            "error_code": self.error_code,
+            "message": str(self),
+            "details": self.details,
+        }
 
     @classmethod
     def from_payload(cls, payload: dict) -> "MeridianMcpError":
@@ -103,12 +107,16 @@ class MetricNotSupportedError(MeridianMcpError):
 
 
 class WorkerFailedError(MeridianMcpError):
-    def __init__(self, message: str = "worker process failed", details: dict | None = None):
+    def __init__(
+        self, message: str = "worker process failed", details: dict | None = None
+    ):
         super().__init__("worker_failed", message, details)
 
 
 class WorkerTimeoutError(MeridianMcpError):
-    def __init__(self, message: str = "worker process timed out", details: dict | None = None):
+    def __init__(
+        self, message: str = "worker process timed out", details: dict | None = None
+    ):
         super().__init__("worker_timeout", message, details)
 
 
@@ -128,5 +136,7 @@ class OptimizationFailedError(MeridianMcpError):
 
 
 class WorkerLostError(MeridianMcpError):
-    def __init__(self, message: str = "worker process was lost", details: dict | None = None):
+    def __init__(
+        self, message: str = "worker process was lost", details: dict | None = None
+    ):
         super().__init__("worker_lost", message, details)

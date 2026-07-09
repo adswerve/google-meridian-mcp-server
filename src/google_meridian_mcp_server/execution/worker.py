@@ -213,9 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv
     if argv[1:2] == ["analysis"]:
         _start_parent_death_guard()
-        os.environ.setdefault(
-            "MERIDIAN_BACKEND", "tensorflow"
-        )  # not self-referential
+        os.environ.setdefault("MERIDIAN_BACKEND", "tensorflow")  # not self-referential
         from google_meridian_mcp_server.config import load_config
 
         return run_analysis(

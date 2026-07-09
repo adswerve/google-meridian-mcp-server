@@ -234,9 +234,7 @@ def _get_spend_scenario(catalog: Any, model_id: str, params: dict) -> dict:
         )
 
     if base_spend is not None and base_spend <= 0:
-        raise MissingModelDataError(
-            model_id, "base_spend must be a positive number"
-        )
+        raise MissingModelDataError(model_id, "base_spend must be a positive number")
 
     outcome_mode = "kpi" if facade.resolve_use_kpi(filters) else "revenue"
 
@@ -295,7 +293,9 @@ def _preflight_optimization(catalog: Any, model_id: str, params: dict) -> dict:
     # validation_error is set (e.g. a per_channel constraint error is still
     # actionable together with channel_order/use_kpi).
     raw_use_kpi = config_dict.get("use_kpi")
-    use_kpi = raw_use_kpi if raw_use_kpi is not None else not facade.has_revenue_per_kpi()
+    use_kpi = (
+        raw_use_kpi if raw_use_kpi is not None else not facade.has_revenue_per_kpi()
+    )
 
     return {
         "channel_order": facade.channel_order(),
