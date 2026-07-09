@@ -29,6 +29,7 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         self._max_bytes = max_response_bytes
         self._root = Path(workdir_root)
         self._live: set[int] = set()
+        self._cleanup_tasks: set = set()
 
     async def run(self, operation, model_id, params) -> dict:
         try:
@@ -45,7 +46,7 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         workdir = Path(tempfile.mkdtemp(dir=self._root))
         req, resp, logp = workdir/"req.json", workdir/"resp.json", workdir/"log"
         req.write_text(json.dumps({"operation": operation, "model_id": model_id, "params": params}))
-        proc, keep = None, False
+        proc, keep, deferred_cleanup = None, False, False
         log_file = open(logp, "w")  # noqa: SIM115
         try:
             # Shield the spawn itself: create_subprocess_exec can fork+exec the
@@ -53,14 +54,20 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
             # connection-made waiter, which would raise CancelledError to us
             # *before* we ever get the Process back — orphaning the child with
             # no pid in self._live for kill_group/shutdown() to find. Shielding
-            # lets the spawn finish so the done-callback can still kill it.
+            # lets the spawn finish so a deferred teardown can kill+reap it and
+            # only THEN remove the workdir (never before the child is dead).
             spawn_task = asyncio.ensure_future(asyncio.create_subprocess_exec(
                 *self.worker_argv("analysis", str(req), str(resp)),
                 env=self.child_env(None), **self.popen_redirect_kwargs(log_file)))
             try:
                 proc = await asyncio.shield(spawn_task)
             except asyncio.CancelledError:
-                spawn_task.add_done_callback(self._kill_if_spawned)
+                # Hand ownership of workdir + log_file to a deferred teardown
+                # that fires once the shielded spawn resolves; the sync finally
+                # must NOT rmtree/close underneath the still-launching child.
+                deferred_cleanup = True
+                spawn_task.add_done_callback(
+                    lambda t: self._on_spawn_after_cancel(t, workdir, log_file))
                 raise
             self._live.add(proc.pid)
             try:
@@ -77,14 +84,19 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 with contextlib.suppress(Exception):
                     await proc.wait()
                 raise
-            result, keep = self._decode(rc, resp, logp)
+            try:
+                result, keep = self._decode(rc, resp, logp)
+            except WorkerFailedError:
+                keep = True  # infra failure: retain workdir for postmortem
+                raise
             return result
         finally:
             if proc is not None:
                 self._live.discard(proc.pid)
-            log_file.close()
-            if not keep:
-                shutil.rmtree(workdir, ignore_errors=True)
+            if not deferred_cleanup:
+                log_file.close()
+                if not keep:
+                    shutil.rmtree(workdir, ignore_errors=True)
 
     def _decode(self, rc, resp, logp):
         # returns (result, keep_workdir). keep=True only on infra failure.
@@ -102,13 +114,30 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
             raise MeridianMcpError.from_payload(payload["error"])   # domain error: keep=False (workdir removed)
         raise WorkerFailedError(f"malformed response (exit {rc})", {"log_tail": self._tail(logp)})
 
-    def _kill_if_spawned(self, spawn_task: "asyncio.Task") -> None:
-        """Done-callback for a shielded spawn cancelled from above: if the
-        child actually came into being, kill its process group even though
-        we never got to add its pid to self._live."""
-        if spawn_task.cancelled() or spawn_task.exception() is not None:
-            return
-        self.kill_group(spawn_task.result().pid)
+    def _on_spawn_after_cancel(self, spawn_task, workdir, log_file) -> None:
+        """Sync done-callback for a shielded spawn whose caller was cancelled.
+        A done-callback can't await, so it schedules the async teardown that
+        kills+reaps any child that came into being, then removes the workdir
+        and closes the log file (ownership handed over by the cancel branch)."""
+        proc = None
+        if not spawn_task.cancelled() and spawn_task.exception() is None:
+            proc = spawn_task.result()
+        task = asyncio.ensure_future(self._deferred_teardown(proc, workdir, log_file))
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
+
+    async def _deferred_teardown(self, proc, workdir, log_file) -> None:
+        """Kill+reap the child (if any), THEN drop the workdir and log fd.
+        Runs exactly once per spawn-cancel; the sync finally skipped both."""
+        try:
+            if proc is not None:
+                self._live.discard(proc.pid)
+                self.kill_group(proc.pid)
+                with contextlib.suppress(Exception):
+                    await proc.wait()
+        finally:
+            log_file.close()
+            shutil.rmtree(workdir, ignore_errors=True)
 
     @staticmethod
     def _tail(logp) -> str:
@@ -120,3 +149,8 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         for pid in list(self._live):
             self.kill_group(pid)
         self._live.clear()
+        # Drain any in-flight deferred teardowns (spawn-cancel path) so their
+        # child is killed+reaped and their workdir/log fd released before the
+        # loop stops — otherwise a pending spawn's callback would never fire.
+        if self._cleanup_tasks:
+            await asyncio.gather(*list(self._cleanup_tasks), return_exceptions=True)

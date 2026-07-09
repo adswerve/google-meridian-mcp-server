@@ -75,3 +75,42 @@ async def test_cancellation_kills_child(tmp_path):
     await asyncio.sleep(0.3)
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)                  # child gone
+
+
+def _entries(root):
+    return sorted(os.listdir(root)) if os.path.isdir(root) else []
+
+async def test_workdir_retention_semantics(tmp_path):
+    # success -> workdir removed
+    ok_root = tmp_path / "ok"
+    await mk(ok_root, OK).run("op", "m1", {})
+    assert _entries(ok_root) == []
+
+    # ordinary domain error ({ok:false,error:...}) -> workdir removed
+    err_root = tmp_path / "err"
+    with pytest.raises(MeridianMcpError) as e1:
+        await mk(err_root, ERR).run("op", "m1", {})
+    assert e1.value.error_code == "missing_model_data"
+    assert _entries(err_root) == []
+
+    # worker_failed (nonzero exit, no response) -> workdir RETAINED for postmortem
+    wf_root = tmp_path / "wf"
+    with pytest.raises(MeridianMcpError) as e2:
+        await mk(wf_root, "import sys; sys.exit(3)").run("op", "m1", {})
+    assert e2.value.error_code == "worker_failed"
+    assert len(_entries(wf_root)) == 1
+
+    # worker_failed (unparseable response) -> workdir RETAINED
+    up_root = tmp_path / "up"
+    bad = "import sys,os; resp=sys.argv[-1]; open(resp,'w').write('{not json')"
+    with pytest.raises(MeridianMcpError) as e3:
+        await mk(up_root, bad).run("op", "m1", {})
+    assert e3.value.error_code == "worker_failed"
+    assert len(_entries(up_root)) == 1
+
+    # worker_timeout -> workdir RETAINED
+    to_root = tmp_path / "to"
+    with pytest.raises(MeridianMcpError) as e4:
+        await mk(to_root, "import time; time.sleep(600)", run_timeout=1.0).run("op", "m1", {})
+    assert e4.value.error_code == "worker_timeout"
+    assert len(_entries(to_root)) == 1
