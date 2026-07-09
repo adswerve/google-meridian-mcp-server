@@ -140,9 +140,6 @@ check for the higher-value findings a raw reallocation hides:
   scenario to show the true optimum before deciding what's operationally feasible.
 - **ROAS is revenue, not profit.** Remind the user to apply contribution margin
   before acting; a ~1.0x ROAS plan can be unprofitable.
-- **A sub-1% lift means "already near-optimal," not "do this."** Say so, and
-  corroborate the close call against channel-level credible intervals (the module
-  reports point estimates only — see "Reading the result").
 
 ## Choosing scenario and constraint (interpretation)
 
@@ -231,12 +228,16 @@ optimization lifecycle" above), plus one additional required block: `future`.
   filled from the carried-forward mix and the whole vector is renormalized to
   sum to 1.
 - **`excluded_channels`** (optional `list[str]`, default none) — channels to
-  fully pause for the future window; their spend is forced to 0 and their share
-  of the budget is reallocated across the remaining channels (total unchanged).
-  Must be valid paid/RF channels and must **not** also appear in
-  `planned_allocation` or `cost_multipliers`; you cannot exclude every channel.
-  Example: expecting to go dark on TV next quarter → `{"excluded_channels":
-  ["TV"]}`.
+  fully pause for the future window; their spend is forced to 0 (they still
+  appear in the result with spend 0) and their share of the budget is
+  reallocated across the remaining channels (total unchanged — "pause TV, spend
+  it elsewhere"). Must be valid paid/RF channels and must **not** also appear in
+  `planned_allocation` or `cost_multipliers` (both reject `0`); a `0/0`
+  `per_channel` constraint **freezes** a channel at its current spend instead of
+  pausing it, so none of those three fields can substitute for this one. Only
+  future runs support full exclusion — historical `run_optimization` supports
+  freeze (`0/0`) but not exclusion. You cannot exclude every channel. Example:
+  expecting to go dark on TV next quarter → `{"excluded_channels": ["TV"]}`.
 - **Omitted `budget` in a `fixed_budget` scenario, for a future run** — unlike
   `run_optimization` (where an omitted budget defaults to the model's full
   historical total), here it defaults to the chosen `reference` window's
@@ -246,21 +247,12 @@ optimization lifecycle" above), plus one additional required block: `future`.
   `full_history_average` seeds from a horizon-scaled long-run average) — if the
   user did not give an explicit number, say out loud what total you are
   assuming and why.
-- **Pausing / excluding a channel entirely** is `future.excluded_channels`, a
-  list of channels to force to 0 spend for the future window. Their budget is
-  reallocated across the remaining channels (total budget unchanged — "pause
-  TV, spend it elsewhere"), and they still appear in the result with spend 0.
-  `planned_allocation` and `cost_multipliers` both reject `0` (must be `> 0`),
-  and a `0/0` `per_channel` constraint **freezes a channel at its current
-  spend** rather than pausing it — so neither can exclude a channel. Only
-  future runs support full exclusion; historical `run_optimization` supports
-  freeze (`0/0`) but not exclusion.
 
 **Dark-channel preflight.** Before a future run, check for channels with no recent
 spend (`get_channel_data`). A channel that is dark over the chosen `reference`
-window has no cost-per-unit basis: either pick a window where it had spend, or list
-it in `excluded_channels` (which now seeds cost correctly and forces its spend to
-0). Whether a dark channel is retired for good or coming back is a business
+window has no cost-per-unit basis: either pick a window where it had spend, or
+exclude it via `excluded_channels` above, which seeds its cost correctly for the
+window. Whether a dark channel is retired for good or coming back is a business
 decision — confirm it with the user rather than silently dropping it.
 
 **Future runs omit `response_curves`.** Unlike `run_optimization`, a
@@ -286,9 +278,9 @@ Channel and geo names still come from
   `fixed_budget` scenario's `budget` is left unset, the assumed total budget
   for the plan too. So the user should know whether the plan assumes "recent
   conditions," "same season last year," or "a stable long-run average" — don't
-  reconstruct the reference window or the implied budget by hand; read
-  `result.assumptions` (`reference_mode`, `budget`, `budget_source`) and state
-  it verbatim, including the auto-derived budget when none was given.
+  reconstruct the reference window or the implied budget by hand; read the
+  result's `assumptions` field (`reference_mode`, `budget`, `budget_source`) and
+  state it verbatim, including the auto-derived budget when none was given.
 - **Extrapolation risk:** pushing a channel beyond its historical spend range (or
   applying a large `cost_multipliers`/`revenue_per_kpi_multiplier` shift) is the
   least reliable part of the curve — treat large moves skeptically.
