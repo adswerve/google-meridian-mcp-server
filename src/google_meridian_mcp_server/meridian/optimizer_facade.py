@@ -90,9 +90,10 @@ class OptimizerFacade(MeridianInterrogator):
 
         Runs the pure submit-time guards (start_date, reference window,
         channel-key validity, exclusion validity) so invalid future configs
-        fail fast without touching the model. A few build-time-only conditions
-        (e.g. a zero-spend reference window) are checked only in
-        `_future_kwargs` and instead surface as a FAILED run.
+        fail fast without touching the model. The zero-denominator
+        reference-window condition is now checked here for non-excluded
+        channels (a fast `invalid_optimization_config` at submit); the
+        build-time seed guard remains as defense-in-depth.
         """
         from google_meridian_mcp_server.meridian import future_data as fd
 
@@ -104,7 +105,9 @@ class OptimizerFacade(MeridianInterrogator):
             raise ValueError(
                 "future start_date must be after the last training period."
             )
-        fd.reference_indices(f.reference.mode, f.horizon, f.start_date, times, cadence)
+        window = fd.reference_indices(
+            f.reference.mode, f.horizon, f.start_date, times, cadence
+        )
 
         inputs = self.get_data_inputs()
         if inputs["media"]:
@@ -124,6 +127,24 @@ class OptimizerFacade(MeridianInterrogator):
             f.cost_multipliers,
             self.channel_order(),
         )
+
+        # Fail fast: a non-excluded channel with a zero-denominator reference
+        # window would otherwise surface only as a FAILED run at build time.
+        excluded_set = set(f.excluded_channels or [])
+        if media_order:
+            media_excluded_idx = frozenset(
+                i for i, ch in enumerate(media_order) if ch in excluded_set
+            )
+            self._raise_on_zero_denominator(
+                self._media_unit_sum(window), "media", skip=media_excluded_idx
+            )
+        if rf_order:
+            rf_excluded_idx = frozenset(
+                i for i, ch in enumerate(rf_order) if ch in excluded_set
+            )
+            self._raise_on_zero_denominator(
+                self._rf_impression_sum(window), "rf", skip=rf_excluded_idx
+            )
 
     def _future_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
         from google_meridian_mcp_server.meridian import future_data as fd

@@ -466,3 +466,83 @@ def test_validate_future_rejects_flat_spend_granularity_at_submit():
 
     with pytest.raises(ValueError, match="unsupported spend granularity"):
         facade.validate_future(config)
+
+
+def test_validate_future_fails_fast_on_dark_non_excluded_channel():
+    """A non-excluded channel with zero media units over the reference window
+    must raise at submit (validate_future), naming the channel and pointing at
+    excluded_channels, rather than surfacing later as a FAILED run."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "dark_channel"]
+    weekly = [
+        "2024-01-01",
+        "2024-01-08",
+        "2024-01-15",
+        "2024-01-22",
+        "2024-01-29",
+        "2024-02-05",
+        "2024-02-12",
+        "2024-02-19",
+    ]
+    media_spend = np.ones((1, len(weekly), len(channels)))
+    media = np.zeros((1, len(weekly), len(channels)))
+    media[..., 0] = 5.0  # dark_channel has zero media units everywhere
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(return_value=weekly)
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+    facade.channel_order = MagicMock(return_value=channels)
+
+    cfg = FutureOptimizationConfig.model_validate(
+        {
+            "scenario": {"type": "fixed_budget"},
+            "future": {
+                "start_date": "2024-03-01",
+                "horizon": 4,
+                "reference": {"mode": "trailing"},
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="dark_channel"):
+        facade.validate_future(cfg)
+
+
+def test_validate_future_passes_when_dark_channel_excluded():
+    """Same setup, but excluding the dark channel makes validate_future pass."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "dark_channel"]
+    weekly = [
+        "2024-01-01",
+        "2024-01-08",
+        "2024-01-15",
+        "2024-01-22",
+        "2024-01-29",
+        "2024-02-05",
+        "2024-02-12",
+        "2024-02-19",
+    ]
+    media_spend = np.ones((1, len(weekly), len(channels)))
+    media = np.zeros((1, len(weekly), len(channels)))
+    media[..., 0] = 5.0
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(return_value=weekly)
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+    facade.channel_order = MagicMock(return_value=channels)
+
+    cfg = FutureOptimizationConfig.model_validate(
+        {
+            "scenario": {"type": "fixed_budget"},
+            "future": {
+                "start_date": "2024-03-01",
+                "horizon": 4,
+                "reference": {"mode": "trailing"},
+                "excluded_channels": ["dark_channel"],
+            },
+        }
+    )
+    facade.validate_future(cfg)  # must not raise
