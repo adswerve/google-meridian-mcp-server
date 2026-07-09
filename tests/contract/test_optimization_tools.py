@@ -176,6 +176,9 @@ async def test_run_future_optimization_horizon_zero_is_protocol_error(client):
         )
 
 
+# Dark-channel fail-fast + excluded-dark tolerance are covered at unit
+# (test_optimizer_facade.py) and integration (test_optimizer_facade_future.py)
+# layers; the fixture has no naturally-dark channel to exercise here.
 @pytest.mark.asyncio
 async def test_run_future_optimization_excluded_channels_submits(client):
     res = await client.call_tool(

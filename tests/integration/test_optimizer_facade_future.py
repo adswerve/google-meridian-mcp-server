@@ -125,3 +125,82 @@ def test_run_future_exclude_all_raises(national_revenue_facade):
     every = facade.channel_order()
     with pytest.raises(ValueError, match="every channel"):
         facade.validate_future(_future_cfg(facade, excluded_channels=every))
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_run_future_excluded_dark_channel_succeeds_and_reports_assumptions():
+    """A channel that is dark (zero spend AND zero units) over the reference
+    window makes an un-excluded future run fail fast, but excluding it succeeds
+    end to end — and the result echoes the assumed budget/reference/exclusion.
+    Covers both budget_source values and a target scenario."""
+    from datetime import date, timedelta
+
+    from google_meridian_mcp_server.domain.optimization import (
+        FutureOptimizationConfig,
+    )
+    from google_meridian_mcp_server.meridian.optimizer_facade import OptimizerFacade
+    from scripts.validation.fixtures import ensure_fixture_model
+
+    mmm = ensure_fixture_model("national-revenue")
+    facade = OptimizerFacade(mmm)
+    media_channels = facade.get_data_inputs()["media"]
+    dark = media_channels[-1]
+    dark_idx = media_channels.index(dark)
+
+    # Faithful dark channel: zero units AND zero spend across all periods. This
+    # drives cpmu through the 0/1 -> 1.0 bump and _carried_allocation with a
+    # genuinely zero-weight channel. NOTE: we mutate input_data only; the model's
+    # already-fitted internal tensors are untouched. That's sound here —
+    # validate_future reads input_data, and exclusion pins the channel to 0 spend
+    # via bounds regardless of the fit.
+    facade._mmm.input_data.media.values[..., dark_idx] = 0.0
+    facade._mmm.input_data.media_spend.values[..., dark_idx] = 0.0
+
+    times = facade.get_time_values()
+    start = (date.fromisoformat(times[-1][:10]) + timedelta(days=7)).isoformat()
+
+    def cfg(scenario=None, **future_over):
+        return FutureOptimizationConfig.model_validate(
+            {
+                "scenario": scenario or {"type": "fixed_budget"},
+                "future": {"start_date": start, "horizon": 4, **future_over},
+            }
+        )
+
+    # Un-excluded -> fail fast at validate, naming the channel.
+    with pytest.raises(ValueError, match=dark):
+        facade.validate_future(cfg())
+
+    # Excluded, budget omitted -> succeeds; budget derived from the reference.
+    result = facade.run_future(cfg(excluded_channels=[dark]))
+    optimized = {
+        r["channel"]: r["spend"] for r in result["channel_tables"]["optimized"]
+    }
+    assert optimized[dark] in (0, 0.0)
+    a = result["assumptions"]
+    assert a["excluded_channels"] == [dark]
+    assert a["reference_mode"] == "trailing"
+    assert a["budget_source"] == "derived_from_reference"
+    # Meridian rounds the fixed-budget total to whole currency units — a large
+    # relative swing at this toy fixture's ~25-unit scale (negligible at real scale).
+    assert a["budget"] == pytest.approx(result["summary"]["optimized_budget"], rel=0.05)
+
+    # Excluded, budget explicit -> budget_source flips to "explicit" and echoes it.
+    explicit = facade.run_future(
+        cfg(
+            scenario={"type": "fixed_budget", "budget": 1_000_000.0},
+            excluded_channels=[dark],
+        )
+    )
+    assert explicit["assumptions"]["budget_source"] == "explicit"
+    assert explicit["assumptions"]["budget"] == pytest.approx(1_000_000.0, rel=1e-6)
+
+    # Target scenario (flexible budget) -> determined_by_target, budget None.
+    target = facade.run_future(
+        cfg(
+            scenario={"type": "target_roas", "target_value": 2.0},
+            excluded_channels=[dark],
+        )
+    )
+    assert target["assumptions"]["budget_source"] == "determined_by_target"
+    assert target["assumptions"]["budget"] is None

@@ -22,8 +22,10 @@ response curves, model fit) — those answer questions directly and carry no
 
 **1. Elicit only genuinely-unknowable gaps.** You cannot infer these from the
 model — they are business facts only the user has:
-- The **goal** (grow the outcome, hit a specific target, cut cost, defend
-  current performance).
+- The **goal**, and which objective it implies: grow volume (accept lower
+  efficiency → `target_mroas` / larger budget), maximize efficiency (`fixed_budget`
+  reallocation), or hit a specific return (`target_roas`). Growth vs. efficiency vs.
+  return changes the scenario, not just the numbers.
 - Whether budget is being **held, added, or cut** — and by roughly how much.
 - **Hard constraints** — contracts, spend freezes, a channel that cannot move, a
   maximum allowed movement.
@@ -80,9 +82,13 @@ an assumption you are making**, before the run.
 - Expected cost changes → `cost_multipliers`.
 - Expected price/LTV changes → `revenue_per_kpi_multiplier`.
 - A planned spend mix, if the user already has one in mind → `planned_allocation`.
-- Which historical window best represents the future: a recent trend, the same
-  season last year, or a stable long-run average → `reference`.
+- Which historical window best represents the future — a recent trend, the same
+  season last year, or a stable long-run average — **and whether the plan needs
+  that window's seasonal timing (flighting) carried forward** (e.g. a Q4 plan) or
+  a flattened baseline → `reference`.
 - Any channel to **pause entirely** next period → `excluded_channels`.
+- Whether a channel with no recent spend is **retired for good or coming back** —
+  a dark channel must be excluded or covered by the reference window.
 
 ## Plain language → tool-field translation
 
@@ -125,3 +131,6 @@ an assumption you are making**, before the run.
   must be `> 0`) and not a `0/0` `per_channel` constraint (that **freezes X at
   its current spend** — the opposite of pausing). Historical runs cannot fully
   exclude a channel; if the user needs that, plan it as a future run.
+- **Presenting a sub-1% reallocation lift as the headline** while ignoring the
+  bigger levers the same result exposes — see "Interrogate the result like a
+  marketer" in `budget-optimization.md` before presenting any allocation.
