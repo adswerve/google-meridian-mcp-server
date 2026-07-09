@@ -67,6 +67,13 @@ class RuntimeConfig(BaseModel):
     cloud_run_job_cpu: str | None = None
     cloud_run_job_gpu: str | None = None
 
+    # Analysis subprocess runner
+    analysis_max_parallel: int = 2
+    analysis_worker_timeout: float = 300.0
+    analysis_queue_wait_timeout: float = 30.0
+    analysis_max_response_bytes: int = 64 * 1024 * 1024
+    analysis_workdir_root: str = "/tmp/mmm-analysis"
+
     @model_validator(mode="before")
     @classmethod
     def _set_registry_backend_default(cls, values: Any) -> Any:
