@@ -78,3 +78,15 @@ in a future optimization: their spend is forced to 0 and reallocated across the
 remaining channels (total budget unchanged). This is the *only* way to zero a
 channel — a `0/0` spend constraint freezes a channel at its current spend, and
 `cost_multipliers`/`planned_allocation` reject 0. Future runs only.
+
+**Assumptions (`assumptions`, in a future optimization result)** — the plan's own
+inputs echoed back by `get_optimization_result`: `budget` (the total spend
+assumed), `budget_source` — how that budget was arrived at (`explicit`: the user
+gave a number; `derived_from_reference`: carried forward from the `reference`
+window's spend, scaled to the horizon; `determined_by_target`: implied by a
+`target_roas`/`target_mroas` scenario rather than a fixed number) —
+`reference_mode` (which reference window was used), and `excluded_channels`
+(which channels were paused). This is the authoritative record of what a future
+plan assumed — state it verbatim rather than reconstructing the reference window
+or implied budget by hand. Future runs only. Full field reference:
+`budget-optimization.md`.

@@ -61,6 +61,7 @@ class OptimizerFacade(MeridianInterrogator):
         use_kpi = self.resolve_use_kpi(config)
         opt = optimizer_mod.BudgetOptimizer(self._mmm)
         kwargs = build_kwargs(config, opt, use_kpi)
+        assumptions = kwargs.pop("_assumptions", None)
         results = opt.optimize(**kwargs)
         curves = (
             _best_effort(lambda: results.get_response_curves())
@@ -72,6 +73,7 @@ class OptimizerFacade(MeridianInterrogator):
             results.optimized_data,
             use_kpi=use_kpi,
             response_curves=curves,
+            assumptions=assumptions,
         )
 
     def run(self, config: OptimizationConfig) -> dict[str, Any]:
@@ -90,9 +92,10 @@ class OptimizerFacade(MeridianInterrogator):
 
         Runs the pure submit-time guards (start_date, reference window,
         channel-key validity, exclusion validity) so invalid future configs
-        fail fast without touching the model. A few build-time-only conditions
-        (e.g. a zero-spend reference window) are checked only in
-        `_future_kwargs` and instead surface as a FAILED run.
+        fail fast without touching the model. The zero-denominator
+        reference-window condition is now checked here for non-excluded
+        channels (a fast `invalid_optimization_config` at submit); the
+        build-time seed guard remains as defense-in-depth.
         """
         from google_meridian_mcp_server.meridian import future_data as fd
 
@@ -104,7 +107,9 @@ class OptimizerFacade(MeridianInterrogator):
             raise ValueError(
                 "future start_date must be after the last training period."
             )
-        fd.reference_indices(f.reference.mode, f.horizon, f.start_date, times, cadence)
+        window = fd.reference_indices(
+            f.reference.mode, f.horizon, f.start_date, times, cadence
+        )
 
         inputs = self.get_data_inputs()
         if inputs["media"]:
@@ -125,6 +130,24 @@ class OptimizerFacade(MeridianInterrogator):
             self.channel_order(),
         )
 
+        # Fail fast: a non-excluded channel with a zero-denominator reference
+        # window would otherwise surface only as a FAILED run at build time.
+        excluded_set = set(f.excluded_channels or [])
+        if media_order:
+            media_excluded_idx = frozenset(
+                i for i, ch in enumerate(media_order) if ch in excluded_set
+            )
+            self._raise_on_zero_denominator(
+                self._media_unit_sum(window), "media", skip=media_excluded_idx
+            )
+        if rf_order:
+            rf_excluded_idx = frozenset(
+                i for i, ch in enumerate(rf_order) if ch in excluded_set
+            )
+            self._raise_on_zero_denominator(
+                self._rf_impression_sum(window), "rf", skip=rf_excluded_idx
+            )
+
     def _future_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
         from google_meridian_mcp_server.meridian import future_data as fd
 
@@ -143,13 +166,22 @@ class OptimizerFacade(MeridianInterrogator):
         media_order = self.get_data_inputs()["media"]
         rf_order = self.get_data_inputs()["rf_media"]
         fd.validate_channel_keys(f.cost_multipliers, media_order + rf_order)
+        excluded_set = set(f.excluded_channels or [])
+        media_excluded_idx = frozenset(
+            i for i, ch in enumerate(media_order) if ch in excluded_set
+        )
+        rf_excluded_idx = frozenset(
+            i for i, ch in enumerate(rf_order) if ch in excluded_set
+        )
         average = f.reference.mode == "full_history_average"
 
         seeded_total = 0.0
         tensor_kwargs: dict[str, Any] = {"time": time_labels}
         if media_order:
             tensor_kwargs["cpmu"] = fd.apply_cost_multipliers(
-                self._seed_cpmu(window), f.cost_multipliers, media_order
+                self._seed_cpmu(window, media_excluded_idx),
+                f.cost_multipliers,
+                media_order,
             )
             media_spend = self._seed_spend_flighting(
                 "media_spend", window, f.horizon, average
@@ -158,7 +190,9 @@ class OptimizerFacade(MeridianInterrogator):
             seeded_total += float(np.asarray(media_spend).sum())
         if rf_order:
             tensor_kwargs["cprf"] = fd.apply_cost_multipliers(
-                self._seed_cprf(window), f.cost_multipliers, rf_order
+                self._seed_cprf(window, rf_excluded_idx),
+                f.cost_multipliers,
+                rf_order,
             )
             rf_spend = self._seed_spend_flighting(
                 "rf_spend", window, f.horizon, average
@@ -225,6 +259,20 @@ class OptimizerFacade(MeridianInterrogator):
                 spend_constraint_lower=lower,
                 spend_constraint_upper=upper,
             )
+        kwargs["_assumptions"] = {
+            "budget": budget if fixed_budget else None,
+            "budget_source": (
+                (
+                    "explicit"
+                    if scenario_budget is not None
+                    else "derived_from_reference"
+                )
+                if fixed_budget
+                else "determined_by_target"
+            ),
+            "reference_mode": f.reference.mode,
+            "excluded_channels": list(f.excluded_channels or []),
+        }
         return kwargs
 
     # -- private seed helpers (read self._mmm.input_data as NumPy) ------------
@@ -247,41 +295,64 @@ class OptimizerFacade(MeridianInterrogator):
             raise ValueError("unsupported spend granularity for future optimization")
         return arr
 
-    def _seed_cpmu(self, window: list[int]) -> np.ndarray:
-        spend = self._spend_np("media_spend")
+    def _media_unit_sum(self, window: list[int]) -> np.ndarray:
         media = self._trim_media(
             np.asarray(self._mmm.input_data.media.values, dtype=float)
         )
-        spend_sum = spend[:, window, :].sum(axis=(0, 1))
-        media_sum = media[:, window, :].sum(axis=(0, 1))
-        self._raise_on_zero_denominator(media_sum, "media")
-        return spend_sum / media_sum
+        return media[:, window, :].sum(axis=(0, 1))
 
-    def _seed_cprf(self, window: list[int]) -> np.ndarray:
-        spend = self._spend_np("rf_spend")
+    def _rf_impression_sum(self, window: list[int]) -> np.ndarray:
         reach = self._trim_media(
             np.asarray(self._mmm.input_data.reach.values, dtype=float)
         )
         frequency = self._trim_media(
             np.asarray(self._mmm.input_data.frequency.values, dtype=float)
         )
-        impressions = reach * frequency
-        spend_sum = spend[:, window, :].sum(axis=(0, 1))
-        impressions_sum = impressions[:, window, :].sum(axis=(0, 1))
-        self._raise_on_zero_denominator(impressions_sum, "rf")
-        return spend_sum / impressions_sum
+        return (reach * frequency)[:, window, :].sum(axis=(0, 1))
 
-    def _raise_on_zero_denominator(self, denom_sum: np.ndarray, family: str) -> None:
-        """Guard against zero media units/impressions in the reference window.
+    def _seed_cpmu(
+        self, window: list[int], excluded_idx: frozenset[int] = frozenset()
+    ) -> np.ndarray:
+        spend_sum = self._spend_np("media_spend")[:, window, :].sum(axis=(0, 1))
+        media_sum = self._media_unit_sum(window)
+        self._raise_on_zero_denominator(media_sum, "media", skip=excluded_idx)
+        safe = np.where(media_sum == 0, 1.0, media_sum)
+        return self._benign_excluded_cost(spend_sum / safe, excluded_idx)
 
-        A zero denominator (spend > 0 but zero summed media units or RF
-        impressions over the reference window) would silently produce inf/NaN
-        cost-per-unit that flows into ``create_optimization_tensors``/
-        ``optimize``, yielding a "completed" run full of null metrics. Raise a
-        clear, actionable error instead.
-        """
-        zero_idx = np.flatnonzero(np.asarray(denom_sum) == 0)
-        if zero_idx.size == 0:
+    def _seed_cprf(
+        self, window: list[int], excluded_idx: frozenset[int] = frozenset()
+    ) -> np.ndarray:
+        spend_sum = self._spend_np("rf_spend")[:, window, :].sum(axis=(0, 1))
+        impressions_sum = self._rf_impression_sum(window)
+        self._raise_on_zero_denominator(impressions_sum, "rf", skip=excluded_idx)
+        safe = np.where(impressions_sum == 0, 1.0, impressions_sum)
+        return self._benign_excluded_cost(spend_sum / safe, excluded_idx)
+
+    @staticmethod
+    def _benign_excluded_cost(
+        cost: np.ndarray, excluded_idx: frozenset[int]
+    ) -> np.ndarray:
+        """Excluded channels are forced to 0 spend with 0/0 bounds, so their
+        per-unit cost never affects the result; it only needs to be finite and
+        positive so downstream unit math (units = spend / cost) is defined."""
+        for i in excluded_idx:
+            if not np.isfinite(cost[i]) or cost[i] <= 0:
+                cost[i] = 1.0
+        return cost
+
+    def _raise_on_zero_denominator(
+        self, denom_sum: np.ndarray, family: str, *, skip: frozenset[int] = frozenset()
+    ) -> None:
+        """Guard against zero media units/impressions for a NON-excluded channel
+        in the reference window (a zero denominator would otherwise yield inf/NaN
+        cost-per-unit and a 'completed' run full of null metrics). Excluded
+        channels are skipped — their cost is inert (see _benign_excluded_cost)."""
+        zero_idx = [
+            int(i)
+            for i in np.flatnonzero(np.asarray(denom_sum) == 0)
+            if int(i) not in skip
+        ]
+        if not zero_idx:
             return
         order = (
             self.get_data_inputs()["media"]
@@ -291,8 +362,9 @@ class OptimizerFacade(MeridianInterrogator):
         names = [order[i] for i in zero_idx]
         units = "media units" if family == "media" else "RF impressions"
         raise ValueError(
-            f"channel(s) {names} have zero {units} in the chosen reference "
-            "window; pick a different reference window or horizon"
+            f"channel(s) {names} have zero {units} in the chosen reference window "
+            "— either exclude them (excluded_channels) or pick a window where they "
+            "were active"
         )
 
     def _seed_spend_flighting(
@@ -328,7 +400,7 @@ class OptimizerFacade(MeridianInterrogator):
 
     @staticmethod
     def build_result(
-        nonopt, opt, *, use_kpi: bool, response_curves=None
+        nonopt, opt, *, use_kpi: bool, response_curves=None, assumptions=None
     ) -> dict[str, Any]:
         outcome_mode = "kpi" if use_kpi else "revenue"
         result = {
@@ -345,6 +417,8 @@ class OptimizerFacade(MeridianInterrogator):
             result["response_curves"] = OptimizerFacade._response_curve_rows(
                 response_curves
             )
+        if assumptions is not None:
+            result["assumptions"] = assumptions
         return result
 
     @staticmethod

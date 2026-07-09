@@ -125,6 +125,39 @@ def test_build_result_kpi_mode_inverts_efficiency():
     assert result["summary"]["optimized_efficiency"] == 0.25  # 1/total_roi
 
 
+def test_build_result_includes_assumptions_when_provided():
+    channels = ["tv", "search"]
+    common = dict(
+        roi={m: _const(channels, 3.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        mroi={m: _const(channels, 2.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        cpik={m: _const(channels, 0.5) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        eff={m: _const(channels, 0.1) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        inc={m: _const(channels, 1000.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+    )
+    ds = _dataset(
+        channels,
+        budget=1000.0,
+        total_outcome=2000.0,
+        total_roi=2.0,
+        spend=[600.0, 400.0],
+        **common,
+    )
+    assumptions = {
+        "budget": 1000.0,
+        "budget_source": "derived_from_reference",
+        "reference_mode": "full_history_average",
+        "excluded_channels": ["tv"],
+    }
+    result = OptimizerFacade.build_result(
+        ds, ds, use_kpi=False, assumptions=assumptions
+    )
+    assert result["assumptions"] == assumptions
+
+    # Historical/no assumptions → key absent.
+    result2 = OptimizerFacade.build_result(ds, ds, use_kpi=False)
+    assert "assumptions" not in result2
+
+
 def test_kpi_mode_zero_total_roi_yields_none_efficiency():
     """FIX 5: KPI mode with total_roi==0 → optimized_efficiency is None, not inf."""
     channels = ["tv"]
@@ -337,6 +370,98 @@ def test_seed_cprf_raises_on_dark_channel_zero_impressions():
         facade._seed_cprf(window=[0, 1, 2])
 
 
+def test_seed_cpmu_tolerates_excluded_dark_channel():
+    """Excluding a zero-media-unit channel must NOT raise; its cpmu is a finite
+    positive placeholder (spend is forced to 0 downstream, so the value is inert)."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "dark_channel"]
+    media_spend = np.ones((1, 3, len(channels)))
+    media = np.zeros((1, 3, len(channels)))
+    media[..., 0] = 5.0  # dark_channel stays all-zero
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(
+        return_value=["2024-01-01", "2024-01-08", "2024-01-15"]
+    )
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+
+    cpmu = facade._seed_cpmu(window=[0, 1, 2], excluded_idx=frozenset({1}))
+    assert np.isfinite(cpmu).all()
+    assert cpmu[1] > 0  # benign placeholder for the excluded dark channel
+
+
+def test_seed_cprf_tolerates_excluded_dark_channel():
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["yt_rf", "dark_rf"]
+    rf_spend = np.ones((1, 3, len(channels)))
+    reach = np.zeros((1, 3, len(channels)))
+    frequency = np.zeros((1, 3, len(channels)))
+    reach[..., 0] = 10.0
+    frequency[..., 0] = 2.0
+    input_data = MagicMock()
+    input_data.rf_spend.values = rf_spend
+    input_data.reach.values = reach
+    input_data.frequency.values = frequency
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(
+        return_value=["2024-01-01", "2024-01-08", "2024-01-15"]
+    )
+    facade.get_data_inputs = MagicMock(return_value={"media": [], "rf_media": channels})
+
+    cprf = facade._seed_cprf(window=[0, 1, 2], excluded_idx=frozenset({1}))
+    assert np.isfinite(cprf).all()
+    assert cprf[1] > 0
+
+
+def test_seed_cpmu_bumps_excluded_zero_spend_channel_to_one():
+    """The real dark channel is zero-spend AND zero-units: spend_sum=0, safe=1.0
+    -> cpmu=0, and _benign_excluded_cost must bump it to exactly 1.0 so Meridian
+    never sees a zero-cost channel. This is the branch the spend>0 test misses."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "dark_channel"]
+    media_spend = np.ones((1, 3, len(channels)))
+    media = np.zeros((1, 3, len(channels)))
+    media[..., 0] = 5.0
+    media_spend[..., 1] = 0.0  # dark_channel: zero spend AND zero units
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(
+        return_value=["2024-01-01", "2024-01-08", "2024-01-15"]
+    )
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+
+    cpmu = facade._seed_cpmu(window=[0, 1, 2], excluded_idx=frozenset({1}))
+    assert cpmu[1] == 1.0  # bump fired (0/1 -> 0 -> 1.0)
+
+
+def test_seed_cpmu_check_is_window_scoped():
+    """A channel dark only INSIDE the reference window raises; the same channel
+    active outside the window does not save it — the guard is window-scoped."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "windowed_dark"]
+    media_spend = np.ones((1, 3, len(channels)))
+    media = np.ones((1, 3, len(channels)))
+    media[:, 1:, 1] = 0.0  # windowed_dark has units only at period 0
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(
+        return_value=["2024-01-01", "2024-01-08", "2024-01-15"]
+    )
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+
+    # window [1, 2] -> windowed_dark has zero units -> raises
+    with pytest.raises(ValueError, match="windowed_dark"):
+        facade._seed_cpmu(window=[1, 2])
+    # window [0] -> windowed_dark has units -> no raise
+    facade._seed_cpmu(window=[0])
+
+
 def test_validate_future_rejects_flat_spend_granularity_at_submit():
     """FIX M2: a model whose media_spend tensor lacks a time axis (2-D, no geo
     dimension) must be rejected by validate_future -- at submit time, before
@@ -374,3 +499,83 @@ def test_validate_future_rejects_flat_spend_granularity_at_submit():
 
     with pytest.raises(ValueError, match="unsupported spend granularity"):
         facade.validate_future(config)
+
+
+def test_validate_future_fails_fast_on_dark_non_excluded_channel():
+    """A non-excluded channel with zero media units over the reference window
+    must raise at submit (validate_future), naming the channel and pointing at
+    excluded_channels, rather than surfacing later as a FAILED run."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "dark_channel"]
+    weekly = [
+        "2024-01-01",
+        "2024-01-08",
+        "2024-01-15",
+        "2024-01-22",
+        "2024-01-29",
+        "2024-02-05",
+        "2024-02-12",
+        "2024-02-19",
+    ]
+    media_spend = np.ones((1, len(weekly), len(channels)))
+    media = np.zeros((1, len(weekly), len(channels)))
+    media[..., 0] = 5.0  # dark_channel has zero media units everywhere
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(return_value=weekly)
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+    facade.channel_order = MagicMock(return_value=channels)
+
+    cfg = FutureOptimizationConfig.model_validate(
+        {
+            "scenario": {"type": "fixed_budget"},
+            "future": {
+                "start_date": "2024-03-01",
+                "horizon": 4,
+                "reference": {"mode": "trailing"},
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="dark_channel"):
+        facade.validate_future(cfg)
+
+
+def test_validate_future_passes_when_dark_channel_excluded():
+    """Same setup, but excluding the dark channel makes validate_future pass."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "dark_channel"]
+    weekly = [
+        "2024-01-01",
+        "2024-01-08",
+        "2024-01-15",
+        "2024-01-22",
+        "2024-01-29",
+        "2024-02-05",
+        "2024-02-12",
+        "2024-02-19",
+    ]
+    media_spend = np.ones((1, len(weekly), len(channels)))
+    media = np.zeros((1, len(weekly), len(channels)))
+    media[..., 0] = 5.0
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(return_value=weekly)
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+    facade.channel_order = MagicMock(return_value=channels)
+
+    cfg = FutureOptimizationConfig.model_validate(
+        {
+            "scenario": {"type": "fixed_budget"},
+            "future": {
+                "start_date": "2024-03-01",
+                "horizon": 4,
+                "reference": {"mode": "trailing"},
+                "excluded_channels": ["dark_channel"],
+            },
+        }
+    )
+    facade.validate_future(cfg)  # must not raise
