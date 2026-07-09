@@ -11,6 +11,18 @@ class MeridianMcpError(Exception):
         self.error_code = error_code
         self.details = details or {}
 
+    def to_payload(self) -> dict:
+        return {"error_code": self.error_code, "message": str(self), "details": self.details}
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "MeridianMcpError":
+        # Always build the BASE class - subclass __init__ signatures differ.
+        return MeridianMcpError(
+            error_code=payload.get("error_code", "internal_error"),
+            message=payload.get("message", ""),
+            details=payload.get("details") or {},
+        )
+
 
 class ModelNotFoundError(MeridianMcpError):
     def __init__(self, model_id: str, backend: str | None = None):
@@ -88,3 +100,33 @@ class MetricNotSupportedError(MeridianMcpError):
                 "reason": reason,
             },
         )
+
+
+class WorkerFailedError(MeridianMcpError):
+    def __init__(self, message: str = "worker process failed", details: dict | None = None):
+        super().__init__("worker_failed", message, details)
+
+
+class WorkerTimeoutError(MeridianMcpError):
+    def __init__(self, message: str = "worker process timed out", details: dict | None = None):
+        super().__init__("worker_timeout", message, details)
+
+
+class ServerBusyError(MeridianMcpError):
+    def __init__(self, message: str = "server is busy", details: dict | None = None):
+        super().__init__("server_busy", message, details)
+
+
+class InternalError(MeridianMcpError):
+    def __init__(self, message: str = "internal error", details: dict | None = None):
+        super().__init__("internal_error", message, details)
+
+
+class OptimizationFailedError(MeridianMcpError):
+    def __init__(self, message: str, details: dict | None = None):
+        super().__init__("optimization_failed", message, details)
+
+
+class WorkerLostError(MeridianMcpError):
+    def __init__(self, message: str = "worker process was lost", details: dict | None = None):
+        super().__init__("worker_lost", message, details)
