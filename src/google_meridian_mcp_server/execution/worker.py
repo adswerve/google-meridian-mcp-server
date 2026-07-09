@@ -195,14 +195,11 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.setdefault(
             "MERIDIAN_BACKEND", "tensorflow"
         )  # not self-referential
-        # NOTE: build_model_catalog is used here (not build_worker_catalog) because
-        # build_worker_catalog is introduced in Task 8; this keeps the analysis
-        # worker functional at this commit. Task 8 will switch this import.
-        from google_meridian_mcp_server.bootstrap import build_model_catalog
+        from google_meridian_mcp_server.bootstrap import build_worker_catalog
         from google_meridian_mcp_server.config import load_config
 
         return run_analysis(
-            argv[2], argv[3], catalog=build_model_catalog(load_config())
+            argv[2], argv[3], catalog=build_worker_catalog(load_config())
         )
 
     _start_parent_death_guard()
@@ -212,14 +209,17 @@ def main(argv: list[str] | None = None) -> int:
         backend  # set before importing meridian (catalog does)
     )
 
-    from google_meridian_mcp_server.bootstrap import build_model_catalog, build_registry
+    from google_meridian_mcp_server.bootstrap import (
+        build_registry,
+        build_worker_catalog,
+    )
     from google_meridian_mcp_server.config import load_config
 
     cfg = load_config()
     return run_worker(
         run_id,
         registry=build_registry(cfg),
-        catalog=build_model_catalog(cfg),
+        catalog=build_worker_catalog(cfg),
         backend=backend,
     )
 

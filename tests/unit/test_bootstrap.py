@@ -1,12 +1,15 @@
 """Unit tests for the shared bootstrap helpers."""
 
 from google_meridian_mcp_server.bootstrap import (
+    build_discovery_cache,
     build_executor,
     build_model_catalog,
     build_registry,
+    build_worker_catalog,
 )
 from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
+from google_meridian_mcp_server.persistence.cache import DiscoveryCache
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     GcsOptimizationRunRegistry,
     LocalOptimizationRunRegistry,
@@ -32,6 +35,14 @@ def _cfg(tmp_path, **over):
 
 def test_build_model_catalog(tmp_path):
     assert isinstance(build_model_catalog(_cfg(tmp_path)), ModelCatalog)
+
+
+def test_build_worker_catalog(tmp_path):
+    assert isinstance(build_worker_catalog(_cfg(tmp_path)), ModelCatalog)
+
+
+def test_build_discovery_cache(tmp_path):
+    assert isinstance(build_discovery_cache(_cfg(tmp_path)), DiscoveryCache)
 
 
 def test_build_registry_local(tmp_path):

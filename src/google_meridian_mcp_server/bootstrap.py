@@ -16,14 +16,27 @@ from google_meridian_mcp_server.persistence.optimization_run_registry import (
 )
 
 
-def build_model_catalog(cfg: RuntimeConfig) -> ModelCatalog:
+def _build_provider(cfg: RuntimeConfig):
     if cfg.persistence_backend == PersistenceBackend.GCS.value:
-        provider = GcsModelProvider(cfg.gcs_bucket, cfg.gcs_models_prefix)
-    else:
-        provider = LocalModelProvider(cfg.local_models_root)
+        return GcsModelProvider(cfg.gcs_bucket, cfg.gcs_models_prefix)
+    return LocalModelProvider(cfg.local_models_root)
+
+
+def build_discovery_cache(cfg: RuntimeConfig) -> DiscoveryCache:
+    """Server-side: discovery only, no facades/materialization (never pulls Meridian)."""
+    provider = _build_provider(cfg)
+    return DiscoveryCache(provider, cfg.discovery_ttl_seconds)
+
+
+def build_worker_catalog(cfg: RuntimeConfig) -> ModelCatalog:
+    """Worker-side: full catalog with materialization + facades."""
+    provider = _build_provider(cfg)
     discovery = DiscoveryCache(provider, cfg.discovery_ttl_seconds)
     materialization = MaterializationCache(provider, cfg.model_cache_root)
     return ModelCatalog(discovery, materialization)
+
+
+build_model_catalog = build_worker_catalog  # TEMP alias, removed in Task 11
 
 
 def build_registry(cfg: RuntimeConfig) -> OptimizationRunRegistry:
