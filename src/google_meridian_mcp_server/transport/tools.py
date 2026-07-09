@@ -59,6 +59,7 @@ def _optimization_service(ctx: Context) -> OptimizationService:
         registry=ctx.lifespan_context["optimization_registry"],
         executor=ctx.lifespan_context["optimization_executor"],
         cfg=ctx.lifespan_context["config"],
+        result_cache=ctx.lifespan_context["result_cache"],
     )
 
 

@@ -44,17 +44,33 @@ def build_worker_catalog(cfg: RuntimeConfig) -> ModelCatalog:
     return ModelCatalog(discovery, materialization)
 
 
+def _is_orphaned(original_ppid: int, current_ppid: int) -> bool:
+    """Pure predicate: has our parent changed since the guard started?
+
+    A changed ppid means our original parent is gone and we were reparented
+    (to init/PID 1 on most systems, or to a subreaper on Linux -- either way,
+    a pid that is not our original parent). Comparing against a fixed "== 1"
+    is wrong when the server itself runs as PID 1 (e.g. the shipped container,
+    which uses exec-form CMD with no init): every worker would see
+    getppid() == 1 from birth and exit immediately, before doing any work.
+    """
+    return current_ppid != original_ppid
+
+
 def _start_parent_death_guard(poll_interval: float = 2.0) -> threading.Thread:
-    """Exit immediately if our parent process dies (reparented to init/PID 1).
+    """Exit immediately if our parent process dies (reparented away).
 
     Guards against orphaned worker subprocesses lingering after the parent
     server process crashes or is killed without a chance to clean up children.
+    Captures the parent pid at guard-start time and exits only when it
+    CHANGES -- correct whether the parent is PID 1 (container) or not.
     """
+    original_ppid = os.getppid()
 
     def _watch() -> None:
         while True:
             threading.Event().wait(poll_interval)
-            if os.getppid() == 1:
+            if _is_orphaned(original_ppid, os.getppid()):
                 os._exit(0)
 
     thread = threading.Thread(target=_watch, daemon=True)

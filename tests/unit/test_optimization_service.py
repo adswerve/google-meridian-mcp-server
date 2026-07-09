@@ -5,6 +5,7 @@ import pytest
 
 from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import RunStatus
+from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     LocalOptimizationRunRegistry,
 )
@@ -85,14 +86,19 @@ class _CancellableExecutor:
             )
 
 
-def _svc(tmp_path, runner=None):
+def _svc(tmp_path, runner=None, result_cache=None):
     cfg = RuntimeConfig(
         persistence_backend="local",
         local_models_root=str(tmp_path),
         optimization_runs_root=str(tmp_path / "runs"),
     )
     reg = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
-    return OptimizationService(runner or FakeRunner(), reg, _Executor(), cfg), reg
+    return (
+        OptimizationService(
+            runner or FakeRunner(), reg, _Executor(), cfg, result_cache=result_cache
+        ),
+        reg,
+    )
 
 
 @pytest.fixture
@@ -150,19 +156,28 @@ async def test_identical_config_reuses_completed_run(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_preflight_is_cached_by_config_fingerprint(tmp_path):
-    """Second submission with an IDENTICAL config reaches preflight again (the
-    registry dedup happens only after preflight, mirroring the pre-Task-11
-    ordering where facade validation always ran before the reuse check) but
-    the underlying runner.run for preflight_optimization is invoked only once
-    thanks to the fingerprint-keyed cache. Use force_rerun on the second call
-    so registry dedup doesn't short-circuit inside _submit and mask this."""
+async def test_preflight_is_cached_by_config_fingerprint_across_service_instances(
+    tmp_path,
+):
+    """Fable finding 3: a fresh OptimizationService is constructed PER TOOL
+    CALL (see transport/tools.py:_optimization_service), so a bespoke
+    instance-local preflight cache never survives past a single call -- it
+    caches nothing, ever. The cache must live in the lifespan-scoped
+    ResultCache instead. Simulate that here with a SHARED enabled ResultCache
+    passed to TWO separate OptimizationService instances (one per simulated
+    tool call); the underlying runner.run for preflight_optimization must be
+    invoked only ONCE across both submits of the same config. Use
+    force_rerun on the second call so registry dedup doesn't short-circuit
+    inside _submit and mask this."""
     runner = FakeRunner()
-    svc, _ = _svc(tmp_path, runner=runner)
+    shared_cache = ResultCache(enabled=True)
     config = {"scenario": {"type": "fixed_budget"}}
 
-    await svc.run_optimization("m", config)
-    await svc.run_optimization("m", config, force_rerun=True)
+    svc1, _ = _svc(tmp_path, runner=runner, result_cache=shared_cache)
+    await svc1.run_optimization("m", config)
+
+    svc2, _ = _svc(tmp_path, runner=runner, result_cache=shared_cache)
+    await svc2.run_optimization("m", config, force_rerun=True)
 
     preflight_calls = [c for c in runner.calls if c[0] == "preflight_optimization"]
     assert len(preflight_calls) == 1
@@ -172,14 +187,35 @@ async def test_preflight_is_cached_by_config_fingerprint(tmp_path):
 async def test_preflight_cache_is_config_dependent_not_model_only(tmp_path):
     """A DIFFERENT config for the same model_id must NOT reuse a cached
     preflight from a different config -- validation_error/use_kpi are
-    config-dependent, not model-only (correctness, not just performance)."""
+    config-dependent, not model-only (correctness, not just performance).
+    Uses the same shared-ResultCache-across-instances setup as the fingerprint
+    cache-hit test above."""
     runner = FakeRunner()
-    svc, _ = _svc(tmp_path, runner=runner)
+    shared_cache = ResultCache(enabled=True)
 
-    await svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
-    await svc.run_optimization(
+    svc1, _ = _svc(tmp_path, runner=runner, result_cache=shared_cache)
+    await svc1.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+
+    svc2, _ = _svc(tmp_path, runner=runner, result_cache=shared_cache)
+    await svc2.run_optimization(
         "m", {"scenario": {"type": "target_roas", "target_value": 2.0}}
     )
+
+    preflight_calls = [c for c in runner.calls if c[0] == "preflight_optimization"]
+    assert len(preflight_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_preflight_not_cached_without_result_cache(tmp_path):
+    """No result_cache (None, the default) -> no caching at all: every
+    submission re-runs preflight. Guards against accidentally reintroducing
+    an always-on cache with no way to disable it."""
+    runner = FakeRunner()
+    config = {"scenario": {"type": "fixed_budget"}}
+
+    svc, _ = _svc(tmp_path, runner=runner)  # result_cache=None
+    await svc.run_optimization("m", config)
+    await svc.run_optimization("m", config, force_rerun=True)
 
     preflight_calls = [c for c in runner.calls if c[0] == "preflight_optimization"]
     assert len(preflight_calls) == 2
@@ -421,6 +457,33 @@ async def test_run_future_invalid_config_raises(service_with_fakes):
                 "future": {"start_date": "2099-01-01", "horizon": 0},
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_preflight_receives_validated_config_dump_with_kind(
+    service_with_fakes,
+):
+    """Fable finding 6: preflight must branch on the VALIDATED config's dump,
+    not the raw incoming config_dict -- a direct service caller can omit the
+    'kind' key entirely (pydantic defaults it), and the raw dict would then
+    lack the discriminator the worker-side op branches on. Assert the params
+    passed to the preflight_optimization runner call carry the correct
+    'kind' even when the caller-supplied dict omits it."""
+    service, fakes = service_with_fakes
+    await service.run_future_optimization(
+        "national-revenue",
+        {
+            # no "kind" key at all -- caller omitted the discriminator
+            "scenario": {"type": "fixed_budget"},
+            "future": {"start_date": "2099-01-01", "horizon": 4},
+        },
+    )
+    preflight_calls = [
+        c for c in fakes["runner"].calls if c[0] == "preflight_optimization"
+    ]
+    assert len(preflight_calls) == 1
+    _, _, params = preflight_calls[0]
+    assert params["config"]["kind"] == "future"
 
 
 @pytest.mark.asyncio

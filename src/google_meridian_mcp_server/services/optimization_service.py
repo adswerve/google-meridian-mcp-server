@@ -23,6 +23,7 @@ from google_meridian_mcp_server.domain.optimization import (
     config_fingerprint,
 )
 from google_meridian_mcp_server.execution.routing import resolve_tier, size_score
+from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
 )
@@ -72,6 +73,7 @@ class OptimizationService:
         registry: OptimizationRunRegistry,
         executor: Any,
         cfg: RuntimeConfig,
+        result_cache: ResultCache | None = None,
     ) -> None:
         self._runner = runner
         self._registry = registry
@@ -80,18 +82,31 @@ class OptimizationService:
         # Preflight results are config-dependent (use_kpi/validation_error vary
         # per config, not just per model_id), so this MUST be keyed on the
         # config fingerprint -- never on bare model_id. See Task 11 brief.
-        self._preflight_cache: dict[str, dict[str, Any]] = {}
+        #
+        # A fresh OptimizationService is constructed per tool call (see
+        # transport/tools.py:_optimization_service), so a bespoke
+        # instance-local dict here would never survive past a single call --
+        # it would cache nothing, ever. Cache in the lifespan-scoped
+        # ResultCache instead, which outlives individual tool calls.
+        self._result_cache = result_cache
 
     async def _preflight(
         self, model_id: str, config_dict: dict, fingerprint: str
     ) -> dict[str, Any]:
-        cached = self._preflight_cache.get(fingerprint)
-        if cached is not None:
-            return cached
+        cache_params = {"fingerprint": fingerprint}
+        if self._result_cache is not None:
+            cached = self._result_cache.get(
+                "preflight_optimization", model_id, cache_params
+            )
+            if cached is not None:
+                return cached
         result = await self._runner.run(
             "preflight_optimization", model_id, {"config": config_dict}
         )
-        self._preflight_cache[fingerprint] = result
+        if self._result_cache is not None:
+            self._result_cache.put(
+                "preflight_optimization", model_id, cache_params, result
+            )
         return result
 
     async def run_optimization(
@@ -110,7 +125,9 @@ class OptimizationService:
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
         fingerprint = config_fingerprint(model_id, config)
-        preflight = await self._preflight(model_id, config_dict, fingerprint)
+        preflight = await self._preflight(
+            model_id, config.model_dump(mode="json"), fingerprint
+        )
         if preflight["validation_error"]:
             _raise_from_validation_error(preflight["validation_error"])
 
@@ -141,7 +158,9 @@ class OptimizationService:
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
         fingerprint = config_fingerprint(model_id, config)
-        preflight = await self._preflight(model_id, config_dict, fingerprint)
+        preflight = await self._preflight(
+            model_id, config.model_dump(mode="json"), fingerprint
+        )
         if preflight["validation_error"]:
             _raise_from_validation_error(preflight["validation_error"])
 

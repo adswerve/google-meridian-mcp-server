@@ -57,37 +57,46 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         self._root.mkdir(parents=True, exist_ok=True)
         workdir = Path(tempfile.mkdtemp(dir=self._root))
         req, resp, logp = workdir / "req.json", workdir / "resp.json", workdir / "log"
-        req.write_text(
-            json.dumps({"operation": operation, "model_id": model_id, "params": params})
-        )
         proc, keep, deferred_cleanup = None, False, False
-        log_file = open(logp, "w")  # noqa: SIM115
+        log_file = None
         try:
-            # Shield the spawn itself: create_subprocess_exec can fork+exec the
-            # child and then be cancelled while still awaiting its internal
-            # connection-made waiter, which would raise CancelledError to us
-            # *before* we ever get the Process back — orphaning the child with
-            # no pid in self._live for kill_group/shutdown() to find. Shielding
-            # lets the spawn finish so a deferred teardown can kill+reap it and
-            # only THEN remove the workdir (never before the child is dead).
-            spawn_task = asyncio.ensure_future(
-                asyncio.create_subprocess_exec(
-                    *self.worker_argv("analysis", str(req), str(resp)),
-                    env=self.child_env(None),
-                    **self.popen_redirect_kwargs(log_file),
-                )
-            )
             try:
-                proc = await asyncio.shield(spawn_task)
-            except asyncio.CancelledError:
-                # Hand ownership of workdir + log_file to a deferred teardown
-                # that fires once the shielded spawn resolves; the sync finally
-                # must NOT rmtree/close underneath the still-launching child.
-                deferred_cleanup = True
-                spawn_task.add_done_callback(
-                    lambda t: self._on_spawn_after_cancel(t, workdir, log_file)
+                req.write_text(
+                    json.dumps(
+                        {"operation": operation, "model_id": model_id, "params": params}
+                    )
                 )
-                raise
+                log_file = open(logp, "w")  # noqa: SIM115
+                # Shield the spawn itself: create_subprocess_exec can fork+exec the
+                # child and then be cancelled while still awaiting its internal
+                # connection-made waiter, which would raise CancelledError to us
+                # *before* we ever get the Process back — orphaning the child with
+                # no pid in self._live for kill_group/shutdown() to find. Shielding
+                # lets the spawn finish so a deferred teardown can kill+reap it and
+                # only THEN remove the workdir (never before the child is dead).
+                spawn_task = asyncio.ensure_future(
+                    asyncio.create_subprocess_exec(
+                        *self.worker_argv("analysis", str(req), str(resp)),
+                        env=self.child_env(None),
+                        **self.popen_redirect_kwargs(log_file),
+                    )
+                )
+                try:
+                    proc = await asyncio.shield(spawn_task)
+                except asyncio.CancelledError:
+                    # Hand ownership of workdir + log_file to a deferred teardown
+                    # that fires once the shielded spawn resolves; the sync finally
+                    # must NOT rmtree/close underneath the still-launching child.
+                    deferred_cleanup = True
+                    spawn_task.add_done_callback(
+                        lambda t: self._on_spawn_after_cancel(t, workdir, log_file)
+                    )
+                    raise
+            except Exception as exc:  # noqa: BLE001 - translate spawn/setup failures
+                # EMFILE, disk full, etc: don't let a raw OSError escape past
+                # tool handlers' `except MeridianMcpError` -- translate to a
+                # worker_failed envelope instead of a bare protocol error.
+                raise WorkerFailedError(f"failed to spawn worker: {exc}") from exc
             self._live.add(proc.pid)
             try:
                 rc = await asyncio.wait_for(proc.wait(), timeout=self._run_timeout)
@@ -109,12 +118,22 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
             except WorkerFailedError:
                 keep = True  # infra failure: retain workdir for postmortem
                 raise
+            except MeridianMcpError:
+                # Well-formed error payload (e.g. internal_error) but the
+                # worker still exited non-zero -> infra/internal failure, not
+                # a normal domain outcome. Retain the workdir+log so the
+                # traceback (child-log-only per spec) survives. A domain
+                # error with rc == 0 keeps the existing keep=False behavior.
+                if rc != 0:
+                    keep = True
+                raise
             return result
         finally:
             if proc is not None:
                 self._live.discard(proc.pid)
             if not deferred_cleanup:
-                log_file.close()
+                if log_file is not None:
+                    log_file.close()
                 if not keep:
                     shutil.rmtree(workdir, ignore_errors=True)
 
@@ -125,9 +144,15 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 f"no response (exit {rc})", {"log_tail": self._tail(logp)}
             )
         if resp.stat().st_size > self._max_bytes:
-            raise WorkerFailedError(
-                "response too large", {"bytes": resp.stat().st_size}
-            )
+            size = resp.stat().st_size
+            # Unlink the oversized file itself before raising: the workdir is
+            # retained for postmortem (WorkerFailedError -> keep=True), but
+            # retaining the exact multi-hundred-MiB file the size ceiling was
+            # meant to guard against would defeat the point. The log tail is
+            # what matters for debugging; that stays.
+            with contextlib.suppress(OSError):
+                resp.unlink()
+            raise WorkerFailedError("response too large", {"bytes": size})
         try:
             payload = json.loads(resp.read_text())
         except json.JSONDecodeError:

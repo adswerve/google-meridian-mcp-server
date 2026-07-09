@@ -8,7 +8,11 @@ from google_meridian_mcp_server.domain.optimization import (
     OptimizationRun,
     RunStatus,
 )
-from google_meridian_mcp_server.execution.worker import build_worker_catalog, run_worker
+from google_meridian_mcp_server.execution.worker import (
+    _is_orphaned,
+    build_worker_catalog,
+    run_worker,
+)
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.meridian.optimizer_facade import OptimizerFacade
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
@@ -63,6 +67,25 @@ def _seed_run(reg, run_id="m-1"):
             server_version="0.1.0",
         )
     )
+
+
+def test_is_orphaned_same_ppid_is_not_orphaned():
+    """Fable finding 1: the guard must compare against the ppid captured at
+    guard-start time, not a hardcoded '== 1' -- that check is wrong whenever
+    the server itself runs as PID 1 (e.g. the shipped container's exec-form
+    CMD with no init), since every worker would then see getppid() == 1 from
+    birth and exit before doing any work."""
+    assert _is_orphaned(original_ppid=500, current_ppid=500) is False
+
+
+def test_is_orphaned_reparented_to_pid_1_is_orphaned():
+    assert _is_orphaned(original_ppid=500, current_ppid=1) is True
+
+
+def test_is_orphaned_reparented_to_other_pid_is_orphaned():
+    """Linux subreaper case: an orphan reparents to a non-1 subreaper pid,
+    which a bare '== 1' check would miss entirely."""
+    assert _is_orphaned(original_ppid=500, current_ppid=999) is True
 
 
 def test_build_worker_catalog(tmp_path):

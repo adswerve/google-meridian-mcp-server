@@ -21,6 +21,20 @@ ERR = OK.replace(
     "{'ok':False,'error':{'error_code':'missing_model_data','message':'no','details':{}}}",
 )
 
+# Mirrors worker.run_analysis's unexpected-exception branch: a well-formed
+# internal_error payload, but the worker process exits non-zero (rc=1).
+INTERNAL_ERROR_RC1 = textwrap.dedent("""
+    import json,sys,os; req,resp=sys.argv[-2],sys.argv[-1]
+    d=json.load(open(req)); tmp=resp+'.tmp'
+    print("some traceback text", file=sys.stderr)
+    json.dump(
+        {'ok': False, 'error': {'error_code': 'internal_error', 'message': 'RuntimeError', 'details': {}}},
+        open(tmp, 'w'),
+    )
+    os.replace(tmp, resp)
+    sys.exit(1)
+""")
+
 
 def mk(tmp, script, **o):
     kw = dict(
@@ -99,6 +113,43 @@ async def test_cancellation_kills_child(tmp_path):
 
 def _entries(root):
     return sorted(os.listdir(root)) if os.path.isdir(root) else []
+
+
+async def test_internal_error_rc1_retains_workdir_and_log(tmp_path):
+    """Fable finding 2: an unexpected worker exception prints its traceback to
+    the child log and returns a well-formed internal_error payload with rc 1.
+    That is a well-formed error payload (raises plain MeridianMcpError, not
+    WorkerFailedError), but the worker exit code is non-zero -- an
+    infra/internal failure, not a normal domain outcome -- so the workdir
+    (and the log holding the traceback) must be RETAINED, not rmtree'd."""
+    root = tmp_path / "internal_error"
+    with pytest.raises(MeridianMcpError) as exc_info:
+        await mk(root, INTERNAL_ERROR_RC1).run("op", "m1", {})
+    assert exc_info.value.error_code == "internal_error"
+
+    entries = _entries(root)
+    assert len(entries) == 1, "workdir must be retained for postmortem"
+    workdir = root / entries[0]
+    assert (workdir / "log").exists()
+    log_text = (workdir / "log").read_text()
+    assert "some traceback text" in log_text
+
+
+async def test_response_too_large_unlinks_resp_but_keeps_workdir(tmp_path):
+    """Fable finding 4: the too-large response is itself the disk-fill risk
+    the size ceiling exists to prevent, so resp.json must be unlinked even
+    though the workdir (with the log) is retained for postmortem."""
+    root = tmp_path / "too_large"
+    big = "import sys,os,json; resp=sys.argv[-1]; open(resp,'w').write('{\"ok\":true,\"result\":\"'+ 'x'*20 +'\"}')"
+    with pytest.raises(MeridianMcpError) as exc_info:
+        await mk(root, big, max_response_bytes=8).run("op", "m1", {})
+    assert exc_info.value.error_code == "worker_failed"
+
+    entries = _entries(root)
+    assert len(entries) == 1, "workdir must still be retained"
+    workdir = root / entries[0]
+    assert not (workdir / "resp.json").exists(), "oversized resp.json must be unlinked"
+    assert (workdir / "log").exists()
 
 
 async def test_workdir_retention_semantics(tmp_path):
