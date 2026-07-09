@@ -111,6 +111,48 @@ async def test_cancellation_kills_child(tmp_path):
         os.kill(pid, 0)  # child gone
 
 
+async def test_shutdown_drains_a_still_pending_spawn(tmp_path, monkeypatch):
+    """F11: if shutdown() runs while a shielded spawn is still unresolved --
+    because the CALLER's own run() was never itself cancelled, shutdown() is
+    just racing a genuinely in-flight call -- the spawn's pid isn't in `_live`
+    yet and its teardown isn't in `_cleanup_tasks` yet either; nothing would
+    find or kill it without `_pending_spawns` tracking. shutdown() must drain
+    it (cancelling the tracked spawn task directly, which routes through the
+    existing deferred-teardown path) and end with all three tracking
+    collections empty, with no exception raised anywhere."""
+    release = asyncio.Event()
+
+    class _FakeProc:
+        pid = 999999
+
+        async def wait(self):
+            return 0
+
+    async def _delayed_create(*args, **kwargs):
+        await release.wait()  # never set in this test: stays pending until cancelled
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _delayed_create)
+
+    r = mk(tmp_path, OK)
+    run_task = asyncio.create_task(r.run("op", "m1", {}))
+
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if r._pending_spawns:
+            break
+    assert r._pending_spawns, "spawn must be tracked while genuinely still pending"
+
+    await r.shutdown()  # must not hang or raise with the spawn still pending
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+
+    assert r._live == set()
+    assert r._pending_spawns == set()
+    assert r._cleanup_tasks == set()
+
+
 def _entries(root):
     return sorted(os.listdir(root)) if os.path.isdir(root) else []
 
@@ -245,3 +287,74 @@ async def test_tail_handles_file_smaller_than_tail_limit(tmp_path):
     logp.write_text("hello world")
 
     assert SyncSubprocessExecutor._tail(str(logp)) == "hello world"
+
+
+def test_sweep_stale_entries_removes_old_keeps_new(tmp_path):
+    """F10b: retained analysis workdirs and worker log files otherwise
+    accumulate forever. sweep_stale_entries removes only entries directly
+    under root whose mtime is older than the TTL, leaving fresh ones alone."""
+    import os
+
+    from google_meridian_mcp_server.execution.sync_subprocess_executor import (
+        sweep_stale_entries,
+    )
+
+    old_dir = tmp_path / "old_workdir"
+    old_dir.mkdir()
+    (old_dir / "req.json").write_text("{}")
+    old_file = tmp_path / "old-run.log"
+    old_file.write_text("stale log")
+
+    new_dir = tmp_path / "new_workdir"
+    new_dir.mkdir()
+    new_file = tmp_path / "new-run.log"
+    new_file.write_text("fresh log")
+
+    old_ts = time.time() - 1_000_000  # far older than any sane TTL
+    for p in (old_dir, old_file):
+        os.utime(p, (old_ts, old_ts))
+
+    sweep_stale_entries(tmp_path, ttl_seconds=3600)
+
+    remaining = {p.name for p in tmp_path.iterdir()}
+    assert remaining == {"new_workdir", "new-run.log"}
+
+
+def test_sweep_stale_entries_missing_root_is_a_noop(tmp_path):
+    """F10b: a not-yet-created root (e.g. no runs yet) must not raise."""
+    from google_meridian_mcp_server.execution.sync_subprocess_executor import (
+        sweep_stale_entries,
+    )
+
+    sweep_stale_entries(tmp_path / "does-not-exist", ttl_seconds=3600)
+
+
+def test_sweep_stale_entries_ignores_per_entry_errors(tmp_path, monkeypatch):
+    """F10b: one bad entry (permission error, concurrent deletion, ...) must
+    not abort the sweep of the rest."""
+    from google_meridian_mcp_server.execution import (
+        sync_subprocess_executor as sse_module,
+    )
+
+    old_dir = tmp_path / "boom"
+    old_dir.mkdir()
+    old_ts = time.time() - 1_000_000
+    os.utime(old_dir, (old_ts, old_ts))
+
+    good_file = tmp_path / "old.log"
+    good_file.write_text("x")
+    os.utime(good_file, (old_ts, old_ts))
+
+    real_rmtree = sse_module.shutil.rmtree
+
+    def _boom(path, ignore_errors=False):
+        if str(path) == str(old_dir):
+            raise OSError("permission denied")
+        return real_rmtree(path, ignore_errors=ignore_errors)
+
+    monkeypatch.setattr(sse_module.shutil, "rmtree", _boom)
+
+    sse_module.sweep_stale_entries(tmp_path, ttl_seconds=3600)  # must not raise
+
+    assert old_dir.exists()  # the "bad" entry survives
+    assert not good_file.exists()  # the good entry is still swept

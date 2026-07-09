@@ -87,4 +87,7 @@ def load_config() -> RuntimeConfig:
             os.getenv("ANALYSIS_MAX_RESPONSE_BYTES", str(64 * 1024 * 1024))
         ),
         analysis_workdir_root=os.getenv("ANALYSIS_WORKDIR_ROOT", "/tmp/mmm-analysis"),
+        analysis_workdir_ttl_seconds=int(
+            os.getenv("ANALYSIS_WORKDIR_TTL_SECONDS", "604800")
+        ),
     )

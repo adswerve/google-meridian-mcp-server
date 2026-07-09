@@ -1,4 +1,5 @@
 # tests/unit/test_optimization_worker.py
+import threading
 import time
 from typing import Any
 
@@ -253,6 +254,87 @@ def test_worker_uses_execute_for_dispatch(tmp_path):
     assert rc == 0
     assert "execute" in calls
     assert "run" not in calls
+
+
+class _SlowHeartbeatRegistry:
+    """Mimics a GCS registry whose heartbeat write can take longer than the
+    stop-and-join budget the old ``beat.join(timeout=1.0)`` allowed.
+
+    Only the BACKGROUND heartbeat thread's RUNNING write is slow (identified
+    by not being the calling thread that invoked run_worker) -- this mirrors a
+    real GCS write_state(RUNNING) taking longer than a short join timeout
+    while the main thread's own synchronous writes stay fast.
+    """
+
+    def __init__(self, record, *, slow_seconds: float):
+        self._record = record
+        self._slow_seconds = slow_seconds
+        self._caller_thread = threading.current_thread()
+        self.states: list[Any] = []
+
+    def get_record(self, run_id):
+        return self._record
+
+    def write_state(self, state):
+        if (
+            state.status == RunStatus.RUNNING
+            and state.heartbeat_at
+            and threading.current_thread() is not self._caller_thread
+        ):
+            time.sleep(self._slow_seconds)  # simulate a slow in-flight GCS write
+        self.states.append(state)
+
+    def write_result(self, run_id, result):
+        pass
+
+
+def test_f8_heartbeat_join_waits_for_in_flight_write_before_terminal_state(tmp_path):
+    """F8: a GCS heartbeat write(RUNNING) already in flight when the worker
+    finishes must be FULLY joined before the terminal state is written --
+    otherwise the stale RUNNING write can land AFTER the terminal write,
+    leaving a completed run showing RUNNING forever. Uses a heartbeat write
+    delay (1.3s) longer than the OLD `beat.join(timeout=1.0)` budget to prove
+    the fix actually waits past that old timeout."""
+    cfg = OptimizationConfig.model_validate({"scenario": {"type": "fixed_budget"}})
+    record = OptimizationRun(
+        run_id="m-1",
+        label="l",
+        model_id="m",
+        config=cfg,
+        config_fingerprint="fp",
+        compute_tier_requested="auto",
+        compute_tier_resolved="local",
+        backend="tensorflow",
+        size_score=1,
+        created_at="2026-06-29T00:00:00+00:00",
+        meridian_version="1.7.0",
+        server_version="0.1.0",
+    )
+    registry = _SlowHeartbeatRegistry(record, slow_seconds=1.3)
+
+    class _QuickFacade:
+        def execute(self, config):
+            time.sleep(0.15)  # long enough for one heartbeat tick to fire
+            return {"outcome_mode": "revenue", "summary": {}}
+
+    class _Catalog:
+        def get_optimizer_facade(self, model_id):
+            return _QuickFacade()
+
+    rc = run_worker(
+        record.run_id,
+        registry=registry,
+        catalog=_Catalog(),
+        backend="tensorflow",
+        heartbeat_interval=0.05,
+    )
+
+    assert rc == 0
+    assert registry.states, "expected at least the initial + terminal writes"
+    assert registry.states[-1].status == RunStatus.COMPLETED, (
+        "the terminal write must be LAST -- a stale in-flight heartbeat write "
+        "must never land after it"
+    )
 
 
 def test_catalog_get_optimizer_facade_returns_and_caches(monkeypatch):

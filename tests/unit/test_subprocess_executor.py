@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -445,3 +446,53 @@ def test_terminate_suppresses_wait_exceptions(monkeypatch, tmp_path):
             raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
 
     ex._terminate(_Handle())  # must not raise
+
+
+async def test_concurrent_submits_do_not_corrupt_executor_state(tmp_path):
+    """F6(b): once the MCP tool handlers offload their sync service calls onto
+    worker threads (asyncio.to_thread), submit()/pump()/cancel() can run
+    concurrently from multiple threads against the same executor. The RLock
+    added to BaseExecutor must serialize access to `_handles`/`_queue` so N
+    concurrent submits neither raise nor lose/duplicate an entry."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=3, heartbeat_stale_seconds=60)
+
+    n = 20
+    runs = [_run(f"r{i}") for i in range(n)]
+    for run in runs:
+        reg.create(run)
+
+    await asyncio.gather(*(asyncio.to_thread(ex.submit, run) for run in runs))
+
+    # Nothing lost or duplicated across the two structures the lock protects.
+    tracked = set(ex._handles) | set(ex._queue)
+    assert len(ex._handles) + len(ex._queue) == n
+    assert tracked == {run.run_id for run in runs}
+    assert len(ex._handles) == 3  # concurrency gate still honored
+    assert len(ex._queue) == n - 3
+
+
+async def test_concurrent_pump_calls_do_not_raise_or_duplicate_launches(tmp_path):
+    """F6(b) regression: concurrent pump() calls (e.g. several get_optimization_status
+    polls landing at once, each offloaded to its own thread) must not double-launch
+    a queued run or raise."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=2, heartbeat_stale_seconds=60)
+
+    runs = [_run(f"p{i}") for i in range(6)]
+    for run in runs:
+        reg.create(run)
+        ex.submit(run)  # sequential seed: 2 launched, 4 queued
+
+    assert len(ex._handles) == 2
+    assert len(ex._queue) == 4
+
+    # Free one concurrency slot, then hammer pump() from many threads at once.
+    first_handle = next(iter(ex._handles.values()))
+    first_handle.alive = False
+
+    await asyncio.gather(*(asyncio.to_thread(ex.pump) for _ in range(10)))
+
+    # Exactly one run_id was ever launched per call to _launch -- no duplicates.
+    assert len(ex.launched) == len(set(ex.launched))
+    assert len(ex._handles) == 2  # gate still honored after the free slot backfilled

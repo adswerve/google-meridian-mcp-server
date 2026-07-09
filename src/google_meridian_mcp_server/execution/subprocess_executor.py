@@ -14,6 +14,11 @@ from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
 )
 
+# F10b: exported so bootstrap/server code can sweep the same directory a
+# default-constructed executor writes worker logs to, without hardcoding the
+# path twice.
+DEFAULT_LOG_ROOT = "/tmp/mmm-worker-logs"
+
 
 class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
     def __init__(
@@ -23,7 +28,7 @@ class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
         max_parallel: int,
         heartbeat_stale_seconds: int,
         backend: str,
-        log_root: str | Path = "/tmp/mmm-worker-logs",
+        log_root: str | Path = DEFAULT_LOG_ROOT,
         python_executable: str | None = None,
     ) -> None:
         BaseExecutor.__init__(
@@ -78,14 +83,15 @@ class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
         a queued-but-never-launched run has no chance of being picked up by
         anything else.
         """
-        for status in (RunStatus.RUNNING, RunStatus.QUEUED):
-            for summary in self._registry.list(status=status):
-                run_id = summary.run_id
-                self._handles.pop(run_id, None)
-                try:
-                    self._queue.remove(run_id)
-                except ValueError:
-                    pass
-                self._fail_if_unfinished(
-                    run_id, "server restarted; local worker cannot survive"
-                )
+        with self._lock:
+            for status in (RunStatus.RUNNING, RunStatus.QUEUED):
+                for summary in self._registry.list(status=status):
+                    run_id = summary.run_id
+                    self._handles.pop(run_id, None)
+                    try:
+                        self._queue.remove(run_id)
+                    except ValueError:
+                        pass
+                    self._fail_if_unfinished(
+                        run_id, "server restarted; local worker cannot survive"
+                    )

@@ -14,8 +14,10 @@ from fastmcp.server.providers.skills import SkillsDirectoryProvider
 from google_meridian_mcp_server.bootstrap import build_discovery_cache
 from google_meridian_mcp_server.config import load_config
 from google_meridian_mcp_server.domain.models import Transport
+from google_meridian_mcp_server.execution.subprocess_executor import DEFAULT_LOG_ROOT
 from google_meridian_mcp_server.execution.sync_subprocess_executor import (
     SyncSubprocessExecutor,
+    sweep_stale_entries,
 )
 from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.transport.tools import register_tools
@@ -90,6 +92,15 @@ async def _lifespan(server: FastMCP):
             "MODEL_CACHE_ROOT": cfg.model_cache_root,
         },
     )
+
+    # F10b: age-based sweep of retained analysis workdirs + optimization worker
+    # log files, run once at startup (not on every spawn). Best-effort startup
+    # hygiene, same posture as reconcile_orphans above.
+    try:
+        sweep_stale_entries(cfg.analysis_workdir_root, cfg.analysis_workdir_ttl_seconds)
+        sweep_stale_entries(DEFAULT_LOG_ROOT, cfg.analysis_workdir_ttl_seconds)
+    except Exception:  # noqa: BLE001 - sweep is best-effort startup hygiene
+        log.warning("startup workdir/log sweep failed", exc_info=True)
 
     try:
         yield {

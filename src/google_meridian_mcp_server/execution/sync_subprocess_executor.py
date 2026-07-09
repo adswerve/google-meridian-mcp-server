@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from google_meridian_mcp_server.domain.errors import (
@@ -19,6 +21,38 @@ from google_meridian_mcp_server.domain.errors import (
 from google_meridian_mcp_server.execution.base_subprocess import BaseSubprocessExecutor
 
 _LOG_TAIL = 4096
+
+log = logging.getLogger(__name__)
+
+
+def sweep_stale_entries(root: str | Path, ttl_seconds: float) -> None:
+    """Remove files/dirs directly under *root* whose mtime is older than *ttl_seconds*.
+
+    F10b: retained analysis workdirs (one per timeout/spawn-failure/oversized-
+    response/non-domain-rc!=0 run) and optimization worker log files (one per
+    run, forever) otherwise accumulate unboundedly on disk. Called once at
+    server startup -- NOT on every spawn -- so this is a bounded, best-effort
+    hygiene pass: a missing root is a no-op, and a failure removing any single
+    entry (permissions, a concurrent deletion, ...) is swallowed so it can't
+    abort the sweep of the rest.
+    """
+    root_path = Path(root)
+    if not root_path.is_dir():
+        return
+    cutoff = time.time() - ttl_seconds
+    for entry in root_path.iterdir():
+        try:
+            if entry.stat().st_mtime >= cutoff:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+        except OSError:
+            log.warning(
+                "sweep_stale_entries: failed to remove %s", entry, exc_info=True
+            )
+            continue
 
 
 class SyncSubprocessExecutor(BaseSubprocessExecutor):
@@ -41,6 +75,13 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         self._root = Path(workdir_root)
         self._live: set[int] = set()
         self._cleanup_tasks: set = set()
+        # F11: tracks every shielded spawn from creation until it resolves
+        # (success, exception, or cancellation) -- independent of whether the
+        # caller's own await was ever cancelled. shutdown() needs this because
+        # a spawn genuinely in flight (caller not cancelled) has no pid in
+        # `_live` yet and no entry in `_cleanup_tasks` yet either; without
+        # tracking it, shutdown() would have nothing to wait for or cancel.
+        self._pending_spawns: set = set()
 
     async def run(self, operation, model_id, params) -> dict:
         try:
@@ -89,6 +130,13 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                         **self.popen_redirect_kwargs(log_file),
                     )
                 )
+                # F11: track from creation to resolution, regardless of why it
+                # resolves (normal return, exception, or cancellation) -- this
+                # is what lets shutdown() find + drain a spawn that is still
+                # pending because the CALLER (this coroutine) was never itself
+                # cancelled, only shutdown() was invoked concurrently.
+                self._pending_spawns.add(spawn_task)
+                spawn_task.add_done_callback(self._pending_spawns.discard)
                 try:
                     proc = await asyncio.shield(spawn_task)
                 except asyncio.CancelledError:
@@ -217,11 +265,41 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         return ""
 
     async def shutdown(self) -> None:
-        for pid in list(self._live):
-            self.kill_group(pid)
-        self._live.clear()
-        # Drain any in-flight deferred teardowns (spawn-cancel path) so their
-        # child is killed+reaped and their workdir/log fd released before the
-        # loop stops — otherwise a pending spawn's callback would never fire.
-        if self._cleanup_tasks:
-            await asyncio.gather(*list(self._cleanup_tasks), return_exceptions=True)
+        # F11: if shutdown() runs while a shielded spawn is still unresolved
+        # (the caller's own `run()` was never cancelled -- shutdown() is
+        # racing a genuinely in-flight call), that spawn's pid isn't in
+        # `_live` yet and its teardown isn't in `_cleanup_tasks` yet either --
+        # nothing above would find or kill it. Cancelling the tracked spawn
+        # task directly (not just the caller's shielded await) forces it to
+        # resolve now; `_run_locked`'s own `except CancelledError` branch then
+        # registers the existing deferred-teardown path exactly as it does for
+        # a caller-cancelled run, so the same kill+reap+rmtree logic applies
+        # with no new code path and no risk of double-kill/double-rmtree.
+        #
+        # Loop (bounded: no new work arrives during shutdown) until BOTH
+        # `_pending_spawns` and `_cleanup_tasks` drain -- the continuation
+        # that moves a settled spawn into `_cleanup_tasks` (or, if a race let
+        # it spawn cleanly, into `_live`) runs as a separately scheduled
+        # callback, not synchronously with our own cancel/gather.
+        for _ in range(100):
+            for pid in list(self._live):
+                self.kill_group(pid)
+            self._live.clear()
+
+            pending = [t for t in self._pending_spawns if not t.done()]
+            for t in pending:
+                t.cancel()
+            if self._pending_spawns:
+                await asyncio.gather(
+                    *list(self._pending_spawns), return_exceptions=True
+                )
+
+            # Drain any in-flight deferred teardowns (spawn-cancel path) so their
+            # child is killed+reaped and their workdir/log fd released before the
+            # loop stops — otherwise a pending spawn's callback would never fire.
+            if self._cleanup_tasks:
+                await asyncio.gather(*list(self._cleanup_tasks), return_exceptions=True)
+
+            await asyncio.sleep(0)  # let scheduled continuations/callbacks run
+            if not self._pending_spawns and not self._cleanup_tasks:
+                break

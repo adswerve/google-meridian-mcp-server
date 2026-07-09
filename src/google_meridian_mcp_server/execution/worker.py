@@ -228,9 +228,17 @@ def run_worker(
         phase_box["phase"] = RunPhase.UPLOADING
         phase_box["progress"] = 0.95
         registry.write_result(run_id, result)
-        # Stop heartbeat before writing terminal state to prevent a post-terminal heartbeat.
+        # Stop heartbeat before writing terminal state to prevent a post-terminal
+        # heartbeat. F8: join FULLY (no timeout) -- with a GCS registry a
+        # write_state(RUNNING) already in flight can take longer than a short
+        # timeout; giving up early let the terminal write land first and the
+        # stale in-flight RUNNING write land AFTER it, showing RUNNING forever.
+        # The beat loop exits promptly once `stop` is set (its only wait is
+        # `stop.wait(heartbeat_interval)`, which returns immediately once set),
+        # so at most one in-flight write is ever outstanding -- the join is
+        # bounded by that single write's duration, not by heartbeat_interval.
         stop.set()
-        beat.join(timeout=1.0)
+        beat.join()
         registry.write_state(
             OptimizationRunState(
                 run_id=run_id,
@@ -243,9 +251,10 @@ def run_worker(
         )
         return 0
     except Exception as exc:  # noqa: BLE001 - worker boundary: record then exit non-zero
-        # Stop heartbeat before writing terminal state to prevent a post-terminal heartbeat.
+        # Stop heartbeat before writing terminal state to prevent a post-terminal
+        # heartbeat. F8: full join (see the success-path comment above).
         stop.set()
-        beat.join(timeout=1.0)
+        beat.join()
         registry.write_state(
             OptimizationRunState(
                 run_id=run_id,
@@ -261,10 +270,11 @@ def run_worker(
         )
         return 1
     finally:
-        # Idempotent: a second stop.set()/beat.join() is harmless; ensures cleanup
-        # even on unexpected control flow.
+        # Idempotent: a second stop.set()/beat.join() is harmless (join() on an
+        # already-finished thread returns immediately); ensures cleanup even on
+        # unexpected control flow. F8: full join here too, for the same reason.
         stop.set()
-        beat.join(timeout=1.0)
+        beat.join()
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -19,11 +20,16 @@ class _FakeFastMCP:
     def __init__(self):
         self.tools = {}
 
-    def tool(self, annotations=None):
-        def _decorator(fn):
-            self.tools[fn.__name__] = fn
-            return fn
+    def tool(self, fn=None, *, annotations=None):
+        """Supports both ``@mcp.tool`` (bare) and ``@mcp.tool(annotations=...)``
+        -- the real handlers use both forms."""
 
+        def _decorator(f):
+            self.tools[f.__name__] = f
+            return f
+
+        if fn is not None:
+            return _decorator(fn)
         return _decorator
 
 
@@ -241,3 +247,83 @@ async def test_register_tools_exposes_get_spend_scenario(
     # No filters were passed by the caller, and the transport layer no longer
     # normalizes -- the raw (default None) value reaches the service.
     assert captured["filters"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_models_is_offloaded_to_a_worker_thread(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """F6(a): list_models does discovery I/O (local fs walk or GCS list)
+    synchronously; the handler must run it via asyncio.to_thread so a slow
+    backend can't stall the event loop for every other in-flight tool call."""
+    mcp = _FakeFastMCP()
+    main_thread = threading.current_thread()
+    seen = {}
+
+    def _list_models():
+        seen["thread"] = threading.current_thread()
+        return [{"model_id": "m1"}]
+
+    monkeypatch.setattr(
+        tools_module,
+        "_catalog_service",
+        lambda ctx: SimpleNamespace(list_models=_list_models),
+    )
+
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    result = await mcp.tools["list_models"](ctx)
+
+    assert result == [{"model_id": "m1"}]
+    assert seen["thread"] is not main_thread
+
+
+@pytest.mark.asyncio
+async def test_optimization_status_result_list_delete_cancel_are_offloaded_to_thread(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """F6(a): get_optimization_status/get_optimization_result/list_optimizations/
+    delete_optimization/cancel_optimization wrap SYNC service calls (registry
+    I/O, and for get_status a Cloud Run liveness RPC per live handle via
+    executor.pump()); each handler must offload via asyncio.to_thread."""
+    mcp = _FakeFastMCP()
+    main_thread = threading.current_thread()
+    calls: dict[str, threading.Thread] = {}
+
+    def _record(name):
+        def _fn(*args, **kwargs):
+            calls[name] = threading.current_thread()
+            return {"ok": name, "args": args, "kwargs": kwargs}
+
+        return _fn
+
+    optimization_service = SimpleNamespace(
+        get_status=_record("get_status"),
+        get_result=_record("get_result"),
+        list_runs=_record("list_runs"),
+        delete=_record("delete"),
+        cancel=_record("cancel"),
+    )
+    monkeypatch.setattr(
+        tools_module, "_optimization_service", lambda ctx: optimization_service
+    )
+
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    assert (await mcp.tools["get_optimization_status"]("r1", ctx))["ok"] == "get_status"
+    assert (await mcp.tools["get_optimization_result"]("r1", ctx))["ok"] == "get_result"
+    assert (await mcp.tools["list_optimizations"](ctx))["ok"] == "list_runs"
+    assert (await mcp.tools["delete_optimization"]("r1", ctx))["ok"] == "delete"
+    assert (await mcp.tools["cancel_optimization"]("r1", ctx))["ok"] == "cancel"
+
+    assert set(calls) == {
+        "get_status",
+        "get_result",
+        "list_runs",
+        "delete",
+        "cancel",
+    }
+    for name, thread in calls.items():
+        assert thread is not main_thread, f"{name} ran on the event-loop thread"

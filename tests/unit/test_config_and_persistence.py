@@ -277,9 +277,12 @@ class TestGcsModelProvider:
         assert entries[0].source_path == "gs://bucket/models/root/geo/model.binpb"
         assert entries[1].model_format == "pkl"
 
-    def test_materialize_returns_existing_cached_file_without_download(
+    def test_materialize_returns_existing_cached_file_when_etag_matches_sidecar(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        """F12: a cache hit requires the cached file's etag SIDECAR to match
+        the catalog entry's etag -- not merely that a file happens to exist
+        and the entry happens to carry an etag at all."""
         provider = GcsModelProvider("bucket", "models")
         entry = ModelCatalogEntry(
             model_id="geo",
@@ -292,11 +295,86 @@ class TestGcsModelProvider:
         cached_file = tmp_path / "geo" / "model.binpb"
         cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"cached")
+        (tmp_path / "geo" / "model.binpb.etag").write_text("etag-1")
         monkeypatch.setattr(
             provider, "_get_client", mock.Mock(side_effect=AssertionError)
         )
 
         assert provider.materialize(entry, tmp_path) == cached_file
+
+    def test_materialize_redownloads_when_etag_sidecar_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """F12 regression: a cached file with NO sidecar (e.g. downloaded by a
+        pre-fix server, or the sidecar was lost) must not be treated as a
+        cache hit -- the old bug returned the stale file unconditionally
+        whenever the entry merely HAD an etag."""
+        provider = GcsModelProvider("bucket", "models")
+        blob = _FakeBlob("models/geo/model.binpb")
+        bucket = _FakeBucket([blob])
+        entry = ModelCatalogEntry(
+            model_id="geo",
+            display_name="Geo",
+            source_backend="gcs",
+            source_path="gs://bucket/models/geo/model.binpb",
+            model_format="binpb",
+            etag_or_fingerprint="etag-1",
+        )
+        cached_file = tmp_path / "geo" / "model.binpb"
+        cached_file.parent.mkdir(parents=True)
+        cached_file.write_bytes(b"stale-cached-bytes")
+        monkeypatch.setattr(
+            provider, "_get_client", mock.Mock(return_value=_FakeClient(bucket))
+        )
+
+        result = provider.materialize(entry, tmp_path)
+
+        assert result == cached_file
+        blob.download_to_filename.assert_called_once()
+        assert (tmp_path / "geo" / "model.binpb.etag").read_text() == "etag-1"
+
+    def test_materialize_reuses_cache_across_calls_with_same_etag_then_redownloads_on_change(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """F12: materialize once (etag "a") downloads and caches; a second
+        call with the SAME etag is a cache hit (no re-download); a third call
+        with a DIFFERENT etag ("b") re-downloads and rewrites the sidecar."""
+        provider = GcsModelProvider("bucket", "models")
+        blob = _FakeBlob("models/geo/model.binpb")
+        bucket = _FakeBucket([blob])
+        monkeypatch.setattr(
+            provider, "_get_client", mock.Mock(return_value=_FakeClient(bucket))
+        )
+        etag_path = tmp_path / "geo" / "model.binpb.etag"
+
+        entry_a = ModelCatalogEntry(
+            model_id="geo",
+            display_name="Geo",
+            source_backend="gcs",
+            source_path="gs://bucket/models/geo/model.binpb",
+            model_format="binpb",
+            etag_or_fingerprint="a",
+        )
+        first = provider.materialize(entry_a, tmp_path)
+        assert blob.download_to_filename.call_count == 1
+        assert etag_path.read_text() == "a"
+
+        second = provider.materialize(entry_a, tmp_path)
+        assert second == first
+        assert blob.download_to_filename.call_count == 1  # still one -- cache hit
+
+        entry_b = ModelCatalogEntry(
+            model_id="geo",
+            display_name="Geo",
+            source_backend="gcs",
+            source_path="gs://bucket/models/geo/model.binpb",
+            model_format="binpb",
+            etag_or_fingerprint="b",
+        )
+        third = provider.materialize(entry_b, tmp_path)
+        assert third == first
+        assert blob.download_to_filename.call_count == 2  # re-downloaded
+        assert etag_path.read_text() == "b"
 
     def test_materialize_downloads_to_nested_cache_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 from typing import Annotated, Any, Literal
 
@@ -96,7 +97,11 @@ def register_tools(mcp: FastMCP) -> None:
     @_guarded
     async def list_models(ctx: Context) -> list[dict[str, Any]] | dict[str, Any]:
         """List all available Meridian marketing-mix models. Call this first to get model_id values needed by every other tool. Returns id, display_name, format, and last_modified for each model."""
-        return _catalog_service(ctx).list_models()
+        # F6: list_models does discovery I/O (local fs walk or GCS list) synchronously;
+        # offload to a thread so a slow/degraded backend can't stall the event loop
+        # (and therefore every other in-flight tool call) while this resolves.
+        service = _catalog_service(ctx)
+        return await asyncio.to_thread(service.list_models)
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     @_guarded
@@ -529,7 +534,11 @@ def register_tools(mcp: FastMCP) -> None:
         ctx: Context,
     ) -> dict[str, Any]:
         """Poll a run started by run_optimization or run_future_optimization. Returns status (queued/running/completed/failed/canceled), current phase, last heartbeat, elapsed time, and an error object if it failed. Call repeatedly until status is 'completed', then call get_optimization_result."""
-        return _optimization_service(ctx).get_status(run_id)
+        # F6: get_status drives executor.pump(), which can do registry/GCS I/O
+        # (and, per live handle, a Cloud Run liveness RPC) synchronously; offload
+        # so a slow backend can't block the whole tool surface.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(service.get_status, run_id)
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     @_guarded
@@ -544,7 +553,9 @@ def register_tools(mcp: FastMCP) -> None:
         ctx: Context,
     ) -> dict[str, Any]:
         """Fetch the full structured result of a completed optimization: optimized-vs-current spend per channel, expected outcome lift, and per-channel efficiency (ROI/ROAS for revenue models, CPIK otherwise). Raises optimization_not_ready until get_optimization_status reports 'completed'. Answers 'what is the recommended budget allocation?'. Future-optimization results also carry an `assumptions` echo (budget, budget_source, reference_mode, excluded_channels) so an auto-derived budget is never silent."""
-        return _optimization_service(ctx).get_result(run_id)
+        # F6: registry read is synchronous (GCS on that backend); offload.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(service.get_result, run_id)
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     @_guarded
@@ -565,8 +576,10 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """List past optimization runs (newest first) with config summary, status, and headline result. Use to find and reuse prior work instead of re-running, or to get a run_id for get_optimization_result / delete_optimization. Filter by model_id and/or status."""
-        return _optimization_service(ctx).list_runs(
-            model_id=model_id, status=status, limit=limit
+        # F6: registry listing is synchronous (GCS list on that backend); offload.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(
+            service.list_runs, model_id=model_id, status=status, limit=limit
         )
 
     @mcp.tool
@@ -576,7 +589,9 @@ def register_tools(mcp: FastMCP) -> None:
         ctx: Context,
     ) -> dict[str, Any]:
         """Permanently delete one optimization run and its stored result by run_id. Irreversible. Find run_ids via list_optimizations. To stop an in-flight run instead, use cancel_optimization."""
-        return _optimization_service(ctx).delete(run_id)
+        # F6: cancels the executor entry + deletes registry files synchronously; offload.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(service.delete, run_id)
 
     @mcp.tool
     @_guarded
@@ -585,4 +600,6 @@ def register_tools(mcp: FastMCP) -> None:
         ctx: Context,
     ) -> dict[str, Any]:
         """Best-effort cancel of a queued or running optimization by run_id. Does not remove the run record (use delete_optimization for that) and has no effect on runs that already completed or failed."""
-        return _optimization_service(ctx).cancel(run_id)
+        # F6: terminates the executor handle + writes registry state synchronously; offload.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(service.cancel, run_id)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import collections
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +32,17 @@ class BaseExecutor(abc.ABC):
         self._stale_seconds = heartbeat_stale_seconds
         self._handles: dict[str, Any] = {}
         self._queue: collections.deque[str] = collections.deque()
+        # F6(b): `_handles`/`_queue` are mutated by submit/pump/cancel/_reap and
+        # the reconcile paths. Once the MCP tool handlers offload their sync
+        # service calls onto worker threads (asyncio.to_thread), those methods
+        # can run concurrently from multiple threads -> a data race on plain
+        # dict/deque mutation. A single coarse RLock (reentrant so a locked
+        # method can call another locked method on the same thread, e.g.
+        # submit -> pump -> _reap) guards every method touching either
+        # structure. These ops are infrequent and cheap, so holding the lock
+        # across the (usually local-registry) I/O inside them is an acceptable
+        # trade for correctness over minimizing hold time.
+        self._lock = threading.RLock()
 
     @abc.abstractmethod
     def _launch(self, run: OptimizationRun) -> Any: ...
@@ -40,18 +52,19 @@ class BaseExecutor(abc.ABC):
     def _terminate(self, handle: Any) -> None: ...
 
     def cancel(self, run_id: str) -> None:
-        handle = self._handles.pop(run_id, None)
-        if handle is not None:
-            self._terminate(handle)
-        try:
-            self._queue.remove(run_id)
-        except ValueError:
-            pass
-        state = self._registry.get_state(run_id)
-        if state.status in (RunStatus.QUEUED, RunStatus.RUNNING):
-            self._registry.write_state(
-                OptimizationRunState(run_id=run_id, status=RunStatus.CANCELED)
-            )
+        with self._lock:
+            handle = self._handles.pop(run_id, None)
+            if handle is not None:
+                self._terminate(handle)
+            try:
+                self._queue.remove(run_id)
+            except ValueError:
+                pass
+            state = self._registry.get_state(run_id)
+            if state.status in (RunStatus.QUEUED, RunStatus.RUNNING):
+                self._registry.write_state(
+                    OptimizationRunState(run_id=run_id, status=RunStatus.CANCELED)
+                )
 
     def reconcile_orphans(self) -> None:
         """Startup crash reconciliation for runs left over by a stopped server.
@@ -64,40 +77,46 @@ class BaseExecutor(abc.ABC):
         tier overrides this with an unconditional fail -- see
         AsyncSubprocessExecutor.reconcile_orphans.
         """
-        for summary in self._registry.list(status=RunStatus.RUNNING):
-            self._reconcile_stale(summary.run_id)
+        with self._lock:
+            for summary in self._registry.list(status=RunStatus.RUNNING):
+                self._reconcile_stale(summary.run_id)
 
     def submit(self, run: OptimizationRun) -> None:
-        self._registry.write_state(
-            OptimizationRunState(run_id=run.run_id, status=RunStatus.QUEUED)
-        )
-        self._queue.append(run.run_id)
-        self.pump()
+        with self._lock:
+            self._registry.write_state(
+                OptimizationRunState(run_id=run.run_id, status=RunStatus.QUEUED)
+            )
+            self._queue.append(run.run_id)
+            self.pump()
 
     def pump(self) -> None:
-        self._reap()
-        while self._queue and len(self._handles) < self._max_parallel:
-            run_id = self._queue.popleft()
-            try:
-                run = self._registry.get_record(run_id)
-            except RunNotFoundError:
-                # Deleted while still queued (OptimizationService.delete
-                # dequeues via cancel(), but tolerate a stale id regardless):
-                # nothing to launch, and this must not escape into whatever
-                # unrelated tool call happened to trigger this pump().
-                continue
-            try:
-                self._handles[run_id] = self._launch(run)
-            except Exception as exc:  # noqa: BLE001 - launch failures must not escape pump()
-                self._fail_if_unfinished(run_id, f"failed to launch worker: {exc}")
+        with self._lock:
+            self._reap()
+            while self._queue and len(self._handles) < self._max_parallel:
+                run_id = self._queue.popleft()
+                try:
+                    run = self._registry.get_record(run_id)
+                except RunNotFoundError:
+                    # Deleted while still queued (OptimizationService.delete
+                    # dequeues via cancel(), but tolerate a stale id regardless):
+                    # nothing to launch, and this must not escape into whatever
+                    # unrelated tool call happened to trigger this pump().
+                    continue
+                try:
+                    self._handles[run_id] = self._launch(run)
+                except Exception as exc:  # noqa: BLE001 - launch failures must not escape pump()
+                    self._fail_if_unfinished(run_id, f"failed to launch worker: {exc}")
 
     def _reap(self) -> None:
-        for run_id, handle in list(self._handles.items()):
-            if self._is_alive(handle):
-                self._on_alive(run_id)
-                continue
-            del self._handles[run_id]
-            self._fail_if_unfinished(run_id, "worker exited without writing a result")
+        with self._lock:
+            for run_id, handle in list(self._handles.items()):
+                if self._is_alive(handle):
+                    self._on_alive(run_id)
+                    continue
+                del self._handles[run_id]
+                self._fail_if_unfinished(
+                    run_id, "worker exited without writing a result"
+                )
 
     def _on_alive(self, run_id: str) -> None:
         """Hook: local tier no-ops; cloud tier checks stale heartbeats."""
@@ -129,25 +148,26 @@ class BaseExecutor(abc.ABC):
         Uses expected_generation so a live heartbeat written between our read
         and write rejects the false failure.
         """
-        gen = self._registry.get_state_generation(run_id)
-        state = self._registry.get_state(run_id)
-        if state.status != RunStatus.RUNNING or not state.heartbeat_at:
-            return
-        last = datetime.fromisoformat(state.heartbeat_at)
-        age = (datetime.now(timezone.utc) - last).total_seconds()
-        if age > self._stale_seconds:
-            try:
-                self._registry.write_state(
-                    OptimizationRunState(
-                        run_id=run_id,
-                        status=RunStatus.FAILED,
-                        error={
-                            "code": "worker_lost",
-                            "message": f"heartbeat stale ({int(age)}s)",
-                        },
-                    ),
-                    expected_generation=gen,
-                )
-            except Exception:  # noqa: BLE001 - precondition failed => worker still alive
+        with self._lock:
+            gen = self._registry.get_state_generation(run_id)
+            state = self._registry.get_state(run_id)
+            if state.status != RunStatus.RUNNING or not state.heartbeat_at:
                 return
-            self._handles.pop(run_id, None)
+            last = datetime.fromisoformat(state.heartbeat_at)
+            age = (datetime.now(timezone.utc) - last).total_seconds()
+            if age > self._stale_seconds:
+                try:
+                    self._registry.write_state(
+                        OptimizationRunState(
+                            run_id=run_id,
+                            status=RunStatus.FAILED,
+                            error={
+                                "code": "worker_lost",
+                                "message": f"heartbeat stale ({int(age)}s)",
+                            },
+                        ),
+                        expected_generation=gen,
+                    )
+                except Exception:  # noqa: BLE001 - precondition failed => worker still alive
+                    return
+                self._handles.pop(run_id, None)
