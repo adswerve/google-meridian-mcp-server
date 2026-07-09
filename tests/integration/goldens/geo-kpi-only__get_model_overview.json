@@ -1,0 +1,300 @@
+{
+  "available_tool_options": {
+    "get_adstock_decay": {
+      "output_type": [
+        "adstock_decay",
+        "alpha_summary"
+      ]
+    },
+    "get_channel_data": {},
+    "get_channel_summary": {
+      "output_type": [
+        "baseline_summary_metrics",
+        "paid_summary_metrics",
+        "cpik",
+        "marginal_cpik"
+      ]
+    },
+    "get_contribution": {
+      "output_type": [
+        "contribution_metrics",
+        "contribution_metrics_by_time"
+      ]
+    },
+    "get_model_fit": {},
+    "get_reach_frequency": {},
+    "get_response_curves": {
+      "output_type": [
+        "response_curves",
+        "response_curve_summary"
+      ]
+    },
+    "get_spend_scenario": {
+      "channel": [
+        "ch_0",
+        "ch_1",
+        "ch_2",
+        "rf_ch_0",
+        "rf_ch_1"
+      ]
+    },
+    "get_training_data": {
+      "dataset": [
+        "kpi",
+        "population",
+        "media",
+        "media_spend",
+        "reach",
+        "frequency",
+        "rf_spend",
+        "organic_media",
+        "organic_reach",
+        "organic_frequency",
+        "non_media_treatments",
+        "controls"
+      ]
+    },
+    "run_optimization": {
+      "channels": [
+        "ch_0",
+        "ch_1",
+        "ch_2",
+        "rf_ch_0",
+        "rf_ch_1"
+      ],
+      "geos": [
+        "geo_3",
+        "geo_4",
+        "geo_0",
+        "geo_2",
+        "geo_1"
+      ],
+      "scenarios": [
+        "fixed_budget",
+        "target_roas",
+        "target_mroas"
+      ],
+      "use_kpi_togglable": false
+    }
+  },
+  "available_training_datasets": [
+    "kpi",
+    "population",
+    "media",
+    "media_spend",
+    "reach",
+    "frequency",
+    "rf_spend",
+    "organic_media",
+    "organic_reach",
+    "organic_frequency",
+    "non_media_treatments",
+    "controls"
+  ],
+  "data_inputs": {
+    "controls": [
+      "control_0",
+      "control_1"
+    ],
+    "media": [
+      "ch_0",
+      "ch_1",
+      "ch_2"
+    ],
+    "non_media": [
+      "non_media_0"
+    ],
+    "organic_media": [
+      "organic_media_0"
+    ],
+    "organic_rf_media": [
+      "organic_rf_ch_0"
+    ],
+    "rf_media": [
+      "rf_ch_0",
+      "rf_ch_1"
+    ]
+  },
+  "data_schema": {
+    "controls": [
+      "control_0",
+      "control_1"
+    ],
+    "kpi": [
+      "kpi"
+    ],
+    "media": {
+      "impressions": [
+        "ch_0",
+        "ch_1",
+        "ch_2"
+      ],
+      "spend": [
+        "ch_0_spend",
+        "ch_1_spend",
+        "ch_2_spend"
+      ]
+    },
+    "non_media": [
+      "non_media_0"
+    ],
+    "organic_media": [
+      "organic_media_0"
+    ],
+    "organic_rf_media": [
+      "organic_rf_ch_0"
+    ],
+    "population": [
+      "population"
+    ],
+    "revenue_per_kpi": [],
+    "rf_media": {
+      "frequency": [
+        "rf_ch_0_frequency",
+        "rf_ch_1_frequency"
+      ],
+      "reach": [
+        "rf_ch_0_reach",
+        "rf_ch_1_reach"
+      ],
+      "spend": [
+        "rf_ch_0_rf_spend",
+        "rf_ch_1_rf_spend"
+      ]
+    }
+  },
+  "geo_count": 5,
+  "geo_names": [
+    "geo_3",
+    "geo_4",
+    "geo_0",
+    "geo_2",
+    "geo_1"
+  ],
+  "geos": [
+    {
+      "geo": "geo_3",
+      "population": 3234.0
+    },
+    {
+      "geo": "geo_4",
+      "population": 3197.0
+    },
+    {
+      "geo": "geo_0",
+      "population": 3186.0
+    },
+    {
+      "geo": "geo_2",
+      "population": 3108.0
+    },
+    {
+      "geo": "geo_1",
+      "population": 3050.0
+    }
+  ],
+  "has_revenue_per_kpi": false,
+  "input_column_names": [
+    "ch_0",
+    "ch_1",
+    "ch_2",
+    "ch_0_spend",
+    "ch_1_spend",
+    "ch_2_spend",
+    "rf_ch_0_reach",
+    "rf_ch_1_reach",
+    "rf_ch_0_frequency",
+    "rf_ch_1_frequency",
+    "rf_ch_0_rf_spend",
+    "rf_ch_1_rf_spend",
+    "non_media_0",
+    "organic_media_0",
+    "organic_rf_ch_0",
+    "control_0",
+    "control_1",
+    "kpi",
+    "population"
+  ],
+  "is_national": false,
+  "media_channels": [
+    "ch_0",
+    "ch_1",
+    "ch_2"
+  ],
+  "metric_views": [
+    "kpi"
+  ],
+  "model_id": "geo-kpi-only",
+  "model_type": "geo",
+  "organic_media": [
+    "organic_media_0"
+  ],
+  "organic_rf": [
+    "organic_rf_ch_0"
+  ],
+  "rf_channels": [
+    "rf_ch_0",
+    "rf_ch_1"
+  ],
+  "time": {
+    "count": 52,
+    "end": "2022-01-17",
+    "start": "2021-01-25",
+    "values": [
+      "2021-01-25",
+      "2021-02-01",
+      "2021-02-08",
+      "2021-02-15",
+      "2021-02-22",
+      "2021-03-01",
+      "2021-03-08",
+      "2021-03-15",
+      "2021-03-22",
+      "2021-03-29",
+      "2021-04-05",
+      "2021-04-12",
+      "2021-04-19",
+      "2021-04-26",
+      "2021-05-03",
+      "2021-05-10",
+      "2021-05-17",
+      "2021-05-24",
+      "2021-05-31",
+      "2021-06-07",
+      "2021-06-14",
+      "2021-06-21",
+      "2021-06-28",
+      "2021-07-05",
+      "2021-07-12",
+      "2021-07-19",
+      "2021-07-26",
+      "2021-08-02",
+      "2021-08-09",
+      "2021-08-16",
+      "2021-08-23",
+      "2021-08-30",
+      "2021-09-06",
+      "2021-09-13",
+      "2021-09-20",
+      "2021-09-27",
+      "2021-10-04",
+      "2021-10-11",
+      "2021-10-18",
+      "2021-10-25",
+      "2021-11-01",
+      "2021-11-08",
+      "2021-11-15",
+      "2021-11-22",
+      "2021-11-29",
+      "2021-12-06",
+      "2021-12-13",
+      "2021-12-20",
+      "2021-12-27",
+      "2022-01-03",
+      "2022-01-10",
+      "2022-01-17"
+    ]
+  },
+  "total_channels": 5,
+  "total_population": 15775.0
+}
