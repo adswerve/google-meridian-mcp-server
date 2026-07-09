@@ -16,7 +16,6 @@ from google_meridian_mcp_server.domain.filters import (
     ResponseCurveType,
     ResponseDynamicsType,
     TrainingDataset,
-    normalize_filters,
 )
 from google_meridian_mcp_server.domain.optimization import (
     FutureOptimizationConfig,
@@ -49,7 +48,7 @@ def _catalog_service(ctx: Context) -> ModelCatalogService:
 
 def _analysis_service(ctx: Context) -> AnalysisService:
     return AnalysisService(
-        catalog=ctx.lifespan_context["model_catalog"],
+        runner=ctx.lifespan_context["analysis_runner"],
         result_cache=ctx.lifespan_context["result_cache"],
     )
 
@@ -87,7 +86,7 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get full model metadata including time range, geos, channels, and the valid parameter values for every other tool. Call this after list_models and before analysis tools. The response includes an 'available_tool_options' section that maps each tool name to its accepted 'output_type' or 'dataset' enum values."""
         try:
-            return _analysis_service(ctx).get_model_overview(model_id)
+            return await _analysis_service(ctx).get_model_overview(model_id)
         except MeridianMcpError as error:
             return _error_response(error)
 
@@ -117,10 +116,10 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Retrieve raw input datasets by name (e.g. 'media_spend', 'kpi', 'controls', 'population') merged into one table — including non-channel series. Use when you want a specific dataset as stored. To investigate a channel's full picture across types, use get_channel_data instead."""
         try:
-            return _analysis_service(ctx).get_training_data(
+            return await _analysis_service(ctx).get_training_data(
                 model_id,
                 dataset,
-                normalize_filters(filters),
+                filters,
             )
         except MeridianMcpError as error:
             return _error_response(error)
@@ -150,10 +149,10 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get channel-level performance summaries from the fitted model. Use this to answer questions like 'which channel has the best ROI?', 'what is the baseline contribution?', or 'what is the marginal return on the next dollar of spend?'."""
         try:
-            return _analysis_service(ctx).get_channel_summary(
+            return await _analysis_service(ctx).get_channel_summary(
                 model_id,
                 output_type,
-                normalize_filters(filters),
+                filters,
             )
         except MeridianMcpError as error:
             return _error_response(error)
@@ -183,10 +182,10 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get how much each media channel contributed to the KPI. Use this to answer 'what share of conversions did each channel drive?' or 'how did channel contributions change over time?'."""
         try:
-            return _analysis_service(ctx).get_contribution(
+            return await _analysis_service(ctx).get_contribution(
                 model_id,
                 output_type,
-                normalize_filters(filters),
+                filters,
             )
         except MeridianMcpError as error:
             return _error_response(error)
@@ -216,10 +215,10 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get media carryover (adstock) dynamics — how long a channel's effect persists after exposure. Use this to answer 'how quickly does TV advertising effect decay?' or 'which channels have the longest-lasting impact?'."""
         try:
-            return _analysis_service(ctx).get_adstock_decay(
+            return await _analysis_service(ctx).get_adstock_decay(
                 model_id,
                 output_type,
-                normalize_filters(filters),
+                filters,
             )
         except MeridianMcpError as error:
             return _error_response(error)
@@ -249,10 +248,10 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get the spend-response relationship for each channel — how KPI changes as spend increases or decreases. Use this to answer 'what happens if we double search spend?' or 'which channels show diminishing returns?'."""
         try:
-            return _analysis_service(ctx).get_response_curves(
+            return await _analysis_service(ctx).get_response_curves(
                 model_id,
                 output_type,
-                normalize_filters(filters),
+                filters,
             )
         except MeridianMcpError as error:
             return _error_response(error)
@@ -276,9 +275,9 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get optimal-frequency analysis for reach & frequency channels: expected ROI across weekly frequency levels plus the optimal frequency per channel. Only available for models with reach & frequency data."""
         try:
-            return _analysis_service(ctx).get_reach_frequency(
+            return await _analysis_service(ctx).get_reach_frequency(
                 model_id,
-                normalize_filters(filters),
+                filters,
             )
         except MeridianMcpError as error:
             return _error_response(error)
@@ -302,9 +301,9 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Everything about a channel in one table — spend, impressions, reach/frequency — across all channel types (paid media, RF, organic, non-media). Use to investigate one or more channels directly. For raw datasets by name (including non-channel series like KPI or controls), use get_training_data instead."""
         try:
-            return _analysis_service(ctx).get_channel_data(
+            return await _analysis_service(ctx).get_channel_data(
                 model_id,
-                normalize_filters(filters),
+                filters,
             )
         except MeridianMcpError as error:
             return _error_response(error)
@@ -328,9 +327,9 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get model fit over time: expected vs actual outcome, baseline, and residual (actual - expected) per time period, with confidence intervals. Pass a 'geos' filter to fit only selected markets (aggregated to one series). Use this to judge how well the model tracks observed outcomes."""
         try:
-            return _analysis_service(ctx).get_model_fit(
+            return await _analysis_service(ctx).get_model_fit(
                 model_id,
-                normalize_filters(filters),
+                filters,
             )
         except MeridianMcpError as error:
             return _error_response(error)
@@ -375,12 +374,12 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Simulate adding spend to one channel: returns expected outcome lift and efficiency (ROI/mROI for revenue models, CPIK/mCPIK otherwise) at the base and increased spend levels. Spend is PER TIME UNIT. Use this to answer 'what happens to ROI if I add $X per week to search?'."""
         try:
-            return _analysis_service(ctx).get_spend_scenario(
+            return await _analysis_service(ctx).get_spend_scenario(
                 model_id,
                 channel,
                 spend_increase,
                 base_spend,
-                normalize_filters(filters),
+                filters,
             )
         except MeridianMcpError as error:
             return _error_response(error)

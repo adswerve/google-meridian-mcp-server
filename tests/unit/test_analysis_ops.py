@@ -6,8 +6,10 @@ rehydration, model-validation guards, and NaN sanitization.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
+import xarray as xr
 
 from google_meridian_mcp_server.domain.errors import (
     InvalidOutputTypeError,
@@ -92,6 +94,110 @@ def test_sanitize_nan():
     ) == {"a": None, "b": [None, 1.0]}
 
 
+# --- generic dispatch coverage across all 4 dispatch-table ops ---------------
+# (migrated from tests/unit/test_analysis_service.py::TestAnalysisServiceDispatch
+# -- Task 10 moved the facade dispatch itself worker-side, so this now
+# exercises analysis_ops.run_operation directly against a fake facade.)
+
+
+class _GenericDispatchFacade:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def has_revenue_per_kpi(self) -> bool:
+        return True
+
+    def __getattr__(self, name: str):
+        if name.startswith("get_"):
+            return self._make(name)
+        raise AttributeError(name)
+
+    def _make(self, name: str):
+        def _method(filters):
+            self.calls.append(name)
+            return [{"method": name, "filters": filters.model_dump(mode="json")}]
+
+        return _method
+
+
+class _GenericDispatchCatalog:
+    def __init__(self, facade):
+        self._facade = facade
+
+    def get_facade(self, model_id):
+        return self._facade
+
+    def get_interrogator(self, model_id):
+        return self._facade
+
+
+@pytest.mark.parametrize(
+    ("operation", "output_type", "expected_method"),
+    [
+        ("get_channel_summary", "roi", "get_roi"),
+        ("get_contribution", "contribution_metrics", "get_contribution_metrics"),
+        ("get_adstock_decay", "alpha_summary", "get_alpha_summary"),
+        (
+            "get_response_curves",
+            "response_curve_summary",
+            "get_response_curve_summary",
+        ),
+    ],
+)
+def test_dispatch_ops_route_to_expected_facade_method(
+    operation: str, output_type: str, expected_method: str
+):
+    facade = _GenericDispatchFacade()
+    out = analysis_ops.run_operation(
+        _GenericDispatchCatalog(facade),
+        operation,
+        "m1",
+        {"output_type": output_type, "filters": {"channels": ["tv"]}},
+    )
+
+    assert facade.calls == [expected_method]
+    assert out["output_type"] == output_type
+    assert out["columns"] == ["method", "filters"]
+    assert out["rows"][0][0] == expected_method
+    assert out["rows"][0][1]["channels"] == ["tv"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "output_type", "failing_method"),
+    [
+        ("get_channel_summary", "roi", "get_roi"),
+        ("get_contribution", "contribution_metrics", "get_contribution_metrics"),
+        ("get_adstock_decay", "alpha_summary", "get_alpha_summary"),
+        (
+            "get_response_curves",
+            "response_curve_summary",
+            "get_response_curve_summary",
+        ),
+    ],
+)
+def test_dispatch_ops_wrap_facade_exceptions_as_missing_model_data(
+    operation: str, output_type: str, failing_method: str
+):
+    class _BoomFacade:
+        def has_revenue_per_kpi(self):
+            return True
+
+        def __getattr__(self, name):
+            if name == failing_method:
+
+                def _boom(filters):
+                    raise RuntimeError("missing rows")
+
+                return _boom
+            raise AttributeError(name)
+
+    catalog = _GenericDispatchCatalog(_BoomFacade())
+    with pytest.raises(MissingModelDataError, match="missing rows"):
+        analysis_ops.run_operation(
+            catalog, operation, "m1", {"output_type": output_type, "filters": {}}
+        )
+
+
 def test_channel_summary_revenue_guard_raises_when_no_revenue():
     catalog = FakeCatalog(FakeFacade(has_revenue_per_kpi=False))
     with pytest.raises(MetricNotSupportedError):
@@ -122,6 +228,18 @@ def test_reach_frequency_guard_raises_when_no_rf_channels():
         )
 
 
+def test_reach_frequency_returns_columnar_when_rf_present():
+    # migrated from tests/unit/test_analysis_service.py
+    # ::test_reach_frequency_columnar_when_rf_present -- the facade call is
+    # now worker-side.
+    catalog = FakeCatalog(FakeFacade(has_rf_channels=True))
+    out = analysis_ops.run_operation(
+        catalog, "get_reach_frequency", "m1", {"filters": {}}
+    )
+    assert out["row_count"] == 1
+    assert "channel" in out["columns"]
+
+
 def test_model_fit_unknown_geo_raises():
     catalog = FakeCatalog(FakeFacade(geo_names=["US-CA"]))
     with pytest.raises(MissingModelDataError):
@@ -133,10 +251,148 @@ def test_model_fit_unknown_geo_raises():
         )
 
 
+def test_model_fit_accepts_known_geo_and_returns_columnar():
+    # migrated from tests/unit/test_analysis_service.py
+    # ::test_get_model_fit_accepts_known_geo / ::test_get_model_fit_returns_columnar
+    catalog = FakeCatalog(FakeFacade(geo_names=["US-CA"]))
+    out = analysis_ops.run_operation(
+        catalog, "get_model_fit", "m1", {"filters": {"geos": ["US-CA"]}}
+    )
+    assert out["row_count"] == 1
+    assert "actual" in out["columns"] and "expected" in out["columns"]
+
+
 def test_model_overview_returns_raw_overview_without_decoration():
     out = analysis_ops.run_operation(FakeCatalog(), "get_model_overview", "m1", {})
     assert out["model_id"] == "m1"
     assert out["model_type"] == "geo"
+    assert "available_tool_options" not in out
+
+
+class _RealInterrogatorCatalog:
+    """Wraps a real MeridianInterrogator over an xr-based fake model, so the
+    op's ``get_model_overview`` call exercises the actual field-extraction
+    logic (migrated from tests/unit/test_analysis_service.py
+    ::TestModelOverview -- Task 10 moved the interrogator call worker-side;
+    the pure ``available_tool_options`` decoration it used to also assert on
+    now lives in AnalysisService._decorate_overview and is covered there)."""
+
+    def __init__(self, model):
+        self._model = model
+
+    def get_interrogator(self, model_id):
+        from google_meridian_mcp_server.meridian.interrogator import (
+            MeridianInterrogator,
+        )
+
+        return MeridianInterrogator(self._model)
+
+
+def _build_overview_model():
+    time = xr.DataArray(
+        ["2024-01-01", "2024-01-08"],
+        coords={"time": ["2024-01-01", "2024-01-08"]},
+        dims=("time",),
+    )
+    geo = xr.DataArray(["us", "ca"], coords={"geo": ["us", "ca"]}, dims=("geo",))
+    population = xr.DataArray([100, 200], coords={"geo": ["us", "ca"]}, dims=("geo",))
+    media_channel = xr.DataArray(
+        ["search", "tv"],
+        coords={"media_channel": ["search", "tv"]},
+        dims=("media_channel",),
+    )
+    rf_channel = xr.DataArray(
+        ["youtube"], coords={"rf_channel": ["youtube"]}, dims=("rf_channel",)
+    )
+    non_media_channel = xr.DataArray(
+        ["promo"], coords={"non_media_channel": ["promo"]}, dims=("non_media_channel",)
+    )
+    organic_media_channel = xr.DataArray(
+        ["email"],
+        coords={"organic_media_channel": ["email"]},
+        dims=("organic_media_channel",),
+    )
+    organic_rf_channel = xr.DataArray(
+        ["podcast"],
+        coords={"organic_rf_channel": ["podcast"]},
+        dims=("organic_rf_channel",),
+    )
+    control_variable = xr.DataArray(
+        ["price"], coords={"control_variable": ["price"]}, dims=("control_variable",)
+    )
+    kpi = xr.DataArray(
+        [[10.0, 12.0]],
+        coords={"geo": ["us"], "time": ["2024-01-01", "2024-01-08"]},
+        dims=("geo", "time"),
+    )
+    return SimpleNamespace(
+        is_national=False,
+        input_data=SimpleNamespace(
+            time=time,
+            geo=geo,
+            population=population,
+            media_channel=media_channel,
+            rf_channel=rf_channel,
+            non_media_channel=non_media_channel,
+            organic_media_channel=organic_media_channel,
+            organic_rf_channel=organic_rf_channel,
+            control_variable=control_variable,
+            kpi=kpi,
+            revenue_per_kpi=object(),
+            media=object(),
+            media_spend=object(),
+            reach=object(),
+            frequency=object(),
+            rf_spend=object(),
+            organic_media=object(),
+            organic_reach=object(),
+            organic_frequency=object(),
+            non_media_treatments=object(),
+            controls=object(),
+        ),
+    )
+
+
+def test_model_overview_exposes_model_setup_from_real_interrogator():
+    catalog = _RealInterrogatorCatalog(_build_overview_model())
+
+    out = analysis_ops.run_operation(catalog, "get_model_overview", "m1", {})
+
+    assert out["model_id"] == "m1"
+    assert out["model_type"] == "geo"
+    assert out["time"] == {
+        "start": "2024-01-01",
+        "end": "2024-01-08",
+        "count": 2,
+        "values": ["2024-01-01", "2024-01-08"],
+    }
+    assert out["geo_names"] == ["ca", "us"]
+    assert out["total_population"] == 300
+    assert out["media_channels"] == ["search", "tv"]
+    assert out["rf_channels"] == ["youtube"]
+    assert out["total_channels"] == 3
+    assert out["data_inputs"]["organic_media"] == ["email"]
+    assert out["data_inputs"]["organic_rf_media"] == ["podcast"]
+    assert out["data_schema"]["rf_media"]["spend"] == ["youtube_rf_spend"]
+    assert "search_spend" in out["input_column_names"]
+    assert "youtube_frequency" in out["input_column_names"]
+    assert out["available_training_datasets"] == [
+        "kpi",
+        "revenue_per_kpi",
+        "population",
+        "media",
+        "media_spend",
+        "reach",
+        "frequency",
+        "rf_spend",
+        "organic_media",
+        "organic_reach",
+        "organic_frequency",
+        "non_media_treatments",
+        "controls",
+    ]
+    assert out["metric_views"] == ["kpi", "revenue"]
+    # No decoration worker-side (Task 10): that's applied server-side, pure.
     assert "available_tool_options" not in out
 
 
@@ -394,6 +650,90 @@ def test_get_spend_scenario_rf_channel_type():
         {"channel": "video", "spend_increase": 10.0, "base_spend": 100.0, "filters": {}},
     )
     assert out["channel_type"] == "rf"
+
+
+def test_get_spend_scenario_uses_provided_base_spend_over_resolve():
+    # migrated from tests/unit/test_analysis_service.py
+    # ::test_spend_scenario_uses_provided_base_spend -- resolve_base_spend
+    # would return 100.0 (FakeSpendFacade default); an explicit base_spend
+    # must be used instead and resolve_base_spend must not be consulted.
+    catalog = FakeSpendCatalog(FakeSpendFacade(media=("search",)))
+    out = analysis_ops.run_operation(
+        catalog,
+        "get_spend_scenario",
+        "m1",
+        {
+            "channel": "search",
+            "spend_increase": 20.0,
+            "base_spend": 50.0,
+            "filters": {},
+        },
+    )
+    assert out["base_spend"] == 50.0
+    assert out["new_spend"] == 70.0
+
+
+def test_get_spend_scenario_summary_contract():
+    """get_spend_scenario returns exactly the 15 documented summary keys.
+
+    Migrated from tests/contract/test_analysis_tools.py
+    ::TestAnalysisToolContracts.test_spend_scenario_summary_contract -- the
+    facade call + summary building now happens worker-side (Task 10)."""
+    expected_keys = frozenset(
+        {
+            "model_id",
+            "channel",
+            "channel_type",
+            "outcome_mode",
+            "base_spend",
+            "spend_increase",
+            "new_spend",
+            "spend_increase_pct",
+            "base_outcome",
+            "new_outcome",
+            "expected_outcome_increase",
+            "expected_outcome_increase_pct",
+            "efficiency",
+            "marginal_efficiency",
+            "efficiency_at_new",
+        }
+    )
+
+    class _Facade:
+        def get_data_inputs(self):
+            return {"media": ["search"], "rf_media": []}
+
+        def resolve_use_kpi(self, filters):
+            return False  # revenue mode
+
+        def resolve_base_spend(self, channel, filters):
+            return 100.0
+
+        def spend_response(self, channel, points, filters):
+            return [
+                {"mean": 400.0, "ci_lo": 350.0, "ci_hi": 450.0},
+                {"mean": 460.0, "ci_lo": 400.0, "ci_hi": 520.0},
+            ]
+
+    class _Catalog:
+        def get_facade(self, model_id):
+            return _Facade()
+
+    summary = analysis_ops.run_operation(
+        _Catalog(),
+        "get_spend_scenario",
+        "test-model",
+        {
+            "channel": "search",
+            "spend_increase": 20.0,
+            "base_spend": None,
+            "filters": {},
+        },
+    )
+
+    assert set(summary.keys()) == expected_keys
+    assert len(summary) == 15
+    assert summary["outcome_mode"] in {"revenue", "kpi"}
 
 
 def test_get_spend_scenario_unknown_channel_raises():

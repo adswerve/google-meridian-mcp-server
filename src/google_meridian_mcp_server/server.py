@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -13,6 +14,9 @@ from fastmcp.server.providers.skills import SkillsDirectoryProvider
 from google_meridian_mcp_server.bootstrap import build_model_catalog
 from google_meridian_mcp_server.config import load_config
 from google_meridian_mcp_server.domain.models import Transport
+from google_meridian_mcp_server.execution.sync_subprocess_executor import (
+    SyncSubprocessExecutor,
+)
 from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.transport.tools import register_tools
 
@@ -63,13 +67,33 @@ async def _lifespan(server: FastMCP):
     except Exception:  # noqa: BLE001 - reconcile is best-effort startup hygiene
         log.warning("startup orphan reconcile failed", exc_info=True)
 
-    yield {
-        "config": cfg,
-        "model_catalog": model_catalog,
-        "result_cache": result_cache,
-        "optimization_registry": optimization_registry,
-        "optimization_executor": optimization_executor,
-    }
+    analysis_runner = SyncSubprocessExecutor(
+        semaphore=asyncio.Semaphore(cfg.analysis_max_parallel),
+        run_timeout=cfg.analysis_worker_timeout,
+        queue_wait_timeout=cfg.analysis_queue_wait_timeout,
+        max_response_bytes=cfg.analysis_max_response_bytes,
+        workdir_root=cfg.analysis_workdir_root,
+        env_base={
+            "MERIDIAN_BACKEND": os.getenv("MERIDIAN_BACKEND", "tensorflow"),
+            "PERSISTENCE_BACKEND": cfg.persistence_backend,
+            **({"LOCAL_MODELS_ROOT": cfg.local_models_root} if cfg.local_models_root else {}),
+            **({"GCS_BUCKET": cfg.gcs_bucket} if cfg.gcs_bucket else {}),
+            **({"GCS_MODELS_PREFIX": cfg.gcs_models_prefix} if cfg.gcs_models_prefix else {}),
+            "MODEL_CACHE_ROOT": cfg.model_cache_root,
+        },
+    )
+
+    try:
+        yield {
+            "config": cfg,
+            "model_catalog": model_catalog,
+            "result_cache": result_cache,
+            "optimization_registry": optimization_registry,
+            "optimization_executor": optimization_executor,
+            "analysis_runner": analysis_runner,
+        }
+    finally:
+        await analysis_runner.shutdown()
 
 
 def create_server() -> FastMCP:

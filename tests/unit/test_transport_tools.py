@@ -27,6 +27,22 @@ class _FakeFastMCP:
         return _decorator
 
 
+def _async(fn):
+    """Wrap a sync callable as an async function (service methods are now async)."""
+
+    async def _wrapped(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return _wrapped
+
+
+def _async_raise(exc):
+    async def _wrapped(*args, **kwargs):
+        raise exc
+
+    return _wrapped
+
+
 @pytest.mark.asyncio
 async def test_register_tools_exposes_successful_handlers(
     monkeypatch: pytest.MonkeyPatch,
@@ -34,29 +50,41 @@ async def test_register_tools_exposes_successful_handlers(
     mcp = _FakeFastMCP()
     catalog_service = SimpleNamespace(list_models=lambda: [{"model_id": "m1"}])
     analysis_service = SimpleNamespace(
-        get_model_overview=lambda model_id: {"model_id": model_id, "model_type": "geo"},
-        get_training_data=lambda model_id, dataset, filters: {
-            "model_id": model_id,
-            "datasets": dataset,
-            "filters": filters.model_dump(mode="json"),
-        },
-        get_channel_summary=lambda model_id, output_type, filters: {
-            "model_id": model_id,
-            "output_type": output_type,
-            "filters": filters.model_dump(mode="json"),
-        },
-        get_contribution=lambda model_id, output_type, filters: {
-            "model_id": model_id,
-            "output_type": output_type,
-        },
-        get_adstock_decay=lambda model_id, output_type, filters: {
-            "model_id": model_id,
-            "output_type": output_type,
-        },
-        get_response_curves=lambda model_id, output_type, filters: {
-            "model_id": model_id,
-            "output_type": output_type,
-        },
+        get_model_overview=_async(
+            lambda model_id: {"model_id": model_id, "model_type": "geo"}
+        ),
+        get_training_data=_async(
+            lambda model_id, dataset, filters: {
+                "model_id": model_id,
+                "datasets": dataset,
+                "filters": filters,
+            }
+        ),
+        get_channel_summary=_async(
+            lambda model_id, output_type, filters: {
+                "model_id": model_id,
+                "output_type": output_type,
+                "filters": filters,
+            }
+        ),
+        get_contribution=_async(
+            lambda model_id, output_type, filters: {
+                "model_id": model_id,
+                "output_type": output_type,
+            }
+        ),
+        get_adstock_decay=_async(
+            lambda model_id, output_type, filters: {
+                "model_id": model_id,
+                "output_type": output_type,
+            }
+        ),
+        get_response_curves=_async(
+            lambda model_id, output_type, filters: {
+                "model_id": model_id,
+                "output_type": output_type,
+            }
+        ),
     )
     monkeypatch.setattr(tools_module, "_catalog_service", lambda ctx: catalog_service)
     monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
@@ -69,18 +97,13 @@ async def test_register_tools_exposes_successful_handlers(
         "model_id": "m1",
         "model_type": "geo",
     }
+    # No filters passed -> the transport layer no longer normalizes; it passes
+    # the raw (default None) value straight through to the service, which is
+    # now responsible for normalization.
     assert await mcp.tools["get_training_data"]("m1", ["kpi"], ctx) == {
         "model_id": "m1",
         "datasets": ["kpi"],
-        "filters": {
-            "start_date": None,
-            "end_date": None,
-            "geos": [],
-            "channels": [],
-            "aggregate_times": True,
-            "include_non_paid": None,
-            "use_kpi": None,
-        },
+        "filters": None,
     }
     assert (await mcp.tools["get_channel_summary"]("m1", "roi", ctx))[
         "output_type"
@@ -97,14 +120,41 @@ async def test_register_tools_exposes_successful_handlers(
 
 
 @pytest.mark.asyncio
+async def test_register_tools_passes_through_provided_filters(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """When a caller does supply filters, the transport passes the exact
+    (already-pydantic-validated-by-FastMCP) AnalysisFilters instance through
+    unchanged -- no redundant re-normalization at the transport layer."""
+    mcp = _FakeFastMCP()
+    captured = {}
+
+    analysis_service = SimpleNamespace(
+        get_channel_summary=_async(
+            lambda model_id, output_type, filters: captured.update(
+                {"filters": filters}
+            )
+            or {"model_id": model_id, "output_type": output_type}
+        ),
+    )
+    monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
+
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    provided = AnalysisFilters(channels=["tv"])
+    await mcp.tools["get_channel_summary"]("m1", "roi", ctx, filters=provided)
+
+    assert captured["filters"] is provided
+
+
+@pytest.mark.asyncio
 async def test_tool_wrappers_return_standard_error_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ):
     mcp = _FakeFastMCP()
     analysis_service = SimpleNamespace(
-        get_model_overview=lambda model_id: (_ for _ in ()).throw(
-            ModelNotFoundError(model_id)
-        ),
+        get_model_overview=_async_raise(ModelNotFoundError("missing")),
     )
     monkeypatch.setattr(
         tools_module,
@@ -149,7 +199,9 @@ async def test_register_tools_exposes_get_spend_scenario(
         captured["filters"] = filters
         return {"model_id": model_id, "channel": channel, "outcome_mode": "revenue"}
 
-    analysis_service = SimpleNamespace(get_spend_scenario=_get_spend_scenario)
+    analysis_service = SimpleNamespace(
+        get_spend_scenario=_async(_get_spend_scenario)
+    )
     monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
 
     tools_module.register_tools(mcp)
@@ -163,4 +215,6 @@ async def test_register_tools_exposes_get_spend_scenario(
         "outcome_mode": "revenue",
     }
     assert captured["args"] == ("m1", "search", 1000.0, None)
-    assert isinstance(captured["filters"], AnalysisFilters)
+    # No filters were passed by the caller, and the transport layer no longer
+    # normalizes -- the raw (default None) value reaches the service.
+    assert captured["filters"] is None
