@@ -247,41 +247,64 @@ class OptimizerFacade(MeridianInterrogator):
             raise ValueError("unsupported spend granularity for future optimization")
         return arr
 
-    def _seed_cpmu(self, window: list[int]) -> np.ndarray:
-        spend = self._spend_np("media_spend")
+    def _media_unit_sum(self, window: list[int]) -> np.ndarray:
         media = self._trim_media(
             np.asarray(self._mmm.input_data.media.values, dtype=float)
         )
-        spend_sum = spend[:, window, :].sum(axis=(0, 1))
-        media_sum = media[:, window, :].sum(axis=(0, 1))
-        self._raise_on_zero_denominator(media_sum, "media")
-        return spend_sum / media_sum
+        return media[:, window, :].sum(axis=(0, 1))
 
-    def _seed_cprf(self, window: list[int]) -> np.ndarray:
-        spend = self._spend_np("rf_spend")
+    def _rf_impression_sum(self, window: list[int]) -> np.ndarray:
         reach = self._trim_media(
             np.asarray(self._mmm.input_data.reach.values, dtype=float)
         )
         frequency = self._trim_media(
             np.asarray(self._mmm.input_data.frequency.values, dtype=float)
         )
-        impressions = reach * frequency
-        spend_sum = spend[:, window, :].sum(axis=(0, 1))
-        impressions_sum = impressions[:, window, :].sum(axis=(0, 1))
-        self._raise_on_zero_denominator(impressions_sum, "rf")
-        return spend_sum / impressions_sum
+        return (reach * frequency)[:, window, :].sum(axis=(0, 1))
 
-    def _raise_on_zero_denominator(self, denom_sum: np.ndarray, family: str) -> None:
-        """Guard against zero media units/impressions in the reference window.
+    def _seed_cpmu(
+        self, window: list[int], excluded_idx: frozenset[int] = frozenset()
+    ) -> np.ndarray:
+        spend_sum = self._spend_np("media_spend")[:, window, :].sum(axis=(0, 1))
+        media_sum = self._media_unit_sum(window)
+        self._raise_on_zero_denominator(media_sum, "media", skip=excluded_idx)
+        safe = np.where(media_sum == 0, 1.0, media_sum)
+        return self._benign_excluded_cost(spend_sum / safe, excluded_idx)
 
-        A zero denominator (spend > 0 but zero summed media units or RF
-        impressions over the reference window) would silently produce inf/NaN
-        cost-per-unit that flows into ``create_optimization_tensors``/
-        ``optimize``, yielding a "completed" run full of null metrics. Raise a
-        clear, actionable error instead.
-        """
-        zero_idx = np.flatnonzero(np.asarray(denom_sum) == 0)
-        if zero_idx.size == 0:
+    def _seed_cprf(
+        self, window: list[int], excluded_idx: frozenset[int] = frozenset()
+    ) -> np.ndarray:
+        spend_sum = self._spend_np("rf_spend")[:, window, :].sum(axis=(0, 1))
+        impressions_sum = self._rf_impression_sum(window)
+        self._raise_on_zero_denominator(impressions_sum, "rf", skip=excluded_idx)
+        safe = np.where(impressions_sum == 0, 1.0, impressions_sum)
+        return self._benign_excluded_cost(spend_sum / safe, excluded_idx)
+
+    @staticmethod
+    def _benign_excluded_cost(
+        cost: np.ndarray, excluded_idx: frozenset[int]
+    ) -> np.ndarray:
+        """Excluded channels are forced to 0 spend with 0/0 bounds, so their
+        per-unit cost never affects the result; it only needs to be finite and
+        positive so downstream unit math (units = spend / cost) is defined."""
+        for i in excluded_idx:
+            if not np.isfinite(cost[i]) or cost[i] <= 0:
+                cost[i] = 1.0
+        return cost
+
+    def _raise_on_zero_denominator(
+        self, denom_sum: np.ndarray, family: str, *, skip: frozenset[int] = frozenset()
+    ) -> None:
+        """Guard against zero media units/impressions for a NON-excluded channel
+        in the reference window (a zero denominator would otherwise yield inf/NaN
+        cost-per-unit and a 'completed' run full of null metrics). Excluded
+        channels are skipped — their cost is inert (see _benign_excluded_cost)."""
+        zero_idx = [
+            int(i)
+            for i in np.flatnonzero(np.asarray(denom_sum) == 0)
+            if int(i) not in skip
+        ]
+        if not zero_idx:
             return
         order = (
             self.get_data_inputs()["media"]
@@ -291,8 +314,9 @@ class OptimizerFacade(MeridianInterrogator):
         names = [order[i] for i in zero_idx]
         units = "media units" if family == "media" else "RF impressions"
         raise ValueError(
-            f"channel(s) {names} have zero {units} in the chosen reference "
-            "window; pick a different reference window or horizon"
+            f"channel(s) {names} have zero {units} in the chosen reference window "
+            "— either exclude them (excluded_channels) or pick a window where they "
+            "were active"
         )
 
     def _seed_spend_flighting(

@@ -337,6 +337,98 @@ def test_seed_cprf_raises_on_dark_channel_zero_impressions():
         facade._seed_cprf(window=[0, 1, 2])
 
 
+def test_seed_cpmu_tolerates_excluded_dark_channel():
+    """Excluding a zero-media-unit channel must NOT raise; its cpmu is a finite
+    positive placeholder (spend is forced to 0 downstream, so the value is inert)."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "dark_channel"]
+    media_spend = np.ones((1, 3, len(channels)))
+    media = np.zeros((1, 3, len(channels)))
+    media[..., 0] = 5.0  # dark_channel stays all-zero
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(
+        return_value=["2024-01-01", "2024-01-08", "2024-01-15"]
+    )
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+
+    cpmu = facade._seed_cpmu(window=[0, 1, 2], excluded_idx=frozenset({1}))
+    assert np.isfinite(cpmu).all()
+    assert cpmu[1] > 0  # benign placeholder for the excluded dark channel
+
+
+def test_seed_cprf_tolerates_excluded_dark_channel():
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["yt_rf", "dark_rf"]
+    rf_spend = np.ones((1, 3, len(channels)))
+    reach = np.zeros((1, 3, len(channels)))
+    frequency = np.zeros((1, 3, len(channels)))
+    reach[..., 0] = 10.0
+    frequency[..., 0] = 2.0
+    input_data = MagicMock()
+    input_data.rf_spend.values = rf_spend
+    input_data.reach.values = reach
+    input_data.frequency.values = frequency
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(
+        return_value=["2024-01-01", "2024-01-08", "2024-01-15"]
+    )
+    facade.get_data_inputs = MagicMock(return_value={"media": [], "rf_media": channels})
+
+    cprf = facade._seed_cprf(window=[0, 1, 2], excluded_idx=frozenset({1}))
+    assert np.isfinite(cprf).all()
+    assert cprf[1] > 0
+
+
+def test_seed_cpmu_bumps_excluded_zero_spend_channel_to_one():
+    """The real dark channel is zero-spend AND zero-units: spend_sum=0, safe=1.0
+    -> cpmu=0, and _benign_excluded_cost must bump it to exactly 1.0 so Meridian
+    never sees a zero-cost channel. This is the branch the spend>0 test misses."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "dark_channel"]
+    media_spend = np.ones((1, 3, len(channels)))
+    media = np.zeros((1, 3, len(channels)))
+    media[..., 0] = 5.0
+    media_spend[..., 1] = 0.0  # dark_channel: zero spend AND zero units
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(
+        return_value=["2024-01-01", "2024-01-08", "2024-01-15"]
+    )
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+
+    cpmu = facade._seed_cpmu(window=[0, 1, 2], excluded_idx=frozenset({1}))
+    assert cpmu[1] == 1.0  # bump fired (0/1 -> 0 -> 1.0)
+
+
+def test_seed_cpmu_check_is_window_scoped():
+    """A channel dark only INSIDE the reference window raises; the same channel
+    active outside the window does not save it — the guard is window-scoped."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    channels = ["tv", "windowed_dark"]
+    media_spend = np.ones((1, 3, len(channels)))
+    media = np.ones((1, 3, len(channels)))
+    media[:, 1:, 1] = 0.0  # windowed_dark has units only at period 0
+    input_data = MagicMock()
+    input_data.media_spend.values = media_spend
+    input_data.media.values = media
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_time_values = MagicMock(
+        return_value=["2024-01-01", "2024-01-08", "2024-01-15"]
+    )
+    facade.get_data_inputs = MagicMock(return_value={"media": channels, "rf_media": []})
+
+    # window [1, 2] -> windowed_dark has zero units -> raises
+    with pytest.raises(ValueError, match="windowed_dark"):
+        facade._seed_cpmu(window=[1, 2])
+    # window [0] -> windowed_dark has units -> no raise
+    facade._seed_cpmu(window=[0])
+
+
 def test_validate_future_rejects_flat_spend_granularity_at_submit():
     """FIX M2: a model whose media_spend tensor lacks a time axis (2-D, no geo
     dimension) must be rejected by validate_future -- at submit time, before
