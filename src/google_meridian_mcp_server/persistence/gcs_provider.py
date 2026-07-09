@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path, PurePosixPath
 
 from google_meridian_mcp_server.domain.errors import (
@@ -115,6 +116,11 @@ class GcsModelProvider(ModelProvider):
         bucket = client.bucket(self._bucket_name)
 
         blob = bucket.blob(blob_name)
-        blob.download_to_filename(str(local_path))
+        part_path = local_path.with_suffix(local_path.suffix + f".part.{os.getpid()}")
+        try:
+            blob.download_to_filename(str(part_path))
+            os.replace(part_path, local_path)
+        finally:
+            part_path.unlink(missing_ok=True)
 
         return local_path

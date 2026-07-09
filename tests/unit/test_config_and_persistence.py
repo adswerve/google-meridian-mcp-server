@@ -168,7 +168,9 @@ class _FakeBlob:
         self.name = name
         self.updated = updated
         self.etag = etag
-        self.download_to_filename = mock.Mock()
+        self.download_to_filename = mock.Mock(
+            side_effect=lambda p: Path(p).write_bytes(b"fake-model-bytes")
+        )
 
 
 class _FakeBucket:
@@ -316,4 +318,36 @@ class TestGcsModelProvider:
         local_path = provider.materialize(entry, tmp_path)
 
         assert local_path == tmp_path / "geo" / "model.binpb"
-        blob.download_to_filename.assert_called_once_with(str(local_path))
+        downloaded_to = blob.download_to_filename.call_args.args[0]
+        assert downloaded_to != str(local_path)
+        assert downloaded_to.startswith(str(local_path))
+        assert local_path.is_file()
+
+    def test_materialize_leaves_no_part_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """materialize() must download atomically: no .part.* files survive,
+        and download_to_filename must never be called with the final path
+        directly (that would allow a concurrent reader to observe a
+        partially-written file)."""
+        provider = GcsModelProvider("bucket", "models")
+        blob = _FakeBlob("models/geo/model.binpb")
+        bucket = _FakeBucket([blob])
+        entry = ModelCatalogEntry(
+            model_id="geo",
+            display_name="Geo",
+            source_backend="gcs",
+            source_path="gs://bucket/models/geo/model.binpb",
+            model_format="binpb",
+        )
+        monkeypatch.setattr(
+            provider, "_get_client", mock.Mock(return_value=_FakeClient(bucket))
+        )
+
+        dest = provider.materialize(entry, tmp_path)
+
+        assert dest.is_file()
+        assert dest == tmp_path / "geo" / "model.binpb"
+        downloaded_to = blob.download_to_filename.call_args.args[0]
+        assert downloaded_to != str(dest)
+        assert not list(tmp_path.rglob("*.part*"))
