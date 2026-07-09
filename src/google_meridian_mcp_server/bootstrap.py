@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 from google_meridian_mcp_server.domain.models import PersistenceBackend, RuntimeConfig
-from google_meridian_mcp_server.meridian.catalog import ModelCatalog
-from google_meridian_mcp_server.persistence.cache import (
-    DiscoveryCache,
-    MaterializationCache,
-)
+from google_meridian_mcp_server.persistence.cache import DiscoveryCache
 from google_meridian_mcp_server.persistence.gcs_provider import GcsModelProvider
 from google_meridian_mcp_server.persistence.local_provider import LocalModelProvider
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
@@ -16,7 +12,8 @@ from google_meridian_mcp_server.persistence.optimization_run_registry import (
 )
 
 
-def _build_provider(cfg: RuntimeConfig):
+def build_provider(cfg: RuntimeConfig):
+    """Shared provider construction (server + worker); no Meridian dependency."""
     if cfg.persistence_backend == PersistenceBackend.GCS.value:
         return GcsModelProvider(cfg.gcs_bucket, cfg.gcs_models_prefix)
     return LocalModelProvider(cfg.local_models_root)
@@ -24,16 +21,14 @@ def _build_provider(cfg: RuntimeConfig):
 
 def build_discovery_cache(cfg: RuntimeConfig) -> DiscoveryCache:
     """Server-side: discovery only, no facades/materialization (never pulls Meridian)."""
-    provider = _build_provider(cfg)
+    provider = build_provider(cfg)
     return DiscoveryCache(provider, cfg.discovery_ttl_seconds)
 
 
-def build_worker_catalog(cfg: RuntimeConfig) -> ModelCatalog:
-    """Worker-side: full catalog with materialization + facades."""
-    provider = _build_provider(cfg)
-    discovery = DiscoveryCache(provider, cfg.discovery_ttl_seconds)
-    materialization = MaterializationCache(provider, cfg.model_cache_root)
-    return ModelCatalog(discovery, materialization)
+# NOTE: build_worker_catalog (full ModelCatalog with materialization + facades)
+# lives in execution/worker.py, not here. bootstrap.py is imported by the
+# server lifespan and must stay provably free of the meridian subpackage
+# (enforced by ruff TID251); worker.py is the worker-only import boundary.
 
 
 def build_registry(cfg: RuntimeConfig) -> OptimizationRunRegistry:

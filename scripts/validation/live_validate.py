@@ -46,11 +46,11 @@ def _build_cloud_service(*, backend: str, shared_dir):
     loads its OWN local config (local backend + local registry on the same dir),
     so an in-memory fake never has to cross the process boundary.
     """
-    from google_meridian_mcp_server.bootstrap import build_worker_catalog
     from google_meridian_mcp_server.domain.models import RuntimeConfig
     from google_meridian_mcp_server.execution.cloud_run_executor import (
         CloudRunJobExecutor,
     )
+    from google_meridian_mcp_server.execution.worker import build_worker_catalog
     from google_meridian_mcp_server.persistence.optimization_run_registry import (
         LocalOptimizationRunRegistry,
     )

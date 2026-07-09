@@ -9,10 +9,17 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any
 
+from google_meridian_mcp_server.bootstrap import build_provider
+from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationRunState,
     RunPhase,
     RunStatus,
+)
+from google_meridian_mcp_server.meridian.catalog import ModelCatalog
+from google_meridian_mcp_server.persistence.cache import (
+    DiscoveryCache,
+    MaterializationCache,
 )
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
@@ -21,6 +28,20 @@ from google_meridian_mcp_server.persistence.optimization_run_registry import (
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def build_worker_catalog(cfg: RuntimeConfig) -> ModelCatalog:
+    """Worker-side: full catalog with materialization + facades.
+
+    Lives here (not in bootstrap.py) so the server import graph -- which
+    imports bootstrap.py for the lifespan -- stays provably free of the
+    meridian subpackage; this module is the worker-only import boundary
+    (see TID251 per-file-ignores in pyproject.toml).
+    """
+    provider = build_provider(cfg)
+    discovery = DiscoveryCache(provider, cfg.discovery_ttl_seconds)
+    materialization = MaterializationCache(provider, cfg.model_cache_root)
+    return ModelCatalog(discovery, materialization)
 
 
 def _start_parent_death_guard(poll_interval: float = 2.0) -> threading.Thread:
@@ -195,7 +216,6 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.setdefault(
             "MERIDIAN_BACKEND", "tensorflow"
         )  # not self-referential
-        from google_meridian_mcp_server.bootstrap import build_worker_catalog
         from google_meridian_mcp_server.config import load_config
 
         return run_analysis(
@@ -209,10 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         backend  # set before importing meridian (catalog does)
     )
 
-    from google_meridian_mcp_server.bootstrap import (
-        build_registry,
-        build_worker_catalog,
-    )
+    from google_meridian_mcp_server.bootstrap import build_registry
     from google_meridian_mcp_server.config import load_config
 
     cfg = load_config()

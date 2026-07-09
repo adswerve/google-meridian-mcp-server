@@ -2,12 +2,13 @@
 import time
 from typing import Any
 
+from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationConfig,
     OptimizationRun,
     RunStatus,
 )
-from google_meridian_mcp_server.execution.worker import run_worker
+from google_meridian_mcp_server.execution.worker import build_worker_catalog, run_worker
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.meridian.optimizer_facade import OptimizerFacade
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
@@ -62,6 +63,11 @@ def _seed_run(reg, run_id="m-1"):
             server_version="0.1.0",
         )
     )
+
+
+def test_build_worker_catalog(tmp_path):
+    cfg = RuntimeConfig(persistence_backend="local", local_models_root=str(tmp_path))
+    assert isinstance(build_worker_catalog(cfg), ModelCatalog)
 
 
 def test_worker_happy_path_writes_result_and_completed(tmp_path):

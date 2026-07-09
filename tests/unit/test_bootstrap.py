@@ -4,10 +4,8 @@ from google_meridian_mcp_server.bootstrap import (
     build_discovery_cache,
     build_executor,
     build_registry,
-    build_worker_catalog,
 )
 from google_meridian_mcp_server.domain.models import RuntimeConfig
-from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.persistence.cache import DiscoveryCache
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     GcsOptimizationRunRegistry,
@@ -30,10 +28,6 @@ def _cfg(tmp_path, **over):
     )
     base.update(over)
     return RuntimeConfig(**base)
-
-
-def test_build_worker_catalog(tmp_path):
-    assert isinstance(build_worker_catalog(_cfg(tmp_path)), ModelCatalog)
 
 
 def test_build_discovery_cache(tmp_path):

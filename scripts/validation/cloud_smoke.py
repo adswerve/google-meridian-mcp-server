@@ -43,12 +43,9 @@ def main() -> int:
         )
         return 0
 
-    from google_meridian_mcp_server.bootstrap import (
-        build_executor,
-        build_registry,
-        build_worker_catalog,
-    )
+    from google_meridian_mcp_server.bootstrap import build_executor, build_registry
     from google_meridian_mcp_server.config import load_config
+    from google_meridian_mcp_server.execution.worker import build_worker_catalog
     from google_meridian_mcp_server.services.optimization_service import (
         OptimizationService,
     )
