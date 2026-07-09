@@ -66,24 +66,24 @@ async def test_lifespan_selects_expected_provider(
     monkeypatch: pytest.MonkeyPatch,
     backend: str,
 ):
-    model_catalog = object()
+    discovery_cache = object()
     result_cache = object()
 
     monkeypatch.setattr(server, "load_config", lambda: _runtime_config(backend))
     monkeypatch.setattr(
-        server, "build_model_catalog", mock.Mock(return_value=model_catalog)
+        server, "build_discovery_cache", mock.Mock(return_value=discovery_cache)
     )
     monkeypatch.setattr(server, "ResultCache", mock.Mock(return_value=result_cache))
 
     async with server._lifespan(SimpleNamespace()) as state:
-        assert state["model_catalog"] is model_catalog
+        assert state["discovery_cache"] is discovery_cache
         assert state["result_cache"] is result_cache
-        # Task 10: model_catalog stays alive (Task 11 removes it) while a
-        # new subprocess runner is also yielded for the analysis tools.
+        # Task 11: the server drops the full model_catalog entirely -- the
+        # subprocess runner is the only thing that ever touches Meridian.
         analysis_runner = state["analysis_runner"]
         assert isinstance(analysis_runner, server.SyncSubprocessExecutor)
 
-    server.build_model_catalog.assert_called_once()
+    server.build_discovery_cache.assert_called_once()
     server.ResultCache.assert_called_once_with(enabled=True, ttl_seconds=30)
 
 
@@ -92,7 +92,9 @@ async def test_lifespan_shuts_down_analysis_runner_on_exit(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(server, "load_config", lambda: _runtime_config("local"))
-    monkeypatch.setattr(server, "build_model_catalog", mock.Mock(return_value=object()))
+    monkeypatch.setattr(
+        server, "build_discovery_cache", mock.Mock(return_value=object())
+    )
     monkeypatch.setattr(server, "ResultCache", mock.Mock(return_value=object()))
 
     shutdown = mock.AsyncMock()

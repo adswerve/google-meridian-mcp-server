@@ -43,7 +43,7 @@ def _error_response(error: MeridianMcpError) -> dict[str, Any]:
 
 
 def _catalog_service(ctx: Context) -> ModelCatalogService:
-    return ModelCatalogService(ctx.lifespan_context["model_catalog"])
+    return ModelCatalogService(ctx.lifespan_context["discovery_cache"])
 
 
 def _analysis_service(ctx: Context) -> AnalysisService:
@@ -55,7 +55,7 @@ def _analysis_service(ctx: Context) -> AnalysisService:
 
 def _optimization_service(ctx: Context) -> OptimizationService:
     return OptimizationService(
-        catalog=ctx.lifespan_context["model_catalog"],
+        runner=ctx.lifespan_context["analysis_runner"],
         registry=ctx.lifespan_context["optimization_registry"],
         executor=ctx.lifespan_context["optimization_executor"],
         cfg=ctx.lifespan_context["config"],
@@ -443,7 +443,7 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Optimize how budget is split across paid-media & RF channels. Answers "how should I reallocate spend?" or "what mix best hits a 2x ROAS target?". Supply a scenario (fixed_budget | target_roas | target_mroas) and spend constraints via `config`. Long-running: returns a run_id immediately — then poll get_optimization_status until status is 'completed', then read get_optimization_result. An identical prior run (same model + config) is reused unless force_rerun=true; browse prior runs with list_optimizations."""
         try:
-            return _optimization_service(ctx).run_optimization(
+            return await _optimization_service(ctx).run_optimization(
                 model_id,
                 config.model_dump(mode="json"),
                 label=label,
@@ -504,7 +504,7 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Optimize a FUTURE budget under explicit assumptions (not a demand forecast). Answers "how should I split next quarter's budget?" or "if TV CPMs rise 20%, what's the best future mix?". Meridian does not forecast the future: this carries forward a chosen historical reference window's costs/flighting/revenue (optionally scaled by cost_multipliers / revenue_per_kpi_multiplier) and optimizes the allocation over a future window you define with start_date + horizon. Long-running: returns a run_id immediately — poll get_optimization_status until 'completed', then get_optimization_result. Identical prior runs are reused unless force_rerun=true."""
         try:
-            return _optimization_service(ctx).run_future_optimization(
+            return await _optimization_service(ctx).run_future_optimization(
                 model_id,
                 config.model_dump(mode="json"),
                 label=label,

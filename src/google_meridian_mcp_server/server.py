@@ -11,7 +11,7 @@ from pathlib import Path
 from fastmcp import FastMCP
 from fastmcp.server.providers.skills import SkillsDirectoryProvider
 
-from google_meridian_mcp_server.bootstrap import build_model_catalog
+from google_meridian_mcp_server.bootstrap import build_discovery_cache
 from google_meridian_mcp_server.config import load_config
 from google_meridian_mcp_server.domain.models import Transport
 from google_meridian_mcp_server.execution.sync_subprocess_executor import (
@@ -43,7 +43,7 @@ async def _lifespan(server: FastMCP):
         cfg.persistence_backend,
     )
 
-    model_catalog = build_model_catalog(cfg)
+    discovery_cache = build_discovery_cache(cfg)
     result_cache = ResultCache(
         enabled=cfg.result_cache_enabled,
         ttl_seconds=cfg.result_cache_ttl_seconds,
@@ -86,7 +86,7 @@ async def _lifespan(server: FastMCP):
     try:
         yield {
             "config": cfg,
-            "model_catalog": model_catalog,
+            "discovery_cache": discovery_cache,
             "result_cache": result_cache,
             "optimization_registry": optimization_registry,
             "optimization_executor": optimization_executor,

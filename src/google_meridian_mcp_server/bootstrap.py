@@ -36,9 +36,6 @@ def build_worker_catalog(cfg: RuntimeConfig) -> ModelCatalog:
     return ModelCatalog(discovery, materialization)
 
 
-build_model_catalog = build_worker_catalog  # TEMP alias, removed in Task 11
-
-
 def build_registry(cfg: RuntimeConfig) -> OptimizationRunRegistry:
     if cfg.resolved_registry_backend == PersistenceBackend.GCS.value:
         from google_meridian_mcp_server.persistence.optimization_run_registry import (

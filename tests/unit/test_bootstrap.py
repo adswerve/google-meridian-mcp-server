@@ -3,7 +3,6 @@
 from google_meridian_mcp_server.bootstrap import (
     build_discovery_cache,
     build_executor,
-    build_model_catalog,
     build_registry,
     build_worker_catalog,
 )
@@ -31,10 +30,6 @@ def _cfg(tmp_path, **over):
     )
     base.update(over)
     return RuntimeConfig(**base)
-
-
-def test_build_model_catalog(tmp_path):
-    assert isinstance(build_model_catalog(_cfg(tmp_path)), ModelCatalog)
 
 
 def test_build_worker_catalog(tmp_path):

@@ -1,4 +1,10 @@
-"""Service orchestrating optimization submission, reuse, and registry reads."""
+"""Service orchestrating optimization submission, reuse, and registry reads.
+
+Task 11: every model-derived value (channel_order, use_kpi, size_features,
+config validation) now comes from the worker-side ``preflight_optimization``
+op (Task 7) via ``runner.run(...)``. This service never imports or touches
+Meridian directly -- the SERVER process is Meridian-free.
+"""
 
 from __future__ import annotations
 
@@ -15,13 +21,8 @@ from google_meridian_mcp_server.domain.optimization import (
     OptimizationRun,
     RunStatus,
     config_fingerprint,
-    to_optimize_kwargs,
 )
-from google_meridian_mcp_server.execution.routing import (
-    model_size_features,
-    resolve_tier,
-    size_score,
-)
+from google_meridian_mcp_server.execution.routing import resolve_tier, size_score
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
 )
@@ -46,20 +47,54 @@ def _default_label(model_id: str, config: BaseOptimizationConfig) -> str:
     return f"{_slug(model_id)} {config.scenario.type}"
 
 
+def _raise_from_validation_error(payload: dict[str, Any]) -> None:
+    """Reconstruct a typed error from preflight's ``validation_error`` payload.
+
+    The worker-side op only ever populates this with error_code
+    "invalid_optimization_config" today (validate_future/to_optimize_kwargs
+    raise plain ValueError, pydantic raises ValidationError -- both land in
+    the generic except branch of ``_preflight_optimization``). Branch on the
+    error_code defensively rather than hardcoding the subclass: if a future
+    change makes the worker surface a *different* typed MeridianMcpError here
+    (caught via its own `except MeridianMcpError` branch, whose payload
+    message may already carry its own prefix), reconstructing it as
+    InvalidOptimizationConfigError would double-prefix the message.
+    """
+    if payload.get("error_code") == "invalid_optimization_config":
+        raise InvalidOptimizationConfigError(payload["message"])
+    raise MeridianMcpError.from_payload(payload)
+
+
 class OptimizationService:
     def __init__(
         self,
-        catalog: Any,
+        runner: Any,
         registry: OptimizationRunRegistry,
         executor: Any,
         cfg: RuntimeConfig,
     ) -> None:
-        self._catalog = catalog
+        self._runner = runner
         self._registry = registry
         self._executor = executor
         self._cfg = cfg
+        # Preflight results are config-dependent (use_kpi/validation_error vary
+        # per config, not just per model_id), so this MUST be keyed on the
+        # config fingerprint -- never on bare model_id. See Task 11 brief.
+        self._preflight_cache: dict[str, dict[str, Any]] = {}
 
-    def run_optimization(
+    async def _preflight(
+        self, model_id: str, config_dict: dict, fingerprint: str
+    ) -> dict[str, Any]:
+        cached = self._preflight_cache.get(fingerprint)
+        if cached is not None:
+            return cached
+        result = await self._runner.run(
+            "preflight_optimization", model_id, {"config": config_dict}
+        )
+        self._preflight_cache[fingerprint] = result
+        return result
+
+    async def run_optimization(
         self,
         model_id: str,
         config_dict: dict,
@@ -69,33 +104,28 @@ class OptimizationService:
         compute_tier: str = "auto",
         force_rerun: bool = False,
     ) -> dict[str, Any]:
-        facade = self._catalog.get_optimizer_facade(
-            model_id
-        )  # raises ModelNotFoundError
         try:
             config = OptimizationConfig.model_validate(config_dict)
         except Exception as exc:  # pydantic ValidationError
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
-        use_kpi = facade.resolve_use_kpi(config)
-        try:
-            to_optimize_kwargs(
-                config, channel_order=facade.channel_order(), use_kpi=use_kpi
-            )
-        except ValueError as exc:
-            raise InvalidOptimizationConfigError(str(exc)) from exc
+        fingerprint = config_fingerprint(model_id, config)
+        preflight = await self._preflight(model_id, config_dict, fingerprint)
+        if preflight["validation_error"]:
+            _raise_from_validation_error(preflight["validation_error"])
 
         return self._submit(
             model_id,
             config,
-            facade=facade,
+            fingerprint=fingerprint,
+            size_features=preflight["size_features"],
             label=label,
             note=note,
             compute_tier=compute_tier,
             force_rerun=force_rerun,
         )
 
-    def run_future_optimization(
+    async def run_future_optimization(
         self,
         model_id: str,
         config_dict: dict,
@@ -105,23 +135,21 @@ class OptimizationService:
         compute_tier: str = "auto",
         force_rerun: bool = False,
     ) -> dict[str, Any]:
-        facade = self._catalog.get_optimizer_facade(
-            model_id
-        )  # raises ModelNotFoundError
         try:
             config = FutureOptimizationConfig.model_validate(config_dict)
         except Exception as exc:  # pydantic ValidationError
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
-        try:
-            facade.validate_future(config)  # pure guards, no optimize()
-        except ValueError as exc:
-            raise InvalidOptimizationConfigError(str(exc)) from exc
+        fingerprint = config_fingerprint(model_id, config)
+        preflight = await self._preflight(model_id, config_dict, fingerprint)
+        if preflight["validation_error"]:
+            _raise_from_validation_error(preflight["validation_error"])
 
         return self._submit(
             model_id,
             config,
-            facade=facade,
+            fingerprint=fingerprint,
+            size_features=preflight["size_features"],
             label=label,
             note=note,
             compute_tier=compute_tier,
@@ -133,13 +161,13 @@ class OptimizationService:
         model_id: str,
         config: BaseOptimizationConfig,
         *,
-        facade: Any,
+        fingerprint: str,
+        size_features: dict[str, int],
         label: str | None,
         note: str | None,
         compute_tier: str,
         force_rerun: bool,
     ) -> dict[str, Any]:
-        fingerprint = config_fingerprint(model_id, config)
         if not force_rerun:
             existing_id = self._registry.find_by_fingerprint(fingerprint)
             if existing_id is not None:
@@ -154,8 +182,7 @@ class OptimizationService:
                         record, reused=True, status=state.status.value
                     )
 
-        features = model_size_features(facade)
-        score = size_score(features)
+        score = size_score(size_features)
         try:
             resolved = resolve_tier(
                 score,
