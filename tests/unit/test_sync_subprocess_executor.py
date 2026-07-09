@@ -188,3 +188,60 @@ async def test_workdir_retention_semantics(tmp_path):
         )
     assert e4.value.error_code == "worker_timeout"
     assert len(_entries(to_root)) == 1
+
+
+async def test_workdir_setup_failure_translates_to_worker_failed(tmp_path, monkeypatch):
+    """F4(a): self._root.mkdir/tempfile.mkdtemp must be INSIDE the wrapped
+    try in _run_locked (not before it) so ENOSPC/EMFILE/permission failures
+    at workdir setup translate to a clean WorkerFailedError envelope, same as
+    a spawn failure -- not escape as a raw OSError past the tool handlers'
+    `except MeridianMcpError`."""
+    from google_meridian_mcp_server.execution import (
+        sync_subprocess_executor as sse_module,
+    )
+
+    def _boom(dir=None):
+        raise OSError("EMFILE: too many open files")
+
+    monkeypatch.setattr(sse_module.tempfile, "mkdtemp", _boom)
+
+    with pytest.raises(MeridianMcpError) as exc_info:
+        await mk(tmp_path, OK).run("op", "m1", {})
+
+    assert exc_info.value.error_code == "worker_failed"
+    assert "EMFILE" in str(exc_info.value)
+
+
+async def test_tail_reads_only_the_end_of_a_large_log(tmp_path):
+    """F10a: _tail must never read a multi-GB log fully into memory -- it
+    seeks from the end and reads only the last _LOG_TAIL bytes (approx),
+    even for a log much larger than that."""
+    from google_meridian_mcp_server.execution.sync_subprocess_executor import (
+        _LOG_TAIL,
+        SyncSubprocessExecutor,
+    )
+
+    logp = tmp_path / "big.log"
+    content = ("x" * 100 + "\n") * (
+        _LOG_TAIL // 10
+    )  # several times larger than the tail
+    logp.write_text(content)
+    assert logp.stat().st_size > _LOG_TAIL * 5  # sanity: genuinely large
+
+    tail = SyncSubprocessExecutor._tail(str(logp))
+
+    assert len(tail.encode("utf-8", "replace")) <= _LOG_TAIL
+    assert tail == content[-_LOG_TAIL:]
+
+
+async def test_tail_handles_file_smaller_than_tail_limit(tmp_path):
+    """F10a regression: a log smaller than _LOG_TAIL must return in full, not
+    raise (seek(-_LOG_TAIL, SEEK_END) on a small file must be guarded)."""
+    from google_meridian_mcp_server.execution.sync_subprocess_executor import (
+        SyncSubprocessExecutor,
+    )
+
+    logp = tmp_path / "small.log"
+    logp.write_text("hello world")
+
+    assert SyncSubprocessExecutor._tail(str(logp)) == "hello world"

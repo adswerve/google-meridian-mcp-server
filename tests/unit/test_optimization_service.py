@@ -419,6 +419,56 @@ async def test_cancel_marks_canceled_and_terminates(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_delete_cancels_before_removing_registry_record(tmp_path):
+    """F2(b): delete() must dequeue/terminate the executor-side entry (like
+    cancel_optimization does) BEFORE removing the registry record. Without
+    this, a QUEUED run's id lingers in the executor's internal queue after
+    its registry record is gone, and a later pump() would pop it and hit
+    RunNotFoundError trying to launch it."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        RunNotFoundError,
+    )
+
+    cfg = RuntimeConfig(
+        persistence_backend="local",
+        local_models_root=str(tmp_path),
+        optimization_runs_root=str(tmp_path / "runs"),
+    )
+    reg = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
+    executor = _CancellableExecutor(reg)
+    svc = OptimizationService(FakeRunner(), reg, executor, cfg)
+
+    out = await svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+    run_id = out["run_id"]
+
+    result = svc.delete(run_id)
+
+    assert result == {"run_id": run_id, "deleted": True}
+    assert executor.terminated == [run_id]  # cancel() was called before delete
+    with pytest.raises(RunNotFoundError):
+        reg.get_record(run_id)
+
+
+def test_delete_unknown_run_raises_run_not_found(tmp_path):
+    """delete() of an unknown run_id still raises RunNotFoundError (via
+    executor.cancel -> registry.get_state), same as before the F2(b) fix."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        RunNotFoundError,
+    )
+
+    cfg = RuntimeConfig(
+        persistence_backend="local",
+        local_models_root=str(tmp_path),
+        optimization_runs_root=str(tmp_path / "runs"),
+    )
+    reg = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
+    svc = OptimizationService(FakeRunner(), reg, _CancellableExecutor(reg), cfg)
+
+    with pytest.raises(RunNotFoundError):
+        svc.delete("unknown-run-id")
+
+
+@pytest.mark.asyncio
 async def test_run_future_optimization_returns_queued_envelope(service_with_fakes):
     service, fakes = service_with_fakes
     out = await service.run_future_optimization(

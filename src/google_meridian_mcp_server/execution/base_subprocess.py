@@ -32,6 +32,14 @@ class BaseSubprocessExecutor:
         for k, v in _HYGIENE_DEFAULTS.items():
             env.setdefault(k, v)  # never clobber operator-set values
         env.update(self._env_base)
+        # Captured HERE, in the parent, at spawn time -- before fork+exec and
+        # therefore before the child's own import chain (0.5-2s) can run. The
+        # child's PID-1 parent-death guard (worker.py) reads this instead of
+        # calling os.getppid() itself: if it self-captured "original" ppid only
+        # after that import window, a parent death DURING the window would
+        # already have reparented the child, and it would wrongly record the
+        # reaper as its "original" parent -- masking the orphan forever.
+        env["MERIDIAN_PARENT_PID"] = str(os.getpid())
         if extra:
             env.update(extra)
         return env

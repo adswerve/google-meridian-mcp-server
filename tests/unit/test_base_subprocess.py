@@ -28,6 +28,16 @@ def test_child_env_backend_and_hygiene_respect_operator(monkeypatch):
     assert env["FOO"] == "bar" and env["PATH"] == os.environ["PATH"]
 
 
+def test_child_env_includes_parent_pid_for_orphan_guard():
+    """F3: child_env() must inject MERIDIAN_PARENT_PID = str(os.getpid())
+    (the PARENT's own pid, captured here at spawn time -- BEFORE the child's
+    fork+exec and therefore before its import-chain TOCTOU window) so the
+    worker's guard (execution/worker.py) can detect a parent death during
+    that window instead of self-capturing getppid() only after it."""
+    env = BaseSubprocessExecutor().child_env()
+    assert env["MERIDIAN_PARENT_PID"] == str(os.getpid())
+
+
 def test_popen_redirect_never_inherits_stdout(tmp_path):
     with open(tmp_path / "log", "w") as log:
         kw = BaseSubprocessExecutor().popen_redirect_kwargs(log)

@@ -182,6 +182,31 @@ async def test_tool_wrappers_return_standard_error_payloads(
     }
 
 
+@pytest.mark.asyncio
+async def test_tool_surface_catches_non_meridian_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """F4(b): a plain (non-MeridianMcpError) exception raised by a service
+    method must never escape a tool handler as a raw exception -- the
+    @_guarded decorator wraps every handler so it always returns a clean
+    internal_error envelope instead."""
+    mcp = _FakeFastMCP()
+    analysis_service = SimpleNamespace(
+        get_model_overview=_async_raise(ValueError("boom: disk exploded")),
+    )
+    monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
+
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    result = await mcp.tools["get_model_overview"]("m1", ctx)
+
+    assert result["error_code"] == "internal_error"
+    assert "ValueError" in result["message"]
+    assert "boom: disk exploded" in result["message"]
+    assert result["details"] == {}
+
+
 def test_aggregate_geos_is_no_longer_accepted():
     with pytest.raises(ValidationError):
         AnalysisFilters(aggregate_geos=False)

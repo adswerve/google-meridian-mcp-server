@@ -1,4 +1,5 @@
 import subprocess
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from google_meridian_mcp_server.domain.optimization import (
@@ -316,3 +317,131 @@ def test_launch_redirects_and_new_session(monkeypatch, tmp_path):
     ex._launch(_run("r1"))
     assert captured["start_new_session"] is True
     assert captured["stdout"] is not None
+
+
+def test_reconcile_orphans_fails_running_and_queued_unconditionally(tmp_path):
+    """F1: a server restart must not strand a local-tier RUNNING/QUEUED run.
+
+    `_handles`/`_queue` are in-memory, so a fresh server starts with neither;
+    the PID-1 parent-death guard (worker.py) guarantees a local worker cannot
+    survive its parent server, so AsyncSubprocessExecutor.reconcile_orphans
+    must fail BOTH RUNNING and QUEUED unconditionally -- no heartbeat-staleness
+    grace period, even with a perfectly fresh heartbeat."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run("running-run"))
+    reg.write_state(
+        OptimizationRunState(
+            run_id="running-run",
+            status=RunStatus.RUNNING,
+            heartbeat_at=datetime.now(timezone.utc).isoformat(),  # FRESH heartbeat
+        )
+    )
+    reg.create(_run("queued-run"))
+    reg.write_state(OptimizationRunState(run_id="queued-run", status=RunStatus.QUEUED))
+
+    ex = AsyncSubprocessExecutor(
+        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="tensorflow"
+    )
+    ex.reconcile_orphans()
+
+    for run_id in ("running-run", "queued-run"):
+        state = reg.get_state(run_id)
+        assert state.status == RunStatus.FAILED
+        assert state.error["code"] == "worker_lost"
+
+
+def test_reconcile_orphans_does_not_touch_terminal_runs(tmp_path):
+    """F1 regression: reconcile_orphans must not clobber a run that already
+    reached a terminal state before the restart."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run("done-run"))
+    reg.write_state(OptimizationRunState(run_id="done-run", status=RunStatus.COMPLETED))
+
+    ex = AsyncSubprocessExecutor(
+        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="tensorflow"
+    )
+    ex.reconcile_orphans()
+
+    assert reg.get_state("done-run").status == RunStatus.COMPLETED
+
+
+def test_pump_skips_run_deleted_from_registry_while_queued(tmp_path):
+    """F2(a): a run_id popped off the internal queue whose registry record is
+    gone (e.g. deleted out-of-band, bypassing the executor.cancel() dequeue
+    OptimizationService.delete now performs) must be skipped by pump(), not
+    raise RunNotFoundError into whatever unrelated call triggered the pump."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    reg.create(_run("a"))
+    ex.submit(_run("a"))  # launched (max_parallel=1)
+    reg.create(_run("b"))
+    ex.submit(_run("b"))  # queued behind "a"
+
+    reg.delete("b")  # registry record gone; "b" is still sitting in ex._queue
+
+    ex._handles["a"].alive = False  # free the concurrency slot
+    ex.pump()  # must not raise RunNotFoundError
+
+    assert "b" not in ex._handles
+    assert "b" not in ex._queue
+
+
+def test_pump_fails_run_when_launch_raises(tmp_path):
+    """F2(b): a _launch failure (EMFILE, unwritable log_root, fork failure,
+    ...) must fail the run FAILED/worker_lost -- not leave it wedged QUEUED
+    forever -- and the raw exception must not escape pump()/submit()."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+
+    class _BoomExecutor(_FakeExecutor):
+        def _launch(self, run):
+            raise OSError("EMFILE: too many open files")
+
+    ex = _BoomExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    reg.create(_run("a"))
+    ex.submit(_run("a"))  # submit() calls pump() internally; must not raise
+
+    assert "a" not in ex._handles
+    state = reg.get_state("a")
+    assert state.status == RunStatus.FAILED
+    assert state.error["code"] == "worker_lost"
+    assert "EMFILE" in state.error["message"]
+
+
+def test_terminate_reaps_child_after_kill(monkeypatch, tmp_path):
+    """F9: _terminate reaps the child after SIGKILL so it doesn't linger as
+    a zombie."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = AsyncSubprocessExecutor(
+        reg, max_parallel=1, heartbeat_stale_seconds=60, backend="tensorflow"
+    )
+    monkeypatch.setattr(ex, "kill_group", lambda pid: None)
+
+    waited = {}
+
+    class _Handle:
+        pid = 4321
+
+        def wait(self, timeout=None):
+            waited["timeout"] = timeout
+            return 0
+
+    ex._terminate(_Handle())
+    assert "timeout" in waited  # wait() was called to reap the zombie
+
+
+def test_terminate_suppresses_wait_exceptions(monkeypatch, tmp_path):
+    """F9 regression: a wait() failure (e.g. TimeoutExpired) must not escape
+    _terminate -- it's best-effort zombie reaping, not a hard requirement."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = AsyncSubprocessExecutor(
+        reg, max_parallel=1, heartbeat_stale_seconds=60, backend="tensorflow"
+    )
+    monkeypatch.setattr(ex, "kill_group", lambda pid: None)
+
+    class _Handle:
+        pid = 4321
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+
+    ex._terminate(_Handle())  # must not raise

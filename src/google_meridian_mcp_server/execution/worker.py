@@ -57,17 +57,38 @@ def _is_orphaned(original_ppid: int, current_ppid: int) -> bool:
     return current_ppid != original_ppid
 
 
+def _expected_parent_pid() -> int:
+    """Resolve the pid the orphan guard should treat as "our real parent".
+
+    Prefers MERIDIAN_PARENT_PID (set by the PARENT at spawn time, in
+    BaseSubprocessExecutor.child_env) over self-capturing os.getppid() here:
+    capturing our own getppid() only happens after the full module-import
+    chain (0.5-2s after exec), so a parent death DURING that window would
+    already have reparented us before we ever recorded an "original" ppid --
+    silently masking the orphan. The env var is fixed by the parent before
+    fork+exec, so even the guard's very first check (before any poll wait)
+    can catch a parent that died during our own import window. Falls back to
+    self-captured getppid() when the env var is absent (e.g. the worker
+    entrypoint invoked standalone, or in tests).
+    """
+    env_ppid = os.environ.get("MERIDIAN_PARENT_PID")
+    return int(env_ppid) if env_ppid is not None else os.getppid()
+
+
 def _start_parent_death_guard(poll_interval: float = 2.0) -> threading.Thread:
     """Exit immediately if our parent process dies (reparented away).
 
     Guards against orphaned worker subprocesses lingering after the parent
     server process crashes or is killed without a chance to clean up children.
-    Captures the parent pid at guard-start time and exits only when it
-    CHANGES -- correct whether the parent is PID 1 (container) or not.
+    Exits as soon as our parent pid CHANGES from the expected one -- correct
+    whether the parent is PID 1 (container) or not. See _expected_parent_pid
+    for why the expected pid comes from MERIDIAN_PARENT_PID when available.
     """
-    original_ppid = os.getppid()
+    original_ppid = _expected_parent_pid()
 
     def _watch() -> None:
+        if _is_orphaned(original_ppid, os.getppid()):
+            os._exit(0)
         while True:
             threading.Event().wait(poll_interval)
             if _is_orphaned(original_ppid, os.getppid()):
@@ -108,10 +129,31 @@ def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
         }
         rc = 1
 
-    payload = analysis_ops.sanitize_nan(payload)  # whole payload, incl. error details
     tmp = response_path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(payload, f, allow_nan=False)
+    try:
+        payload = analysis_ops.sanitize_nan(
+            payload
+        )  # whole payload, incl. error details
+        with open(tmp, "w") as f:
+            json.dump(payload, f, allow_nan=False)
+    except Exception as exc:  # noqa: BLE001 - serialization must never leave "no response"
+        # sanitize_nan/json.dump raised (e.g. an object type sanitize_nan
+        # doesn't know about yet): fall back to a minimal, ALWAYS-serializable
+        # payload so the caller sees a clean internal_error, not a misleading
+        # "worker_failed: no response" (which would look like the worker never
+        # ran at all, rather than that it ran and failed to report back).
+        traceback.print_exc()  # child log only
+        fallback = {
+            "ok": False,
+            "error": {
+                "error_code": "internal_error",
+                "message": type(exc).__name__,
+                "details": {},
+            },
+        }
+        with open(tmp, "w") as f:
+            json.dump(fallback, f, allow_nan=False)
+        rc = 1
     os.replace(tmp, response_path)
     return rc
 

@@ -296,5 +296,11 @@ class OptimizationService:
         return {"run_id": run_id, "status": RunStatus.CANCELED.value}
 
     def delete(self, run_id: str) -> dict[str, Any]:
+        # cancel() BEFORE delete(): it dequeues/terminates any QUEUED or
+        # RUNNING executor-side entry first (like cancel_optimization does).
+        # Without this a QUEUED run's id would linger in the executor's
+        # internal queue after its registry record is gone, and a later
+        # pump() would pop it and hit a RunNotFoundError trying to launch it.
+        self._executor.cancel(run_id)
         self._registry.delete(run_id)
         return {"run_id": run_id, "deleted": True}

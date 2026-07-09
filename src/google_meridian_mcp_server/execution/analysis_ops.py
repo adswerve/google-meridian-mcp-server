@@ -16,6 +16,7 @@ before handing them to a facade method -- facade methods are typed
 from __future__ import annotations
 
 import math
+from datetime import date, datetime
 from typing import Any, Callable
 
 import numpy as np
@@ -67,21 +68,33 @@ RESPONSE_CURVE_DISPATCH = {
 
 
 def sanitize_nan(obj: Any) -> Any:
-    """Recursively replace non-finite floats (nan/inf/-inf) with None.
+    """Recursively replace non-finite floats (nan/inf/-inf) with None, and
+    coerce any other type ``json.dump`` cannot handle into one it can.
 
     Applied to the WHOLE response payload (including error details) right
     before the strict (``allow_nan=False``) JSON dump at the IPC boundary.
 
-    Belt-and-suspenders: handles ``np.floating``/``np.integer`` (a stray
-    unconverted numpy scalar would otherwise crash `json.dump` outright,
-    NaN or not) and tuples (json.dump serializes them as lists, but a NaN
-    inside one would slip past a dict/list-only check and crash the dump).
+    Belt-and-suspenders: handles ``np.floating``/``np.integer``/``np.bool_``
+    (a stray unconverted numpy scalar would otherwise crash `json.dump`
+    outright, NaN or not), ``np.ndarray`` (recursively sanitized via
+    ``.tolist()``), tuples (json.dump serializes them as lists, but a NaN
+    inside one would slip past a dict/list-only check and crash the dump),
+    ``datetime``/``date`` (-> ISO 8601 string), and ``bytes`` (-> utf-8,
+    lossily, since raw bytes aren't JSON-representable at all).
     """
+    if isinstance(obj, np.bool_):
+        return bool(obj)
     if isinstance(obj, (float, np.floating)):
         value = float(obj)
         return value if math.isfinite(value) else None
     if isinstance(obj, np.integer):
         return int(obj)
+    if isinstance(obj, np.ndarray):
+        return [sanitize_nan(v) for v in obj.tolist()]
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", "replace")
     if isinstance(obj, dict):
         return {k: sanitize_nan(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):

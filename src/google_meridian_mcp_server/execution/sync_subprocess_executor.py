@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -54,13 +55,20 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
             self._sem.release()
 
     async def _run_locked(self, operation, model_id, params) -> dict:
-        self._root.mkdir(parents=True, exist_ok=True)
-        workdir = Path(tempfile.mkdtemp(dir=self._root))
-        req, resp, logp = workdir / "req.json", workdir / "resp.json", workdir / "log"
         proc, keep, deferred_cleanup = None, False, False
         log_file = None
+        workdir: Path | None = None
         try:
             try:
+                # mkdir/mkdtemp are inside this wrapped try (not before it):
+                # ENOSPC/EMFILE/permission errors here must translate to a
+                # WorkerFailedError envelope too, same as a spawn failure --
+                # not escape as a raw OSError past the tool handlers.
+                self._root.mkdir(parents=True, exist_ok=True)
+                workdir = Path(tempfile.mkdtemp(dir=self._root))
+                req = workdir / "req.json"
+                resp = workdir / "resp.json"
+                logp = workdir / "log"
                 req.write_text(
                     json.dumps(
                         {"operation": operation, "model_id": model_id, "params": params}
@@ -134,7 +142,9 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
             if not deferred_cleanup:
                 if log_file is not None:
                     log_file.close()
-                if not keep:
+                # workdir may be None if mkdir/mkdtemp itself is what failed
+                # (translated to WorkerFailedError above) -- nothing to remove.
+                if not keep and workdir is not None:
                     shutil.rmtree(workdir, ignore_errors=True)
 
     def _decode(self, rc, resp, logp):
@@ -196,8 +206,14 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
 
     @staticmethod
     def _tail(logp) -> str:
+        # Seek from the end instead of reading the whole file: on the failure
+        # path this is meant to help diagnose, a multi-GB TF log must never be
+        # fully loaded into memory just to report the last few KB of it.
         with contextlib.suppress(Exception):
-            return Path(logp).read_bytes()[-_LOG_TAIL:].decode("utf-8", "replace")
+            with open(logp, "rb") as f:
+                size = f.seek(0, os.SEEK_END)
+                f.seek(-min(_LOG_TAIL, size), os.SEEK_END)
+                return f.read().decode("utf-8", "replace")
         return ""
 
     async def shutdown(self) -> None:

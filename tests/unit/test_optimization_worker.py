@@ -9,6 +9,7 @@ from google_meridian_mcp_server.domain.optimization import (
     RunStatus,
 )
 from google_meridian_mcp_server.execution.worker import (
+    _expected_parent_pid,
     _is_orphaned,
     build_worker_catalog,
     run_worker,
@@ -86,6 +87,36 @@ def test_is_orphaned_reparented_to_other_pid_is_orphaned():
     """Linux subreaper case: an orphan reparents to a non-1 subreaper pid,
     which a bare '== 1' check would miss entirely."""
     assert _is_orphaned(original_ppid=500, current_ppid=999) is True
+
+
+def test_expected_parent_pid_uses_env_var_when_present(monkeypatch):
+    """F3: the TOCTOU fix -- when the PARENT set MERIDIAN_PARENT_PID (at
+    spawn time, before fork+exec), the guard must use THAT value rather than
+    self-capturing os.getppid() (which would only run after the full
+    import chain, too late to catch a parent death during that window)."""
+    monkeypatch.setenv("MERIDIAN_PARENT_PID", "12345")
+    assert _expected_parent_pid() == 12345
+
+
+def test_expected_parent_pid_falls_back_to_getppid_when_env_absent(monkeypatch):
+    """F3 regression: standalone/test invocation with no MERIDIAN_PARENT_PID
+    set must fall back to the previous self-captured-getppid() behavior."""
+    import os
+
+    monkeypatch.delenv("MERIDIAN_PARENT_PID", raising=False)
+    assert _expected_parent_pid() == os.getppid()
+
+
+def test_is_orphaned_matches_env_provided_pid_is_not_orphaned():
+    """F3: with the env-provided expected pid, a matching current ppid is
+    correctly NOT flagged as orphaned."""
+    assert _is_orphaned(original_ppid=12345, current_ppid=12345) is False
+
+
+def test_is_orphaned_differs_from_env_provided_pid_is_orphaned():
+    """F3: with the env-provided expected pid, a DIFFERING current ppid
+    (reparented away from the real original parent) is correctly flagged."""
+    assert _is_orphaned(original_ppid=12345, current_ppid=1) is True
 
 
 def test_build_worker_catalog(tmp_path):

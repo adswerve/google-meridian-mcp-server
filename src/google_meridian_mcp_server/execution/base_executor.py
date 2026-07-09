@@ -53,6 +53,20 @@ class BaseExecutor(abc.ABC):
                 OptimizationRunState(run_id=run_id, status=RunStatus.CANCELED)
             )
 
+    def reconcile_orphans(self) -> None:
+        """Startup crash reconciliation for runs left over by a stopped server.
+
+        Default (cloud tier, e.g. CloudRunJobExecutor): only RUNNING runs are
+        considered, via stale-heartbeat detection -- a cloud worker CAN
+        outlive the server process, so a fresh heartbeat may mean the run is
+        still legitimately in flight. QUEUED runs are left untouched (a cloud
+        dispatch request may still be racing startup). The local subprocess
+        tier overrides this with an unconditional fail -- see
+        AsyncSubprocessExecutor.reconcile_orphans.
+        """
+        for summary in self._registry.list(status=RunStatus.RUNNING):
+            self._reconcile_stale(summary.run_id)
+
     def submit(self, run: OptimizationRun) -> None:
         self._registry.write_state(
             OptimizationRunState(run_id=run.run_id, status=RunStatus.QUEUED)
@@ -64,8 +78,18 @@ class BaseExecutor(abc.ABC):
         self._reap()
         while self._queue and len(self._handles) < self._max_parallel:
             run_id = self._queue.popleft()
-            run = self._registry.get_record(run_id)
-            self._handles[run_id] = self._launch(run)
+            try:
+                run = self._registry.get_record(run_id)
+            except RunNotFoundError:
+                # Deleted while still queued (OptimizationService.delete
+                # dequeues via cancel(), but tolerate a stale id regardless):
+                # nothing to launch, and this must not escape into whatever
+                # unrelated tool call happened to trigger this pump().
+                continue
+            try:
+                self._handles[run_id] = self._launch(run)
+            except Exception as exc:  # noqa: BLE001 - launch failures must not escape pump()
+                self._fail_if_unfinished(run_id, f"failed to launch worker: {exc}")
 
     def _reap(self) -> None:
         for run_id, handle in list(self._handles.items()):

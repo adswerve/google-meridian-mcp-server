@@ -865,3 +865,72 @@ def test_run_analysis_sanitizes_nan_to_null(tmp_path):
     assert payload["ok"] is True
     # the nan cell round-tripped to null.
     assert payload["result"]["rows"] == [["tv", None]]
+
+
+def test_sanitize_nan_handles_numpy_bool_ndarray_datetime_and_bytes():
+    """F7: sanitize_nan must handle anything else json.dump would otherwise
+    crash on: np.bool_, np.ndarray (recursively, including embedded NaN),
+    datetime/date (-> ISO 8601 string), and bytes (-> utf-8 decoded)."""
+    import datetime as dt
+
+    import numpy as np
+
+    out = analysis_ops.sanitize_nan(
+        {
+            "flag": np.bool_(True),
+            "arr": np.array([1.0, float("nan"), 3.0]),
+            "when": dt.datetime(2026, 1, 1, 12, 0, 0),
+            "day": dt.date(2026, 1, 2),
+            "raw": b"hello",
+        }
+    )
+    assert out["flag"] is True and isinstance(out["flag"], bool)
+    assert out["arr"] == [1.0, None, 3.0]
+    assert out["when"] == "2026-01-01T12:00:00"
+    assert out["day"] == "2026-01-02"
+    assert out["raw"] == "hello"
+
+
+class _UnserializableFacade:
+    """Returns a value _round_measure passes through untouched (not a bool
+    or float) and sanitize_nan doesn't recognize either -- json.dump chokes
+    on it, exercising run_analysis's fallback payload path."""
+
+    def get_contribution_metrics(self, filters):
+        return [{"channel": "tv", "mean": object()}]
+
+
+class _UnserializableCatalog:
+    def get_facade(self, model_id):
+        return _UnserializableFacade()
+
+    def get_interrogator(self, model_id):
+        return _UnserializableFacade()
+
+
+def test_run_analysis_unserializable_result_falls_back_to_internal_error(tmp_path):
+    """F7: if sanitize_nan/json.dump itself raises (an op returned a value
+    sanitize_nan doesn't know how to handle), run_analysis must still write a
+    minimal, ALWAYS-serializable internal_error payload and return rc 1 --
+    not leave "no response" behind, which the caller would misread as the
+    worker never having run at all rather than having run and failed to
+    report back cleanly."""
+    req_path, resp_path = _write_request(
+        tmp_path,
+        {
+            "operation": "get_contribution",
+            "model_id": "m1",
+            "params": {"output_type": "contribution_metrics", "filters": {}},
+        },
+    )
+    rc = worker.run_analysis(req_path, resp_path, catalog=_UnserializableCatalog())
+    assert rc == 1
+    payload = json.loads(open(resp_path).read())  # must be valid JSON
+    assert payload == {
+        "ok": False,
+        "error": {
+            "error_code": "internal_error",
+            "message": "TypeError",
+            "details": {},
+        },
+    }

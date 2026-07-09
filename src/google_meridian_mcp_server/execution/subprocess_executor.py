@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 from pathlib import Path
 from typing import Any
 
-from google_meridian_mcp_server.domain.optimization import OptimizationRun
+from google_meridian_mcp_server.domain.optimization import OptimizationRun, RunStatus
 from google_meridian_mcp_server.execution.base_executor import BaseExecutor
 from google_meridian_mcp_server.execution.base_subprocess import BaseSubprocessExecutor
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
@@ -58,3 +59,33 @@ class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
 
     def _terminate(self, handle: Any) -> None:
         self.kill_group(handle.pid)
+        # Reap the child after SIGKILL so it doesn't linger as a zombie: a
+        # bounded wait (the process is already dead or dying from the
+        # SIGKILL above, so this should return almost immediately).
+        with contextlib.suppress(Exception):
+            handle.wait(timeout=5)
+
+    def reconcile_orphans(self) -> None:
+        """Local tier: unconditionally fail every RUNNING/QUEUED run at startup.
+
+        `_handles`/`_queue` are in-memory, so a fresh server process starts
+        with neither -- there is no live handle to reap and no heartbeat
+        staleness window to wait out. The PID-1 parent-death guard in
+        worker.py guarantees a local worker subprocess CANNOT survive its
+        parent server process, so any run still RUNNING or QUEUED when this
+        (new) server starts is provably dead / was never launched. Unlike the
+        cloud tier (BaseExecutor.reconcile_orphans), this also covers QUEUED:
+        a queued-but-never-launched run has no chance of being picked up by
+        anything else.
+        """
+        for status in (RunStatus.RUNNING, RunStatus.QUEUED):
+            for summary in self._registry.list(status=status):
+                run_id = summary.run_id
+                self._handles.pop(run_id, None)
+                try:
+                    self._queue.remove(run_id)
+                except ValueError:
+                    pass
+                self._fail_if_unfinished(
+                    run_id, "server restarted; local worker cannot survive"
+                )

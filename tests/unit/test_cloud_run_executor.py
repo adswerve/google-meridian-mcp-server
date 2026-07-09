@@ -111,3 +111,39 @@ def test_is_alive_reflects_execution_completion():
         executions_client=_FakeExecutions(alive=False),
     )
     assert ex._is_alive("exec-123") is False
+
+
+def test_reconcile_orphans_leaves_fresh_heartbeat_running_untouched(tmp_path):
+    """F1: cloud tier keeps heartbeat-staleness reconciliation via the
+    default BaseExecutor.reconcile_orphans (CloudRunJobExecutor does not
+    override it, unlike AsyncSubprocessExecutor) -- a RUNNING run with a
+    FRESH heartbeat must be left alone, since a cloud worker CAN outlive the
+    server process, unlike a local subprocess worker."""
+    from datetime import datetime, timezone
+
+    from google_meridian_mcp_server.domain.optimization import OptimizationRunState
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run("cloud_cpu"))  # run_id is always "m-1" (see _run() above)
+    reg.write_state(
+        OptimizationRunState(
+            run_id="m-1",
+            status=RunStatus.RUNNING,
+            heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
+
+    ex = CloudRunJobExecutor(
+        reg,
+        cfg=_cfg(),
+        max_parallel=2,
+        heartbeat_stale_seconds=60,
+        jobs_client=_FakeJobs(),
+        executions_client=_FakeExecutions(),
+    )
+    ex.reconcile_orphans()
+
+    assert reg.get_state("m-1").status == RunStatus.RUNNING

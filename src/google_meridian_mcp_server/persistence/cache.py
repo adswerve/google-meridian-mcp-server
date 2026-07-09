@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ from google_meridian_mcp_server.domain.models import ModelCatalogEntry
 from google_meridian_mcp_server.persistence.base import ModelProvider
 
 log = logging.getLogger(__name__)
+
+DEFAULT_RESULT_CACHE_MAX_ENTRIES = 256
 
 
 class DiscoveryCache:
@@ -55,12 +58,25 @@ class MaterializationCache:
 
 
 class ResultCache:
-    """Optional in-memory cache for repeated analysis results."""
+    """Optional in-memory cache for repeated analysis results.
 
-    def __init__(self, enabled: bool = True, ttl_seconds: int | None = None) -> None:
+    Bounded LRU (max ``max_entries``, default 256) on top of the existing TTL
+    behavior: an unbounded cache would grow forever under enough distinct
+    (tool, model_id, params) keys and slowly OOM the server. ``OrderedDict``
+    ordering doubles as recency tracking -- ``move_to_end`` on both read and
+    write hits, ``popitem(last=False)`` (oldest) to evict on overflow.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        ttl_seconds: int | None = None,
+        max_entries: int = DEFAULT_RESULT_CACHE_MAX_ENTRIES,
+    ) -> None:
         self._enabled = enabled
         self._ttl = ttl_seconds
-        self._store: dict[str, tuple[float, Any]] = {}
+        self._max_entries = max_entries
+        self._store: OrderedDict[str, tuple[float, Any]] = OrderedDict()
 
     @staticmethod
     def _make_key(tool_name: str, model_id: str, params: dict) -> str:
@@ -82,6 +98,7 @@ class ResultCache:
         if self._ttl and (time.monotonic() - ts) >= self._ttl:
             del self._store[key]
             return None
+        self._store.move_to_end(key)  # mark most-recently-used
         return value
 
     def put(self, tool_name: str, model_id: str, params: dict, value: Any) -> None:
@@ -89,6 +106,9 @@ class ResultCache:
             return
         key = self._make_key(tool_name, model_id, params)
         self._store[key] = (time.monotonic(), value)
+        self._store.move_to_end(key)  # mark most-recently-used
+        while len(self._store) > self._max_entries:
+            self._store.popitem(last=False)  # evict oldest
 
     def invalidate(self) -> None:
         self._store.clear()
