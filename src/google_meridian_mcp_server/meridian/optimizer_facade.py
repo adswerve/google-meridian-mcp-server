@@ -143,13 +143,22 @@ class OptimizerFacade(MeridianInterrogator):
         media_order = self.get_data_inputs()["media"]
         rf_order = self.get_data_inputs()["rf_media"]
         fd.validate_channel_keys(f.cost_multipliers, media_order + rf_order)
+        excluded_set = set(f.excluded_channels or [])
+        media_excluded_idx = frozenset(
+            i for i, ch in enumerate(media_order) if ch in excluded_set
+        )
+        rf_excluded_idx = frozenset(
+            i for i, ch in enumerate(rf_order) if ch in excluded_set
+        )
         average = f.reference.mode == "full_history_average"
 
         seeded_total = 0.0
         tensor_kwargs: dict[str, Any] = {"time": time_labels}
         if media_order:
             tensor_kwargs["cpmu"] = fd.apply_cost_multipliers(
-                self._seed_cpmu(window), f.cost_multipliers, media_order
+                self._seed_cpmu(window, media_excluded_idx),
+                f.cost_multipliers,
+                media_order,
             )
             media_spend = self._seed_spend_flighting(
                 "media_spend", window, f.horizon, average
@@ -158,7 +167,9 @@ class OptimizerFacade(MeridianInterrogator):
             seeded_total += float(np.asarray(media_spend).sum())
         if rf_order:
             tensor_kwargs["cprf"] = fd.apply_cost_multipliers(
-                self._seed_cprf(window), f.cost_multipliers, rf_order
+                self._seed_cprf(window, rf_excluded_idx),
+                f.cost_multipliers,
+                rf_order,
             )
             rf_spend = self._seed_spend_flighting(
                 "rf_spend", window, f.horizon, average
