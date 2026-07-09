@@ -8,6 +8,7 @@ Meridian directly -- the SERVER process is Meridian-free.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from datetime import datetime, timezone
 from typing import Any
@@ -131,7 +132,14 @@ class OptimizationService:
         if preflight["validation_error"]:
             _raise_from_validation_error(preflight["validation_error"])
 
-        return self._submit(
+        # D1: _submit is sync and acquires the executor's RLock (registry I/O
+        # + launch); get_status/cancel/etc. are offloaded via to_thread and can
+        # hold that same lock across GCS RPCs / _terminate's handle.wait(5) --
+        # a concurrent submit running on the event-loop thread would block the
+        # WHOLE loop waiting for it. Offload the sync tail to a worker thread
+        # too, so it can block on the lock without freezing the loop.
+        return await asyncio.to_thread(
+            self._submit,
             model_id,
             config,
             fingerprint=fingerprint,
@@ -164,7 +172,10 @@ class OptimizationService:
         if preflight["validation_error"]:
             _raise_from_validation_error(preflight["validation_error"])
 
-        return self._submit(
+        # D1: see the matching comment in run_optimization -- offload the sync
+        # submit tail so it can't block the event loop on the executor lock.
+        return await asyncio.to_thread(
+            self._submit,
             model_id,
             config,
             fingerprint=fingerprint,

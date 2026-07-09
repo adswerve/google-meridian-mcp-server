@@ -82,6 +82,13 @@ class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
         cloud tier (BaseExecutor.reconcile_orphans), this also covers QUEUED:
         a queued-but-never-launched run has no chance of being picked up by
         anything else.
+
+        Single-instance-only by contract: this is only correct for a lone
+        server instance against its registry. Under a SHARED registry with
+        multiple concurrent server instances, one instance's startup
+        reconcile could transiently FAIL another instance's live run (see
+        spec: "local tier is single-instance-only"); multi-instance
+        deployment requires the cloud tier instead.
         """
         with self._lock:
             for status in (RunStatus.RUNNING, RunStatus.QUEUED):

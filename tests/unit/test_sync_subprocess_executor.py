@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 import sys
 import textwrap
 import time
@@ -151,6 +152,73 @@ async def test_shutdown_drains_a_still_pending_spawn(tmp_path, monkeypatch):
     assert r._live == set()
     assert r._pending_spawns == set()
     assert r._cleanup_tasks == set()
+
+
+async def test_shutdown_final_pass_kills_a_pid_left_in_live(tmp_path):
+    """D2: the drain loop's kill pass over `_live` runs at the TOP of each
+    iteration, but the break condition only checks `_pending_spawns`/
+    `_cleanup_tasks` -- a spawn resolving cleanly mid-drain (see the
+    shutdown() docstring: "or, if a race let it spawn cleanly, into `_live`")
+    can add its pid to `_live` AFTER the loop's last kill pass but BEFORE the
+    break. shutdown() must therefore do one final kill pass over `_live`
+    after the loop exits, so no pid left there -- regardless of when it
+    arrived -- survives shutdown()."""
+    r = mk(tmp_path, OK)
+    # Stand-in for a spawn that resolved into `_live` after the drain loop's
+    # own kill passes: a real, live child process whose pid we place directly
+    # into `_live`, with nothing else pending so the loop would otherwise
+    # break on its very first iteration.
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+    )
+    r._live.add(proc.pid)
+
+    await r.shutdown()
+
+    assert r._live == set()
+    proc.wait(timeout=5)  # reap the SIGKILL'd child before checking liveness
+    with pytest.raises(ProcessLookupError):
+        os.kill(proc.pid, 0)  # child gone (not just a zombie)
+
+
+async def test_shutdown_warns_when_drain_loop_cap_exhausted(
+    tmp_path, monkeypatch, caplog
+):
+    """R3: if the drain loop's ~100-iteration bound is hit without both
+    `_pending_spawns` and `_cleanup_tasks` draining, shutdown() must log a
+    warning so a stuck teardown is visible instead of exiting silently."""
+    import logging
+
+    from google_meridian_mcp_server.execution import (
+        sync_subprocess_executor as sse_module,
+    )
+
+    r = mk(tmp_path, OK)
+
+    class _NeverDoneTask:
+        def done(self):
+            return False
+
+        def cancel(self):
+            return True
+
+        def __await__(self):
+            return iter(())
+
+    # A permanently-pending "task" that is never removed from
+    # `_pending_spawns` -- forces every iteration to fail the break check.
+    r._pending_spawns.add(_NeverDoneTask())
+
+    async def _fake_gather(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(sse_module.asyncio, "gather", _fake_gather)
+
+    with caplog.at_level(logging.WARNING, logger=sse_module.__name__):
+        await r.shutdown()
+
+    assert any("iteration cap" in rec.getMessage() for rec in caplog.records)
 
 
 def _entries(root):

@@ -191,6 +191,7 @@ async def test_tool_wrappers_return_standard_error_payloads(
 @pytest.mark.asyncio
 async def test_tool_surface_catches_non_meridian_exceptions(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ):
     """F4(b): a plain (non-MeridianMcpError) exception raised by a service
     method must never escape a tool handler as a raw exception -- the
@@ -205,12 +206,42 @@ async def test_tool_surface_catches_non_meridian_exceptions(
     tools_module.register_tools(mcp)
     ctx = SimpleNamespace(lifespan_context={})
 
-    result = await mcp.tools["get_model_overview"]("m1", ctx)
+    with caplog.at_level("ERROR", logger=tools_module.__name__):
+        result = await mcp.tools["get_model_overview"]("m1", ctx)
 
     assert result["error_code"] == "internal_error"
     assert "ValueError" in result["message"]
     assert "boom: disk exploded" in result["message"]
     assert result["details"] == {}
+    # R2: an unexpected exception must be logged server-side, not just
+    # converted to an envelope, so operators get some signal.
+    assert any(
+        "unhandled error in tool handler" in rec.getMessage() for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_guarded_does_not_log_meridian_mcp_errors(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """R2: a MeridianMcpError is a normal domain outcome, not an unexpected
+    failure -- @_guarded must NOT log it (only the except Exception branch
+    logs)."""
+    mcp = _FakeFastMCP()
+    analysis_service = SimpleNamespace(
+        get_model_overview=_async_raise(ModelNotFoundError("missing")),
+    )
+    monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
+
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    with caplog.at_level("ERROR", logger=tools_module.__name__):
+        await mcp.tools["get_model_overview"]("missing", ctx)
+
+    assert not any(
+        "unhandled error in tool handler" in rec.getMessage() for rec in caplog.records
+    )
 
 
 def test_aggregate_geos_is_no_longer_accepted():

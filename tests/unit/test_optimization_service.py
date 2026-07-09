@@ -1,5 +1,6 @@
 # tests/unit/test_optimization_service.py
 import sys
+import threading
 
 import pytest
 
@@ -534,6 +535,72 @@ async def test_preflight_receives_validated_config_dump_with_kind(
     assert len(preflight_calls) == 1
     _, _, params = preflight_calls[0]
     assert params["config"]["kind"] == "future"
+
+
+class _ThreadRecordingExecutor:
+    """Fake executor whose submit() records which thread called it."""
+
+    def __init__(self):
+        self.submitted = []
+        self.threads: list[threading.Thread] = []
+
+    def submit(self, run):
+        self.submitted.append(run.run_id)
+        self.threads.append(threading.current_thread())
+
+    def pump(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_run_optimization_offloads_submit_to_worker_thread(tmp_path):
+    """D1: run_optimization's sync submit tail (_submit, which acquires the
+    executor's RLock and does registry I/O + launch) must run via
+    asyncio.to_thread, not on the event-loop thread. get_status/cancel/etc.
+    are offloaded (F6) and can hold that same lock across GCS RPCs /
+    _terminate's handle.wait(5); a submit running synchronously on the loop
+    would block the WHOLE loop waiting on it."""
+    main_thread = threading.current_thread()
+    cfg = RuntimeConfig(
+        persistence_backend="local",
+        local_models_root=str(tmp_path),
+        optimization_runs_root=str(tmp_path / "runs"),
+    )
+    reg = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
+    executor = _ThreadRecordingExecutor()
+    svc = OptimizationService(FakeRunner(), reg, executor, cfg)
+
+    out = await svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+
+    assert out["reused"] is False
+    assert executor.submitted == [out["run_id"]]
+    assert executor.threads[0] is not main_thread
+
+
+@pytest.mark.asyncio
+async def test_run_future_optimization_offloads_submit_to_worker_thread(tmp_path):
+    """D1: same offload requirement for run_future_optimization's submit tail."""
+    main_thread = threading.current_thread()
+    cfg = RuntimeConfig(
+        persistence_backend="local",
+        local_models_root=str(tmp_path),
+        optimization_runs_root=str(tmp_path / "runs"),
+    )
+    reg = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
+    executor = _ThreadRecordingExecutor()
+    svc = OptimizationService(FakeRunner(), reg, executor, cfg)
+
+    out = await svc.run_future_optimization(
+        "national-revenue",
+        {
+            "scenario": {"type": "fixed_budget"},
+            "future": {"start_date": "2099-01-01", "horizon": 4},
+        },
+    )
+
+    assert out["reused"] is False
+    assert executor.submitted == [out["run_id"]]
+    assert executor.threads[0] is not main_thread
 
 
 @pytest.mark.asyncio

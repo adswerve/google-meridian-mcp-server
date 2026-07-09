@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 from typing import Annotated, Any, Literal
 
 from fastmcp import Context, FastMCP
@@ -28,6 +29,8 @@ from google_meridian_mcp_server.services.model_catalog_service import (
     ModelCatalogService,
 )
 from google_meridian_mcp_server.services.optimization_service import OptimizationService
+
+log = logging.getLogger(__name__)
 
 READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True,
@@ -64,6 +67,11 @@ def _guarded(fn):
         except MeridianMcpError as error:
             return _error_response(error)
         except Exception as exc:  # noqa: BLE001 - tool-surface catch-all
+            # R2: MeridianMcpError above is a normal domain outcome and stays
+            # unlogged; anything landing here is unexpected, so log it
+            # server-side before converting it to the internal_error envelope
+            # -- otherwise the operator gets no signal at all.
+            log.exception("unhandled error in tool handler")
             return _error_response(InternalError(f"{type(exc).__name__}: {exc}"))
 
     return _wrapped

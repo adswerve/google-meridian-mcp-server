@@ -303,3 +303,22 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
             await asyncio.sleep(0)  # let scheduled continuations/callbacks run
             if not self._pending_spawns and not self._cleanup_tasks:
                 break
+        else:
+            # R3: the cap was hit without both collections draining -- make a
+            # stuck teardown visible instead of exiting silently.
+            log.warning(
+                "shutdown: drain loop hit its iteration cap with %d pending "
+                "spawn(s) and %d cleanup task(s) still outstanding",
+                len(self._pending_spawns),
+                len(self._cleanup_tasks),
+            )
+
+        # D2: a spawn can resolve cleanly mid-drain -- landing its pid in
+        # `_live` -- AFTER the last top-of-iteration kill pass but before the
+        # loop's break check runs. Do one final kill pass over whatever is in
+        # `_live` now so shutdown() can never exit leaving such a child alive.
+        # kill_group already suppresses ProcessLookupError, so re-killing an
+        # already-dead pid from an earlier pass is harmless.
+        for pid in list(self._live):
+            self.kill_group(pid)
+        self._live.clear()

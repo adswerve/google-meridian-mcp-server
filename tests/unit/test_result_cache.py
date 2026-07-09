@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from google_meridian_mcp_server.persistence.cache import ResultCache
 
 
@@ -110,6 +112,36 @@ class TestResultCacheBoundedLru:
         for i in range(DEFAULT_RESULT_CACHE_MAX_ENTRIES + 10):
             cache.put("t", "m", {"i": i}, i)
         assert len(cache._store) == DEFAULT_RESULT_CACHE_MAX_ENTRIES
+
+
+class TestResultCacheThreadSafety:
+    def test_uses_a_lock(self):
+        """R1: the F6 offload put optimization bookkeeping handlers on worker
+        threads, so ResultCache's get/put (read-modify-write over a plain
+        OrderedDict, including move_to_end/eviction) is no longer guaranteed
+        to run only on the event-loop thread. Structural guard: a lock exists
+        and is held across get/put."""
+        cache = ResultCache(enabled=True)
+        assert hasattr(cache, "_lock")
+
+    def test_concurrent_get_put_from_many_threads_stays_within_cap(self):
+        """Fire many concurrent get/put calls from a ThreadPoolExecutor: no
+        exception should escape, and the bounded-LRU cap must never be
+        exceeded even under concurrent eviction."""
+        cache = ResultCache(enabled=True, max_entries=8)
+
+        def _worker(i: int) -> None:
+            for j in range(50):
+                cache.put("t", "m", {"i": i, "j": j}, f"v{i}-{j}")
+                cache.get("t", "m", {"i": i, "j": j})
+                cache.get("t", "m", {"i": i, "j": max(j - 1, 0)})
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = [pool.submit(_worker, i) for i in range(16)]
+            for f in futures:
+                f.result()  # re-raises any exception from the worker
+
+        assert len(cache._store) <= 8
 
 
 class TestResultCacheKeyDeterminism:
