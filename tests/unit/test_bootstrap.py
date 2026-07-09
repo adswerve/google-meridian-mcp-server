@@ -51,7 +51,7 @@ def test_build_registry_gcs(tmp_path, monkeypatch):
 def test_build_executor_local():
     cfg = RuntimeConfig(persistence_backend="local", local_models_root="/m")
     ex = build_executor(cfg, _FakeRegistry())
-    assert ex.__class__.__name__ == "SubprocessExecutor"
+    assert ex.__class__.__name__ == "AsyncSubprocessExecutor"
 
 
 def test_build_executor_cloud_only():

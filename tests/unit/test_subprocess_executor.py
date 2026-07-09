@@ -8,7 +8,9 @@ from google_meridian_mcp_server.domain.optimization import (
     RunStatus,
 )
 from google_meridian_mcp_server.execution.base_executor import BaseExecutor
-from google_meridian_mcp_server.execution.subprocess_executor import SubprocessExecutor
+from google_meridian_mcp_server.execution.subprocess_executor import (
+    AsyncSubprocessExecutor,
+)
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     LocalOptimizationRunRegistry,
 )
@@ -268,19 +270,49 @@ def test_subprocess_executor_builds_worker_command(tmp_path, monkeypatch):
     captured = {}
 
     class _Popen:
-        def __init__(self, cmd, env=None):
+        def __init__(self, cmd, env=None, **kwargs):
             captured["cmd"] = cmd
             captured["env"] = env
+            captured.update(kwargs)
 
         def poll(self):
             return None
 
     monkeypatch.setattr(subprocess, "Popen", _Popen)
-    ex = SubprocessExecutor(
-        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="jax"
+    ex = AsyncSubprocessExecutor(
+        reg,
+        max_parallel=2,
+        heartbeat_stale_seconds=60,
+        backend="jax",
+        log_root=tmp_path / "logs",
     )
     reg.create(_run("a"))
     ex.submit(_run("a"))
     assert "google_meridian_mcp_server.execution.worker" in captured["cmd"]
     assert captured["env"]["OPTIMIZATION_RUN_ID"] == "a"
     assert captured["env"]["MERIDIAN_BACKEND"] == "jax"
+
+
+def test_launch_redirects_and_new_session(monkeypatch, tmp_path):
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured.update(kwargs)
+
+        class _P:
+            pid = 4321
+
+        return _P()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    ex = AsyncSubprocessExecutor(
+        reg,
+        max_parallel=1,
+        heartbeat_stale_seconds=60,
+        backend="tensorflow",
+        log_root=tmp_path,
+    )
+    ex._launch(_run("r1"))
+    assert captured["start_new_session"] is True
+    assert captured["stdout"] is not None

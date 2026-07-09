@@ -48,10 +48,10 @@ def build_executor(
     allowed = set(cfg.optimization_allowed_tiers)
     if ComputeTier.LOCAL.value in allowed:
         from google_meridian_mcp_server.execution.subprocess_executor import (
-            SubprocessExecutor,
+            AsyncSubprocessExecutor,
         )
 
-        return SubprocessExecutor(
+        return AsyncSubprocessExecutor(
             registry,
             max_parallel=cfg.optimization_max_parallel,
             heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
