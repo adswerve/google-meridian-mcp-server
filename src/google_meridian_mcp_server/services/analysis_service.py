@@ -12,10 +12,13 @@ from google_meridian_mcp_server.domain.errors import (
     MetricNotSupportedError,
     MissingModelDataError,
 )
-from google_meridian_mcp_server.domain.filters import AnalysisFilters, normalize_filters
+from google_meridian_mcp_server.domain.filters import (
+    TRAINING_DATASETS,
+    AnalysisFilters,
+    normalize_filters,
+)
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.meridian.dataset_mapper import (
-    TRAINING_DATASETS,
     extract_channel_data,
     extract_training_datasets,
     filter_records,
@@ -484,8 +487,8 @@ class AnalysisService:
 
         return self._cached("get_spend_scenario", model_id, params, _compute)
 
+    @staticmethod
     def _build_spend_scenario(
-        self,
         *,
         model_id: str,
         channel: str,
@@ -501,13 +504,13 @@ class AnalysisService:
         n = new_outcome["mean"]
         delta = n - b
         if outcome_mode == "revenue":
-            efficiency = self._safe_ratio(b, base_spend)
-            marginal_efficiency = self._safe_ratio(delta, spend_increase)
-            efficiency_at_new = self._safe_ratio(n, new_spend)
+            efficiency = AnalysisService._safe_ratio(b, base_spend)
+            marginal_efficiency = AnalysisService._safe_ratio(delta, spend_increase)
+            efficiency_at_new = AnalysisService._safe_ratio(n, new_spend)
         else:
-            efficiency = self._safe_ratio(base_spend, b)
-            marginal_efficiency = self._safe_ratio(spend_increase, delta)
-            efficiency_at_new = self._safe_ratio(new_spend, n)
+            efficiency = AnalysisService._safe_ratio(base_spend, b)
+            marginal_efficiency = AnalysisService._safe_ratio(spend_increase, delta)
+            efficiency_at_new = AnalysisService._safe_ratio(new_spend, n)
 
         summary = {
             "model_id": model_id,
@@ -517,16 +520,18 @@ class AnalysisService:
             "base_spend": base_spend,
             "spend_increase": spend_increase,
             "new_spend": new_spend,
-            "spend_increase_pct": self._safe_ratio(100.0 * spend_increase, base_spend),
+            "spend_increase_pct": AnalysisService._safe_ratio(100.0 * spend_increase, base_spend),
             "base_outcome": base_outcome,
             "new_outcome": new_outcome,
             "expected_outcome_increase": delta,
-            "expected_outcome_increase_pct": self._safe_ratio(100.0 * delta, b),
+            "expected_outcome_increase_pct": AnalysisService._safe_ratio(100.0 * delta, b),
             "efficiency": efficiency,
             "marginal_efficiency": marginal_efficiency,
             "efficiency_at_new": efficiency_at_new,
         }
-        return {key: self._round_value(value) for key, value in summary.items()}
+        return {
+            key: AnalysisService._round_value(value) for key, value in summary.items()
+        }
 
     @classmethod
     def _round_value(cls, value: Any) -> Any:

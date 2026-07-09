@@ -39,6 +39,22 @@ ResponseDynamicsType = Literal["adstock_decay", "alpha_summary"]
 
 ResponseCurveType = Literal["response_curves", "response_curve_summary"]
 
+TRAINING_DATASETS = (
+    "kpi",
+    "revenue_per_kpi",
+    "population",
+    "media",
+    "media_spend",
+    "reach",
+    "frequency",
+    "rf_spend",
+    "organic_media",
+    "organic_reach",
+    "organic_frequency",
+    "non_media_treatments",
+    "controls",
+)
+
 
 class AnalysisFilters(BaseModel):
     """Normalized analysis filters accepted by grouped analysis tools."""

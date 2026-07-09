@@ -23,6 +23,62 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _start_parent_death_guard(poll_interval: float = 2.0) -> threading.Thread:
+    """Exit immediately if our parent process dies (reparented to init/PID 1).
+
+    Guards against orphaned worker subprocesses lingering after the parent
+    server process crashes or is killed without a chance to clean up children.
+    """
+
+    def _watch() -> None:
+        while True:
+            threading.Event().wait(poll_interval)
+            if os.getppid() == 1:
+                os._exit(0)
+
+    thread = threading.Thread(target=_watch, daemon=True)
+    thread.start()
+    return thread
+
+
+def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
+    import json
+    import traceback
+
+    from google_meridian_mcp_server.domain.errors import MeridianMcpError
+    from google_meridian_mcp_server.execution import analysis_ops
+
+    with open(request_path) as f:
+        req = json.load(f)
+
+    rc = 0
+    try:
+        result = analysis_ops.run_operation(
+            catalog, req["operation"], req["model_id"], req["params"]
+        )
+        payload: dict[str, Any] = {"ok": True, "result": result}
+    except MeridianMcpError as err:
+        payload = {"ok": False, "error": err.to_payload()}  # normal outcome -> rc 0
+    except Exception as exc:  # noqa: BLE001 - worker boundary
+        traceback.print_exc()  # child log only
+        payload = {
+            "ok": False,
+            "error": {
+                "error_code": "internal_error",
+                "message": type(exc).__name__,
+                "details": {},
+            },
+        }
+        rc = 1
+
+    payload = analysis_ops.sanitize_nan(payload)  # whole payload, incl. error details
+    tmp = response_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, allow_nan=False)
+    os.replace(tmp, response_path)
+    return rc
+
+
 def _headline(result: dict[str, Any]) -> str:
     summary = result.get("summary", {})
     mode = result.get("outcome_mode", "revenue")
@@ -133,6 +189,23 @@ def run_worker(
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = argv or sys.argv
+    if argv[1:2] == ["analysis"]:
+        _start_parent_death_guard()
+        os.environ.setdefault(
+            "MERIDIAN_BACKEND", "tensorflow"
+        )  # not self-referential
+        # NOTE: build_model_catalog is used here (not build_worker_catalog) because
+        # build_worker_catalog is introduced in Task 8; this keeps the analysis
+        # worker functional at this commit. Task 8 will switch this import.
+        from google_meridian_mcp_server.bootstrap import build_model_catalog
+        from google_meridian_mcp_server.config import load_config
+
+        return run_analysis(
+            argv[2], argv[3], catalog=build_model_catalog(load_config())
+        )
+
+    _start_parent_death_guard()
     run_id = os.environ["OPTIMIZATION_RUN_ID"]
     backend = os.environ.get("MERIDIAN_BACKEND", "tensorflow")
     os.environ["MERIDIAN_BACKEND"] = (
