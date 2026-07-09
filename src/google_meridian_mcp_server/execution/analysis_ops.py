@@ -95,6 +95,8 @@ def _dispatch_facade_query(
     facade = catalog.get_facade(model_id)
     filters = normalize_filters(params["filters"])
     output_type = params["output_type"]
+    if output_type not in dispatch:
+        raise InvalidOutputTypeError(output_type, sorted(dispatch))
     method_name = dispatch[output_type]
     try:
         rows = getattr(facade, method_name)(filters)

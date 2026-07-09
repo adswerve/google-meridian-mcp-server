@@ -5,15 +5,18 @@ ported verbatim from AnalysisService; these tests check dispatch, filter
 rehydration, model-validation guards, and NaN sanitization.
 """
 
+import json
+
 import pytest
 
 from google_meridian_mcp_server.domain.errors import (
+    InvalidOutputTypeError,
     MeridianMcpError,
     MetricNotSupportedError,
     MissingModelDataError,
 )
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
-from google_meridian_mcp_server.execution import analysis_ops
+from google_meridian_mcp_server.execution import analysis_ops, worker
 
 
 class FakeFacade:
@@ -225,3 +228,289 @@ def test_preflight_optimization_reports_validation_error_for_invalid_future_conf
     assert out["validation_error"]["error_code"] == "invalid_optimization_config"
     # channel_order/size_features still populated -- worker doesn't abort.
     assert out["channel_order"] == ["tv", "search"]
+
+
+def test_invalid_output_type_raises_invalid_output_type_not_keyerror():
+    # Critical faithful-port guard: an unknown output_type on a dispatch op must
+    # raise InvalidOutputTypeError (rc 0, invalid_output_type + valid_types in
+    # details), NOT a bare KeyError (which would surface as internal_error rc 1).
+    with pytest.raises(InvalidOutputTypeError) as excinfo:
+        analysis_ops.run_operation(
+            FakeCatalog(),
+            "get_contribution",
+            "m1",
+            {"output_type": "bogus_type", "filters": {}},
+        )
+    assert "contribution_metrics" in excinfo.value.details["valid_types"]
+
+
+# --- get_channel_data / get_training_data (extractor-backed ops) -------------
+
+
+class FakeExtractorCatalog:
+    """Catalog whose resolve() returns a sentinel; extractors are monkeypatched."""
+
+    def __init__(self, sentinel=object()):
+        self._sentinel = sentinel
+
+    def resolve(self, model_id):
+        return self._sentinel
+
+
+def test_get_channel_data_extracts_filters_and_shapes_result(monkeypatch):
+    rows = [
+        {"channel": "tv", "geo": "US-CA", "spend": 10.0},
+        {"channel": "search", "geo": "US-NY", "spend": 20.0},
+    ]
+    monkeypatch.setattr(analysis_ops, "extract_channel_data", lambda mmm: rows)
+    captured = {}
+
+    def fake_filter_records(records, **kwargs):
+        captured.update(kwargs)
+        return records
+
+    monkeypatch.setattr(analysis_ops, "filter_records", fake_filter_records)
+
+    out = analysis_ops.run_operation(
+        FakeExtractorCatalog(),
+        "get_channel_data",
+        "m1",
+        {"filters": {"geos": ["US-CA"]}},
+    )
+    assert out["model_id"] == "m1"
+    assert out["row_count"] == 2
+    assert "channel" in out["columns"]
+    # filter_records received the rehydrated filter dims.
+    assert captured["geos"] == ["US-CA"]
+
+
+def test_get_training_data_reports_datasets_and_single_dataset(monkeypatch):
+    rows = [{"time": "2024-01-01", "geo": "US-CA", "kpi": 1.0}]
+    monkeypatch.setattr(
+        analysis_ops, "extract_training_datasets", lambda mmm, datasets: rows
+    )
+    monkeypatch.setattr(
+        analysis_ops, "filter_records", lambda records, **kwargs: records
+    )
+
+    out = analysis_ops.run_operation(
+        FakeExtractorCatalog(),
+        "get_training_data",
+        "m1",
+        {"datasets": ["kpi"], "filters": {}},
+    )
+    assert out["datasets"] == ["kpi"]
+    assert out["dataset"] == "kpi"  # single dataset -> dataset field set
+    assert out["row_count"] == 1
+
+
+def test_get_training_data_multiple_datasets_omits_dataset_field(monkeypatch):
+    rows = [{"time": "2024-01-01", "kpi": 1.0, "media": 2.0}]
+    monkeypatch.setattr(
+        analysis_ops, "extract_training_datasets", lambda mmm, datasets: rows
+    )
+    monkeypatch.setattr(
+        analysis_ops, "filter_records", lambda records, **kwargs: records
+    )
+
+    out = analysis_ops.run_operation(
+        FakeExtractorCatalog(),
+        "get_training_data",
+        "m1",
+        {"datasets": ["kpi", "media"], "filters": {}},
+    )
+    assert out["datasets"] == ["kpi", "media"]
+    assert "dataset" not in out  # >1 dataset -> no single dataset field
+
+
+# --- get_spend_scenario (guard-heavy) ----------------------------------------
+
+
+class FakeSpendFacade:
+    def __init__(self, *, media=("tv",), rf_media=(), use_kpi=False):
+        self._media = list(media)
+        self._rf_media = list(rf_media)
+        self._use_kpi = use_kpi
+
+    def get_data_inputs(self):
+        return {"media": self._media, "rf_media": self._rf_media}
+
+    def resolve_use_kpi(self, filters):
+        assert isinstance(filters, AnalysisFilters)
+        return self._use_kpi
+
+    def resolve_base_spend(self, channel, filters):
+        assert isinstance(filters, AnalysisFilters)
+        return 100.0
+
+    def spend_response(self, channel, spends, filters):
+        assert isinstance(filters, AnalysisFilters)
+        # base outcome then new outcome; means scale with spend for realism.
+        return [
+            {"mean": spends[0] * 2.0},
+            {"mean": spends[1] * 2.0},
+        ]
+
+
+class FakeSpendCatalog:
+    def __init__(self, facade):
+        self._facade = facade
+
+    def get_facade(self, model_id):
+        return self._facade
+
+    def get_interrogator(self, model_id):
+        return self._facade
+
+
+def test_get_spend_scenario_happy_path():
+    catalog = FakeSpendCatalog(FakeSpendFacade(media=("tv",)))
+    out = analysis_ops.run_operation(
+        catalog,
+        "get_spend_scenario",
+        "m1",
+        {
+            "channel": "tv",
+            "spend_increase": 50.0,
+            "base_spend": None,
+            "filters": {},
+        },
+    )
+    assert out["channel"] == "tv"
+    assert out["channel_type"] == "paid_media"
+    assert out["outcome_mode"] == "revenue"
+    assert out["base_spend"] == 100.0
+    assert out["new_spend"] == 150.0
+    assert out["base_outcome"]["mean"] == 200.0
+    assert out["new_outcome"]["mean"] == 300.0
+
+
+def test_get_spend_scenario_rf_channel_type():
+    catalog = FakeSpendCatalog(FakeSpendFacade(media=(), rf_media=("video",)))
+    out = analysis_ops.run_operation(
+        catalog,
+        "get_spend_scenario",
+        "m1",
+        {"channel": "video", "spend_increase": 10.0, "base_spend": 100.0, "filters": {}},
+    )
+    assert out["channel_type"] == "rf"
+
+
+def test_get_spend_scenario_unknown_channel_raises():
+    catalog = FakeSpendCatalog(FakeSpendFacade(media=("tv",)))
+    with pytest.raises(MissingModelDataError):
+        analysis_ops.run_operation(
+            catalog,
+            "get_spend_scenario",
+            "m1",
+            {"channel": "ghost", "spend_increase": 10.0, "base_spend": None, "filters": {}},
+        )
+
+
+def test_get_spend_scenario_nonpositive_base_spend_raises():
+    catalog = FakeSpendCatalog(FakeSpendFacade(media=("tv",)))
+    with pytest.raises(MissingModelDataError):
+        analysis_ops.run_operation(
+            catalog,
+            "get_spend_scenario",
+            "m1",
+            {"channel": "tv", "spend_increase": 10.0, "base_spend": 0.0, "filters": {}},
+        )
+
+
+# --- worker.run_analysis IPC contract ----------------------------------------
+
+
+class _NanFacade:
+    def get_contribution_metrics(self, filters):
+        assert isinstance(filters, AnalysisFilters)
+        return [{"channel": "tv", "mean": float("nan")}]
+
+
+class _NanCatalog:
+    def get_facade(self, model_id):
+        return _NanFacade()
+
+    def get_interrogator(self, model_id):
+        return _NanFacade()
+
+
+class _BoomCatalog:
+    """A catalog whose facade lookup raises a plain (non-domain) Exception."""
+
+    def get_facade(self, model_id):
+        raise RuntimeError("unexpected boom")
+
+    def get_interrogator(self, model_id):
+        raise RuntimeError("unexpected boom")
+
+
+def _write_request(tmp_path, payload):
+    req = tmp_path / "req.json"
+    req.write_text(json.dumps(payload))
+    return str(req), str(tmp_path / "resp.json")
+
+
+def test_run_analysis_success_writes_ok_payload(tmp_path):
+    req_path, resp_path = _write_request(
+        tmp_path,
+        {
+            "operation": "get_contribution",
+            "model_id": "m1",
+            "params": {"output_type": "contribution_metrics", "filters": {}},
+        },
+    )
+    rc = worker.run_analysis(req_path, resp_path, catalog=FakeCatalog())
+    assert rc == 0
+    payload = json.loads(open(resp_path).read())
+    assert payload["ok"] is True
+    assert payload["result"]["output_type"] == "contribution_metrics"
+
+
+def test_run_analysis_domain_error_writes_error_payload_rc0(tmp_path):
+    # Unknown op -> InvalidOutputTypeError (a MeridianMcpError) -> ok False, rc 0.
+    req_path, resp_path = _write_request(
+        tmp_path,
+        {"operation": "nope", "model_id": "m1", "params": {}},
+    )
+    rc = worker.run_analysis(req_path, resp_path, catalog=FakeCatalog())
+    assert rc == 0
+    payload = json.loads(open(resp_path).read())
+    assert payload["ok"] is False
+    assert payload["error"]["error_code"] == "invalid_output_type"
+
+
+def test_run_analysis_unexpected_exception_writes_internal_error_rc1(tmp_path):
+    req_path, resp_path = _write_request(
+        tmp_path,
+        {
+            "operation": "get_contribution",
+            "model_id": "m1",
+            "params": {"output_type": "contribution_metrics", "filters": {}},
+        },
+    )
+    rc = worker.run_analysis(req_path, resp_path, catalog=_BoomCatalog())
+    assert rc == 1
+    payload = json.loads(open(resp_path).read())
+    assert payload["ok"] is False
+    assert payload["error"]["error_code"] == "internal_error"
+
+
+def test_run_analysis_sanitizes_nan_to_null(tmp_path):
+    req_path, resp_path = _write_request(
+        tmp_path,
+        {
+            "operation": "get_contribution",
+            "model_id": "m1",
+            "params": {"output_type": "contribution_metrics", "filters": {}},
+        },
+    )
+    rc = worker.run_analysis(req_path, resp_path, catalog=_NanCatalog())
+    assert rc == 0
+    raw = open(resp_path).read()
+    # allow_nan=False path produced valid strict JSON (no NaN literal).
+    assert "NaN" not in raw
+    payload = json.loads(raw)  # would raise if NaN literal leaked
+    assert payload["ok"] is True
+    # the nan cell round-tripped to null.
+    assert payload["result"]["rows"] == [["tv", None]]
