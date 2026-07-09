@@ -61,6 +61,7 @@ class OptimizerFacade(MeridianInterrogator):
         use_kpi = self.resolve_use_kpi(config)
         opt = optimizer_mod.BudgetOptimizer(self._mmm)
         kwargs = build_kwargs(config, opt, use_kpi)
+        assumptions = kwargs.pop("_assumptions", None)
         results = opt.optimize(**kwargs)
         curves = (
             _best_effort(lambda: results.get_response_curves())
@@ -72,6 +73,7 @@ class OptimizerFacade(MeridianInterrogator):
             results.optimized_data,
             use_kpi=use_kpi,
             response_curves=curves,
+            assumptions=assumptions,
         )
 
     def run(self, config: OptimizationConfig) -> dict[str, Any]:
@@ -257,6 +259,20 @@ class OptimizerFacade(MeridianInterrogator):
                 spend_constraint_lower=lower,
                 spend_constraint_upper=upper,
             )
+        kwargs["_assumptions"] = {
+            "budget": budget if fixed_budget else None,
+            "budget_source": (
+                (
+                    "explicit"
+                    if scenario_budget is not None
+                    else "derived_from_reference"
+                )
+                if fixed_budget
+                else "determined_by_target"
+            ),
+            "reference_mode": f.reference.mode,
+            "excluded_channels": list(f.excluded_channels or []),
+        }
         return kwargs
 
     # -- private seed helpers (read self._mmm.input_data as NumPy) ------------
@@ -384,7 +400,7 @@ class OptimizerFacade(MeridianInterrogator):
 
     @staticmethod
     def build_result(
-        nonopt, opt, *, use_kpi: bool, response_curves=None
+        nonopt, opt, *, use_kpi: bool, response_curves=None, assumptions=None
     ) -> dict[str, Any]:
         outcome_mode = "kpi" if use_kpi else "revenue"
         result = {
@@ -401,6 +417,8 @@ class OptimizerFacade(MeridianInterrogator):
             result["response_curves"] = OptimizerFacade._response_curve_rows(
                 response_curves
             )
+        if assumptions is not None:
+            result["assumptions"] = assumptions
         return result
 
     @staticmethod

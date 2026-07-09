@@ -125,6 +125,39 @@ def test_build_result_kpi_mode_inverts_efficiency():
     assert result["summary"]["optimized_efficiency"] == 0.25  # 1/total_roi
 
 
+def test_build_result_includes_assumptions_when_provided():
+    channels = ["tv", "search"]
+    common = dict(
+        roi={m: _const(channels, 3.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        mroi={m: _const(channels, 2.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        cpik={m: _const(channels, 0.5) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        eff={m: _const(channels, 0.1) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+        inc={m: _const(channels, 1000.0) for m in ["mean", "median", "ci_lo", "ci_hi"]},
+    )
+    ds = _dataset(
+        channels,
+        budget=1000.0,
+        total_outcome=2000.0,
+        total_roi=2.0,
+        spend=[600.0, 400.0],
+        **common,
+    )
+    assumptions = {
+        "budget": 1000.0,
+        "budget_source": "derived_from_reference",
+        "reference_mode": "full_history_average",
+        "excluded_channels": ["tv"],
+    }
+    result = OptimizerFacade.build_result(
+        ds, ds, use_kpi=False, assumptions=assumptions
+    )
+    assert result["assumptions"] == assumptions
+
+    # Historical/no assumptions → key absent.
+    result2 = OptimizerFacade.build_result(ds, ds, use_kpi=False)
+    assert "assumptions" not in result2
+
+
 def test_kpi_mode_zero_total_roi_yields_none_efficiency():
     """FIX 5: KPI mode with total_roi==0 → optimized_efficiency is None, not inf."""
     channels = ["tv"]
