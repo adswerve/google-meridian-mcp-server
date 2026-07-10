@@ -123,7 +123,9 @@ def build_all(out_root: Path = DEFAULT_OUT_ROOT, force: bool = False) -> list[Pa
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--force", action="store_true", help="Rebuild existing fixtures")
+    parser.add_argument(
+        "--force", action="store_true", help="Rebuild existing fixtures"
+    )
     parser.add_argument("--out", default=str(DEFAULT_OUT_ROOT), help="Output directory")
     args = parser.parse_args()
     build_all(Path(args.out), force=args.force)

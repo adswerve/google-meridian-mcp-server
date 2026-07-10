@@ -1,7 +1,14 @@
-"""Service orchestrating optimization submission, reuse, and registry reads."""
+"""Service orchestrating optimization submission, reuse, and registry reads.
+
+Task 11: every model-derived value (channel_order, use_kpi, size_features,
+config validation) now comes from the worker-side ``preflight_optimization``
+op (Task 7) via ``runner.run(...)``. This service never imports or touches
+Meridian directly -- the SERVER process is Meridian-free.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from datetime import datetime, timezone
 from typing import Any
@@ -15,13 +22,9 @@ from google_meridian_mcp_server.domain.optimization import (
     OptimizationRun,
     RunStatus,
     config_fingerprint,
-    to_optimize_kwargs,
 )
-from google_meridian_mcp_server.execution.routing import (
-    model_size_features,
-    resolve_tier,
-    size_score,
-)
+from google_meridian_mcp_server.execution.routing import resolve_tier, size_score
+from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
 )
@@ -46,20 +49,68 @@ def _default_label(model_id: str, config: BaseOptimizationConfig) -> str:
     return f"{_slug(model_id)} {config.scenario.type}"
 
 
+def _raise_from_validation_error(payload: dict[str, Any]) -> None:
+    """Reconstruct a typed error from preflight's ``validation_error`` payload.
+
+    The worker-side op only ever populates this with error_code
+    "invalid_optimization_config" today (validate_future/to_optimize_kwargs
+    raise plain ValueError, pydantic raises ValidationError -- both land in
+    the generic except branch of ``_preflight_optimization``). Branch on the
+    error_code defensively rather than hardcoding the subclass: if a future
+    change makes the worker surface a *different* typed MeridianMcpError here
+    (caught via its own `except MeridianMcpError` branch, whose payload
+    message may already carry its own prefix), reconstructing it as
+    InvalidOptimizationConfigError would double-prefix the message.
+    """
+    if payload.get("error_code") == "invalid_optimization_config":
+        raise InvalidOptimizationConfigError(payload["message"])
+    raise MeridianMcpError.from_payload(payload)
+
+
 class OptimizationService:
     def __init__(
         self,
-        catalog: Any,
+        runner: Any,
         registry: OptimizationRunRegistry,
         executor: Any,
         cfg: RuntimeConfig,
+        result_cache: ResultCache | None = None,
     ) -> None:
-        self._catalog = catalog
+        self._runner = runner
         self._registry = registry
         self._executor = executor
         self._cfg = cfg
+        # Preflight results are config-dependent (use_kpi/validation_error vary
+        # per config, not just per model_id), so this MUST be keyed on the
+        # config fingerprint -- never on bare model_id. See Task 11 brief.
+        #
+        # A fresh OptimizationService is constructed per tool call (see
+        # transport/tools.py:_optimization_service), so a bespoke
+        # instance-local dict here would never survive past a single call --
+        # it would cache nothing, ever. Cache in the lifespan-scoped
+        # ResultCache instead, which outlives individual tool calls.
+        self._result_cache = result_cache
 
-    def run_optimization(
+    async def _preflight(
+        self, model_id: str, config_dict: dict, fingerprint: str
+    ) -> dict[str, Any]:
+        cache_params = {"fingerprint": fingerprint}
+        if self._result_cache is not None:
+            cached = self._result_cache.get(
+                "preflight_optimization", model_id, cache_params
+            )
+            if cached is not None:
+                return cached
+        result = await self._runner.run(
+            "preflight_optimization", model_id, {"config": config_dict}
+        )
+        if self._result_cache is not None:
+            self._result_cache.put(
+                "preflight_optimization", model_id, cache_params, result
+            )
+        return result
+
+    async def run_optimization(
         self,
         model_id: str,
         config_dict: dict,
@@ -69,33 +120,37 @@ class OptimizationService:
         compute_tier: str = "auto",
         force_rerun: bool = False,
     ) -> dict[str, Any]:
-        facade = self._catalog.get_optimizer_facade(
-            model_id
-        )  # raises ModelNotFoundError
         try:
             config = OptimizationConfig.model_validate(config_dict)
         except Exception as exc:  # pydantic ValidationError
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
-        use_kpi = facade.resolve_use_kpi(config)
-        try:
-            to_optimize_kwargs(
-                config, channel_order=facade.channel_order(), use_kpi=use_kpi
-            )
-        except ValueError as exc:
-            raise InvalidOptimizationConfigError(str(exc)) from exc
+        fingerprint = config_fingerprint(model_id, config)
+        preflight = await self._preflight(
+            model_id, config.model_dump(mode="json"), fingerprint
+        )
+        if preflight["validation_error"]:
+            _raise_from_validation_error(preflight["validation_error"])
 
-        return self._submit(
+        # D1: _submit is sync and acquires the executor's RLock (registry I/O
+        # + launch); get_status/cancel/etc. are offloaded via to_thread and can
+        # hold that same lock across GCS RPCs / _terminate's handle.wait(5) --
+        # a concurrent submit running on the event-loop thread would block the
+        # WHOLE loop waiting for it. Offload the sync tail to a worker thread
+        # too, so it can block on the lock without freezing the loop.
+        return await asyncio.to_thread(
+            self._submit,
             model_id,
             config,
-            facade=facade,
+            fingerprint=fingerprint,
+            size_features=preflight["size_features"],
             label=label,
             note=note,
             compute_tier=compute_tier,
             force_rerun=force_rerun,
         )
 
-    def run_future_optimization(
+    async def run_future_optimization(
         self,
         model_id: str,
         config_dict: dict,
@@ -105,23 +160,26 @@ class OptimizationService:
         compute_tier: str = "auto",
         force_rerun: bool = False,
     ) -> dict[str, Any]:
-        facade = self._catalog.get_optimizer_facade(
-            model_id
-        )  # raises ModelNotFoundError
         try:
             config = FutureOptimizationConfig.model_validate(config_dict)
         except Exception as exc:  # pydantic ValidationError
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
-        try:
-            facade.validate_future(config)  # pure guards, no optimize()
-        except ValueError as exc:
-            raise InvalidOptimizationConfigError(str(exc)) from exc
+        fingerprint = config_fingerprint(model_id, config)
+        preflight = await self._preflight(
+            model_id, config.model_dump(mode="json"), fingerprint
+        )
+        if preflight["validation_error"]:
+            _raise_from_validation_error(preflight["validation_error"])
 
-        return self._submit(
+        # D1: see the matching comment in run_optimization -- offload the sync
+        # submit tail so it can't block the event loop on the executor lock.
+        return await asyncio.to_thread(
+            self._submit,
             model_id,
             config,
-            facade=facade,
+            fingerprint=fingerprint,
+            size_features=preflight["size_features"],
             label=label,
             note=note,
             compute_tier=compute_tier,
@@ -133,13 +191,13 @@ class OptimizationService:
         model_id: str,
         config: BaseOptimizationConfig,
         *,
-        facade: Any,
+        fingerprint: str,
+        size_features: dict[str, int],
         label: str | None,
         note: str | None,
         compute_tier: str,
         force_rerun: bool,
     ) -> dict[str, Any]:
-        fingerprint = config_fingerprint(model_id, config)
         if not force_rerun:
             existing_id = self._registry.find_by_fingerprint(fingerprint)
             if existing_id is not None:
@@ -154,8 +212,7 @@ class OptimizationService:
                         record, reused=True, status=state.status.value
                     )
 
-        features = model_size_features(facade)
-        score = size_score(features)
+        score = size_score(size_features)
         try:
             resolved = resolve_tier(
                 score,
@@ -250,5 +307,11 @@ class OptimizationService:
         return {"run_id": run_id, "status": RunStatus.CANCELED.value}
 
     def delete(self, run_id: str) -> dict[str, Any]:
+        # cancel() BEFORE delete(): it dequeues/terminates any QUEUED or
+        # RUNNING executor-side entry first (like cancel_optimization does).
+        # Without this a QUEUED run's id would linger in the executor's
+        # internal queue after its registry record is gone, and a later
+        # pump() would pop it and hit a RunNotFoundError trying to launch it.
+        self._executor.cancel(run_id)
         self._registry.delete(run_id)
         return {"run_id": run_id, "deleted": True}

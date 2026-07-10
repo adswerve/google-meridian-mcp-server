@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,8 @@ from google_meridian_mcp_server.domain.models import ModelCatalogEntry
 from google_meridian_mcp_server.persistence.base import ModelProvider
 
 log = logging.getLogger(__name__)
+
+DEFAULT_RESULT_CACHE_MAX_ENTRIES = 256
 
 
 class DiscoveryCache:
@@ -55,12 +59,33 @@ class MaterializationCache:
 
 
 class ResultCache:
-    """Optional in-memory cache for repeated analysis results."""
+    """Optional in-memory cache for repeated analysis results.
 
-    def __init__(self, enabled: bool = True, ttl_seconds: int | None = None) -> None:
+    Bounded LRU (max ``max_entries``, default 256) on top of the existing TTL
+    behavior: an unbounded cache would grow forever under enough distinct
+    (tool, model_id, params) keys and slowly OOM the server. ``OrderedDict``
+    ordering doubles as recency tracking -- ``move_to_end`` on both read and
+    write hits, ``popitem(last=False)`` (oldest) to evict on overflow.
+
+    R1: this was safe only because every caller ran on the event-loop thread;
+    the F6 offload put optimization bookkeeping handlers on worker threads
+    (via ``asyncio.to_thread``), so a bare ``OrderedDict`` read-modify-write
+    (get's TTL-expiry delete + move_to_end, put's insert + move_to_end +
+    evict) can now race across threads. A single ``threading.Lock`` guards
+    the whole body of ``get``/``put``, including the move_to_end/eviction.
+    """
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        ttl_seconds: int | None = None,
+        max_entries: int = DEFAULT_RESULT_CACHE_MAX_ENTRIES,
+    ) -> None:
         self._enabled = enabled
         self._ttl = ttl_seconds
-        self._store: dict[str, tuple[float, Any]] = {}
+        self._max_entries = max_entries
+        self._store: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self._lock = threading.Lock()
 
     @staticmethod
     def _make_key(tool_name: str, model_id: str, params: dict) -> str:
@@ -75,20 +100,27 @@ class ResultCache:
         if not self._enabled:
             return None
         key = self._make_key(tool_name, model_id, params)
-        entry = self._store.get(key)
-        if entry is None:
-            return None
-        ts, value = entry
-        if self._ttl and (time.monotonic() - ts) >= self._ttl:
-            del self._store[key]
-            return None
-        return value
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            ts, value = entry
+            if self._ttl and (time.monotonic() - ts) >= self._ttl:
+                del self._store[key]
+                return None
+            self._store.move_to_end(key)  # mark most-recently-used
+            return value
 
     def put(self, tool_name: str, model_id: str, params: dict, value: Any) -> None:
         if not self._enabled:
             return
         key = self._make_key(tool_name, model_id, params)
-        self._store[key] = (time.monotonic(), value)
+        with self._lock:
+            self._store[key] = (time.monotonic(), value)
+            self._store.move_to_end(key)  # mark most-recently-used
+            while len(self._store) > self._max_entries:
+                self._store.popitem(last=False)  # evict oldest
 
     def invalidate(self) -> None:
-        self._store.clear()
+        with self._lock:
+            self._store.clear()

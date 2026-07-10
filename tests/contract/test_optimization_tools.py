@@ -130,7 +130,7 @@ async def test_run_future_optimization_submit_envelope(client):
         assert run_id and "compute_tier_resolved" in data
     finally:
         # Reap the submitted run: cancel terminates the worker subprocess spawned
-        # by SubprocessExecutor, then delete removes the run record, so no
+        # by AsyncSubprocessExecutor, then delete removes the run record, so no
         # orphaned process or on-disk artifact survives the test.
         if run_id:
             await client.call_tool("cancel_optimization", {"run_id": run_id})

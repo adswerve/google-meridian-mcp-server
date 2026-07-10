@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -10,9 +11,14 @@ from pathlib import Path
 from fastmcp import FastMCP
 from fastmcp.server.providers.skills import SkillsDirectoryProvider
 
-from google_meridian_mcp_server.bootstrap import build_model_catalog
+from google_meridian_mcp_server.bootstrap import build_discovery_cache
 from google_meridian_mcp_server.config import load_config
 from google_meridian_mcp_server.domain.models import Transport
+from google_meridian_mcp_server.execution.subprocess_executor import DEFAULT_LOG_ROOT
+from google_meridian_mcp_server.execution.sync_subprocess_executor import (
+    SyncSubprocessExecutor,
+    sweep_stale_entries,
+)
 from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.transport.tools import register_tools
 
@@ -39,7 +45,7 @@ async def _lifespan(server: FastMCP):
         cfg.persistence_backend,
     )
 
-    model_catalog = build_model_catalog(cfg)
+    discovery_cache = build_discovery_cache(cfg)
     result_cache = ResultCache(
         enabled=cfg.result_cache_enabled,
         ttl_seconds=cfg.result_cache_ttl_seconds,
@@ -63,13 +69,50 @@ async def _lifespan(server: FastMCP):
     except Exception:  # noqa: BLE001 - reconcile is best-effort startup hygiene
         log.warning("startup orphan reconcile failed", exc_info=True)
 
-    yield {
-        "config": cfg,
-        "model_catalog": model_catalog,
-        "result_cache": result_cache,
-        "optimization_registry": optimization_registry,
-        "optimization_executor": optimization_executor,
-    }
+    analysis_runner = SyncSubprocessExecutor(
+        semaphore=asyncio.Semaphore(cfg.analysis_max_parallel),
+        run_timeout=cfg.analysis_worker_timeout,
+        queue_wait_timeout=cfg.analysis_queue_wait_timeout,
+        max_response_bytes=cfg.analysis_max_response_bytes,
+        workdir_root=cfg.analysis_workdir_root,
+        env_base={
+            "MERIDIAN_BACKEND": os.getenv("MERIDIAN_BACKEND", "tensorflow"),
+            "PERSISTENCE_BACKEND": cfg.persistence_backend,
+            **(
+                {"LOCAL_MODELS_ROOT": cfg.local_models_root}
+                if cfg.local_models_root
+                else {}
+            ),
+            **({"GCS_BUCKET": cfg.gcs_bucket} if cfg.gcs_bucket else {}),
+            **(
+                {"GCS_MODELS_PREFIX": cfg.gcs_models_prefix}
+                if cfg.gcs_models_prefix
+                else {}
+            ),
+            "MODEL_CACHE_ROOT": cfg.model_cache_root,
+        },
+    )
+
+    # F10b: age-based sweep of retained analysis workdirs + optimization worker
+    # log files, run once at startup (not on every spawn). Best-effort startup
+    # hygiene, same posture as reconcile_orphans above.
+    try:
+        sweep_stale_entries(cfg.analysis_workdir_root, cfg.analysis_workdir_ttl_seconds)
+        sweep_stale_entries(DEFAULT_LOG_ROOT, cfg.analysis_workdir_ttl_seconds)
+    except Exception:  # noqa: BLE001 - sweep is best-effort startup hygiene
+        log.warning("startup workdir/log sweep failed", exc_info=True)
+
+    try:
+        yield {
+            "config": cfg,
+            "discovery_cache": discovery_cache,
+            "result_cache": result_cache,
+            "optimization_registry": optimization_registry,
+            "optimization_executor": optimization_executor,
+            "analysis_runner": analysis_runner,
+        }
+    finally:
+        await analysis_runner.shutdown()
 
 
 def create_server() -> FastMCP:

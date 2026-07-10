@@ -318,7 +318,7 @@ async def assert_live_future_optimization(client, model_id: str, *, overview) ->
     )
 
 
-def assert_cloud_live_optimization(service, model_id: str) -> None:
+async def assert_cloud_live_optimization(service, model_id: str) -> None:
     """Drive the OptimizationService directly to prove the CloudRunJobExecutor
     launch/liveness/cancel contract end-to-end (faked jobs.run, real worker).
 
@@ -332,7 +332,7 @@ def assert_cloud_live_optimization(service, model_id: str) -> None:
         "scenario": {"type": "fixed_budget"},
         "constraint": {"mode": "global", "pct": 0.2},
     }
-    submit = service.run_optimization(model_id, config, compute_tier="cloud_cpu")
+    submit = await service.run_optimization(model_id, config, compute_tier="cloud_cpu")
     run_id = submit["run_id"]
     assert submit["compute_tier_resolved"] == "cloud_cpu", (
         f"expected cloud_cpu tier, got {submit}"
@@ -363,7 +363,7 @@ def assert_cloud_live_optimization(service, model_id: str) -> None:
     )
 
     # Reuse: identical submit returns the same run, flagged reused.
-    again = service.run_optimization(model_id, config, compute_tier="cloud_cpu")
+    again = await service.run_optimization(model_id, config, compute_tier="cloud_cpu")
     assert again["reused"] is True and again["run_id"] == run_id, (
         f"reuse failed: {again}"
     )
@@ -375,7 +375,9 @@ def assert_cloud_live_optimization(service, model_id: str) -> None:
         "scenario": {"type": "fixed_budget"},
         "constraint": {"mode": "global", "pct": 0.35},
     }
-    fresh = service.run_optimization(model_id, cancel_config, compute_tier="cloud_cpu")
+    fresh = await service.run_optimization(
+        model_id, cancel_config, compute_tier="cloud_cpu"
+    )
     fresh_id = fresh["run_id"]
     assert fresh_id != run_id, f"cancel run should be fresh: {fresh}"
     service.cancel(fresh_id)  # must not raise

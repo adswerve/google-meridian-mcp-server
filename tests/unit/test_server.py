@@ -38,6 +38,11 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         optimization_heartbeat_stale_seconds=120,
         optimization_backend_local="subprocess",
         optimization_allowed_tiers=("local",),
+        analysis_max_parallel=2,
+        analysis_worker_timeout=300.0,
+        analysis_queue_wait_timeout=30.0,
+        analysis_max_response_bytes=64 * 1024 * 1024,
+        analysis_workdir_root="/tmp/mmm-analysis",
     )
 
 
@@ -61,21 +66,46 @@ async def test_lifespan_selects_expected_provider(
     monkeypatch: pytest.MonkeyPatch,
     backend: str,
 ):
-    model_catalog = object()
+    discovery_cache = object()
     result_cache = object()
 
     monkeypatch.setattr(server, "load_config", lambda: _runtime_config(backend))
     monkeypatch.setattr(
-        server, "build_model_catalog", mock.Mock(return_value=model_catalog)
+        server, "build_discovery_cache", mock.Mock(return_value=discovery_cache)
     )
     monkeypatch.setattr(server, "ResultCache", mock.Mock(return_value=result_cache))
 
     async with server._lifespan(SimpleNamespace()) as state:
-        assert state["model_catalog"] is model_catalog
+        assert state["discovery_cache"] is discovery_cache
         assert state["result_cache"] is result_cache
+        # Task 11: the server drops the full model_catalog entirely -- the
+        # subprocess runner is the only thing that ever touches Meridian.
+        analysis_runner = state["analysis_runner"]
+        assert isinstance(analysis_runner, server.SyncSubprocessExecutor)
 
-    server.build_model_catalog.assert_called_once()
+    server.build_discovery_cache.assert_called_once()
     server.ResultCache.assert_called_once_with(enabled=True, ttl_seconds=30)
+
+
+@pytest.mark.asyncio
+async def test_lifespan_shuts_down_analysis_runner_on_exit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(server, "load_config", lambda: _runtime_config("local"))
+    monkeypatch.setattr(
+        server, "build_discovery_cache", mock.Mock(return_value=object())
+    )
+    monkeypatch.setattr(server, "ResultCache", mock.Mock(return_value=object()))
+
+    shutdown = mock.AsyncMock()
+    monkeypatch.setattr(
+        server.SyncSubprocessExecutor, "shutdown", shutdown, raising=True
+    )
+
+    async with server._lifespan(SimpleNamespace()):
+        shutdown.assert_not_called()
+
+    shutdown.assert_awaited_once()
 
 
 def test_run_server_uses_stdio_transport(monkeypatch: pytest.MonkeyPatch):

@@ -64,3 +64,24 @@ def test_cloud_tier_fully_configured_is_valid():
         cloud_run_job_gpu="meridian-opt-gpu",
     )
     assert cfg.cloud_run_project == "example-dev-project"
+
+
+def test_analysis_runner_config_defaults(sample_runtime_config):
+    cfg = sample_runtime_config
+    assert cfg.analysis_max_parallel == 2
+    assert cfg.analysis_worker_timeout == 300.0
+    assert cfg.analysis_queue_wait_timeout == 30.0
+    assert cfg.analysis_max_response_bytes == 64 * 1024 * 1024
+    assert cfg.analysis_workdir_root == "/tmp/mmm-analysis"
+
+
+def test_analysis_runner_config_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("PERSISTENCE_BACKEND", "local")
+    monkeypatch.setenv("LOCAL_MODELS_ROOT", str(tmp_path))
+    monkeypatch.setenv("ANALYSIS_MAX_PARALLEL", "4")
+    monkeypatch.setenv("ANALYSIS_WORKER_TIMEOUT", "600")
+    from google_meridian_mcp_server.config import load_config
+
+    cfg = load_config()
+    assert cfg.analysis_max_parallel == 4
+    assert cfg.analysis_worker_timeout == 600.0
