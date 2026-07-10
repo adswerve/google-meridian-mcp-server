@@ -15,9 +15,25 @@ To smoke-test cloud_gpu instead:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import time
+
+
+class _InProcessCatalogRunner:
+    """Adapts a full in-process ModelCatalog to the runner.run(...) interface
+    OptimizationService now expects (Task 11), bypassing the subprocess
+    boundary -- this script already runs with full Meridian access
+    in-process, unlike the real server."""
+
+    def __init__(self, catalog):
+        self._catalog = catalog
+
+    async def run(self, operation, model_id, params):
+        from google_meridian_mcp_server.execution import analysis_ops
+
+        return analysis_ops.run_operation(self._catalog, operation, model_id, params)
 
 
 def main() -> int:
@@ -27,12 +43,9 @@ def main() -> int:
         )
         return 0
 
-    from google_meridian_mcp_server.bootstrap import (
-        build_executor,
-        build_model_catalog,
-        build_registry,
-    )
+    from google_meridian_mcp_server.bootstrap import build_executor, build_registry
     from google_meridian_mcp_server.config import load_config
+    from google_meridian_mcp_server.execution.worker import build_worker_catalog
     from google_meridian_mcp_server.services.optimization_service import (
         OptimizationService,
     )
@@ -47,17 +60,20 @@ def main() -> int:
     cfg = load_config()
     registry = build_registry(cfg)
     executor = build_executor(cfg, registry)
-    catalog = build_model_catalog(cfg)
+    catalog = build_worker_catalog(cfg)
+    runner = _InProcessCatalogRunner(catalog)
     service = OptimizationService(
-        catalog=catalog, registry=registry, executor=executor, cfg=cfg
+        runner=runner, registry=registry, executor=executor, cfg=cfg
     )
 
     config = {
         "scenario": {"type": "fixed_budget"},
         "constraint": {"mode": "global", "pct": 0.2},
     }
-    submit = service.run_optimization(
-        model_id, config, compute_tier=compute_tier, force_rerun=force_rerun
+    submit = asyncio.run(
+        service.run_optimization(
+            model_id, config, compute_tier=compute_tier, force_rerun=force_rerun
+        )
     )
     run_id = submit["run_id"]
     assert submit["compute_tier_resolved"] == compute_tier, (

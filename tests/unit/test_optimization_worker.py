@@ -1,13 +1,20 @@
 # tests/unit/test_optimization_worker.py
+import threading
 import time
 from typing import Any
 
+from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationConfig,
     OptimizationRun,
     RunStatus,
 )
-from google_meridian_mcp_server.execution.worker import run_worker
+from google_meridian_mcp_server.execution.worker import (
+    _expected_parent_pid,
+    _is_orphaned,
+    build_worker_catalog,
+    run_worker,
+)
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.meridian.optimizer_facade import OptimizerFacade
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
@@ -62,6 +69,60 @@ def _seed_run(reg, run_id="m-1"):
             server_version="0.1.0",
         )
     )
+
+
+def test_is_orphaned_same_ppid_is_not_orphaned():
+    """Fable finding 1: the guard must compare against the ppid captured at
+    guard-start time, not a hardcoded '== 1' -- that check is wrong whenever
+    the server itself runs as PID 1 (e.g. the shipped container's exec-form
+    CMD with no init), since every worker would then see getppid() == 1 from
+    birth and exit before doing any work."""
+    assert _is_orphaned(original_ppid=500, current_ppid=500) is False
+
+
+def test_is_orphaned_reparented_to_pid_1_is_orphaned():
+    assert _is_orphaned(original_ppid=500, current_ppid=1) is True
+
+
+def test_is_orphaned_reparented_to_other_pid_is_orphaned():
+    """Linux subreaper case: an orphan reparents to a non-1 subreaper pid,
+    which a bare '== 1' check would miss entirely."""
+    assert _is_orphaned(original_ppid=500, current_ppid=999) is True
+
+
+def test_expected_parent_pid_uses_env_var_when_present(monkeypatch):
+    """F3: the TOCTOU fix -- when the PARENT set MERIDIAN_PARENT_PID (at
+    spawn time, before fork+exec), the guard must use THAT value rather than
+    self-capturing os.getppid() (which would only run after the full
+    import chain, too late to catch a parent death during that window)."""
+    monkeypatch.setenv("MERIDIAN_PARENT_PID", "12345")
+    assert _expected_parent_pid() == 12345
+
+
+def test_expected_parent_pid_falls_back_to_getppid_when_env_absent(monkeypatch):
+    """F3 regression: standalone/test invocation with no MERIDIAN_PARENT_PID
+    set must fall back to the previous self-captured-getppid() behavior."""
+    import os
+
+    monkeypatch.delenv("MERIDIAN_PARENT_PID", raising=False)
+    assert _expected_parent_pid() == os.getppid()
+
+
+def test_is_orphaned_matches_env_provided_pid_is_not_orphaned():
+    """F3: with the env-provided expected pid, a matching current ppid is
+    correctly NOT flagged as orphaned."""
+    assert _is_orphaned(original_ppid=12345, current_ppid=12345) is False
+
+
+def test_is_orphaned_differs_from_env_provided_pid_is_orphaned():
+    """F3: with the env-provided expected pid, a DIFFERING current ppid
+    (reparented away from the real original parent) is correctly flagged."""
+    assert _is_orphaned(original_ppid=12345, current_ppid=1) is True
+
+
+def test_build_worker_catalog(tmp_path):
+    cfg = RuntimeConfig(persistence_backend="local", local_models_root=str(tmp_path))
+    assert isinstance(build_worker_catalog(cfg), ModelCatalog)
 
 
 def test_worker_happy_path_writes_result_and_completed(tmp_path):
@@ -193,6 +254,87 @@ def test_worker_uses_execute_for_dispatch(tmp_path):
     assert rc == 0
     assert "execute" in calls
     assert "run" not in calls
+
+
+class _SlowHeartbeatRegistry:
+    """Mimics a GCS registry whose heartbeat write can take longer than the
+    stop-and-join budget the old ``beat.join(timeout=1.0)`` allowed.
+
+    Only the BACKGROUND heartbeat thread's RUNNING write is slow (identified
+    by not being the calling thread that invoked run_worker) -- this mirrors a
+    real GCS write_state(RUNNING) taking longer than a short join timeout
+    while the main thread's own synchronous writes stay fast.
+    """
+
+    def __init__(self, record, *, slow_seconds: float):
+        self._record = record
+        self._slow_seconds = slow_seconds
+        self._caller_thread = threading.current_thread()
+        self.states: list[Any] = []
+
+    def get_record(self, run_id):
+        return self._record
+
+    def write_state(self, state):
+        if (
+            state.status == RunStatus.RUNNING
+            and state.heartbeat_at
+            and threading.current_thread() is not self._caller_thread
+        ):
+            time.sleep(self._slow_seconds)  # simulate a slow in-flight GCS write
+        self.states.append(state)
+
+    def write_result(self, run_id, result):
+        pass
+
+
+def test_f8_heartbeat_join_waits_for_in_flight_write_before_terminal_state(tmp_path):
+    """F8: a GCS heartbeat write(RUNNING) already in flight when the worker
+    finishes must be FULLY joined before the terminal state is written --
+    otherwise the stale RUNNING write can land AFTER the terminal write,
+    leaving a completed run showing RUNNING forever. Uses a heartbeat write
+    delay (1.3s) longer than the OLD `beat.join(timeout=1.0)` budget to prove
+    the fix actually waits past that old timeout."""
+    cfg = OptimizationConfig.model_validate({"scenario": {"type": "fixed_budget"}})
+    record = OptimizationRun(
+        run_id="m-1",
+        label="l",
+        model_id="m",
+        config=cfg,
+        config_fingerprint="fp",
+        compute_tier_requested="auto",
+        compute_tier_resolved="local",
+        backend="tensorflow",
+        size_score=1,
+        created_at="2026-06-29T00:00:00+00:00",
+        meridian_version="1.7.0",
+        server_version="0.1.0",
+    )
+    registry = _SlowHeartbeatRegistry(record, slow_seconds=1.3)
+
+    class _QuickFacade:
+        def execute(self, config):
+            time.sleep(0.15)  # long enough for one heartbeat tick to fire
+            return {"outcome_mode": "revenue", "summary": {}}
+
+    class _Catalog:
+        def get_optimizer_facade(self, model_id):
+            return _QuickFacade()
+
+    rc = run_worker(
+        record.run_id,
+        registry=registry,
+        catalog=_Catalog(),
+        backend="tensorflow",
+        heartbeat_interval=0.05,
+    )
+
+    assert rc == 0
+    assert registry.states, "expected at least the initial + terminal writes"
+    assert registry.states[-1].status == RunStatus.COMPLETED, (
+        "the terminal write must be LAST -- a stale in-flight heartbeat write "
+        "must never land after it"
+    )
 
 
 def test_catalog_get_optimizer_facade_returns_and_caches(monkeypatch):

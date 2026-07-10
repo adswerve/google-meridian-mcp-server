@@ -97,11 +97,27 @@ class TestModelCatalogListEntries:
         )
         provider = FakeProvider([entry])
         dc = DiscoveryCache(provider, ttl_seconds=3600)
-        mc = MaterializationCache(provider, "/tmp/test")
 
-        payload = ModelCatalogService(ModelCatalog(dc, mc)).list_models()
+        payload = ModelCatalogService(dc).list_models()
 
         assert payload[0]["last_modified"] is None
+
+    def test_catalog_service_serializes_discovery_cache_entries(self):
+        """Task 11: ModelCatalogService is backed by DiscoveryCache directly
+        (no ModelCatalog / Meridian facades)."""
+        from google_meridian_mcp_server.services.model_catalog_service import (
+            ModelCatalogService,
+        )
+
+        entry = _make_entry("beta")
+        provider = FakeProvider([entry])
+        dc = DiscoveryCache(provider, ttl_seconds=3600)
+
+        payload = ModelCatalogService(dc).list_models()
+
+        assert len(payload) == 1
+        assert payload[0]["model_id"] == "beta"
+        assert payload[0]["last_modified"] == "2026-01-01T00:00:00+00:00"
 
 
 class TestModelCatalogResolve:

@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 from google_meridian_mcp_server.domain.models import PersistenceBackend, RuntimeConfig
-from google_meridian_mcp_server.meridian.catalog import ModelCatalog
-from google_meridian_mcp_server.persistence.cache import (
-    DiscoveryCache,
-    MaterializationCache,
-)
+from google_meridian_mcp_server.persistence.cache import DiscoveryCache
 from google_meridian_mcp_server.persistence.gcs_provider import GcsModelProvider
 from google_meridian_mcp_server.persistence.local_provider import LocalModelProvider
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
@@ -16,14 +12,23 @@ from google_meridian_mcp_server.persistence.optimization_run_registry import (
 )
 
 
-def build_model_catalog(cfg: RuntimeConfig) -> ModelCatalog:
+def build_provider(cfg: RuntimeConfig):
+    """Shared provider construction (server + worker); no Meridian dependency."""
     if cfg.persistence_backend == PersistenceBackend.GCS.value:
-        provider = GcsModelProvider(cfg.gcs_bucket, cfg.gcs_models_prefix)
-    else:
-        provider = LocalModelProvider(cfg.local_models_root)
-    discovery = DiscoveryCache(provider, cfg.discovery_ttl_seconds)
-    materialization = MaterializationCache(provider, cfg.model_cache_root)
-    return ModelCatalog(discovery, materialization)
+        return GcsModelProvider(cfg.gcs_bucket, cfg.gcs_models_prefix)
+    return LocalModelProvider(cfg.local_models_root)
+
+
+def build_discovery_cache(cfg: RuntimeConfig) -> DiscoveryCache:
+    """Server-side: discovery only, no facades/materialization (never pulls Meridian)."""
+    provider = build_provider(cfg)
+    return DiscoveryCache(provider, cfg.discovery_ttl_seconds)
+
+
+# NOTE: build_worker_catalog (full ModelCatalog with materialization + facades)
+# lives in execution/worker.py, not here. bootstrap.py is imported by the
+# server lifespan and must stay provably free of the meridian subpackage
+# (enforced by ruff TID251); worker.py is the worker-only import boundary.
 
 
 def build_registry(cfg: RuntimeConfig) -> OptimizationRunRegistry:
@@ -48,10 +53,10 @@ def build_executor(
     allowed = set(cfg.optimization_allowed_tiers)
     if ComputeTier.LOCAL.value in allowed:
         from google_meridian_mcp_server.execution.subprocess_executor import (
-            SubprocessExecutor,
+            AsyncSubprocessExecutor,
         )
 
-        return SubprocessExecutor(
+        return AsyncSubprocessExecutor(
             registry,
             max_parallel=cfg.optimization_max_parallel,
             heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
@@ -72,8 +77,16 @@ def build_executor(
 
 
 def reconcile_orphans(registry: OptimizationRunRegistry, executor) -> None:
-    """On startup, fail runs left RUNNING with a stale heartbeat (crash during downtime)."""
-    from google_meridian_mcp_server.domain.optimization import RunStatus
+    """On startup, reconcile in-flight runs left over by a stopped server.
 
-    for summary in registry.list(status=RunStatus.RUNNING):
-        executor._reconcile_stale(summary.run_id)
+    Delegates to the executor: the local subprocess tier unconditionally
+    fails any run still RUNNING or QUEUED (the PID-1 parent-death guard in
+    worker.py guarantees a local worker cannot survive its parent server, so
+    such a run is provably dead); the cloud tier only fails RUNNING runs
+    whose heartbeat has gone stale, since a cloud worker CAN outlive the
+    server process. See BaseExecutor.reconcile_orphans /
+    AsyncSubprocessExecutor.reconcile_orphans.
+    """
+    # `registry` is unused here (kept for call-site symmetry/back-compat): the
+    # executor already holds its own reference to the same registry instance.
+    executor.reconcile_orphans()

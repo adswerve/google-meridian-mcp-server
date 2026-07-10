@@ -21,6 +21,21 @@ def _ensure_fixtures(force: bool) -> None:
     build_all(DEFAULT_OUT_ROOT, force=force)
 
 
+class _InProcessCatalogRunner:
+    """Adapts a full in-process ModelCatalog to the runner.run(...) interface
+    OptimizationService now expects (Task 11), bypassing the subprocess
+    boundary -- this script already runs with full Meridian access
+    in-process, unlike the real server."""
+
+    def __init__(self, catalog):
+        self._catalog = catalog
+
+    async def run(self, operation, model_id, params):
+        from google_meridian_mcp_server.execution import analysis_ops
+
+        return analysis_ops.run_operation(self._catalog, operation, model_id, params)
+
+
 def _build_cloud_service(*, backend: str, shared_dir):
     """Wire an OptimizationService backed by a CloudRunJobExecutor whose jobs.run
     is faked to launch the REAL worker locally.
@@ -31,11 +46,11 @@ def _build_cloud_service(*, backend: str, shared_dir):
     loads its OWN local config (local backend + local registry on the same dir),
     so an in-memory fake never has to cross the process boundary.
     """
-    from google_meridian_mcp_server.bootstrap import build_model_catalog
     from google_meridian_mcp_server.domain.models import RuntimeConfig
     from google_meridian_mcp_server.execution.cloud_run_executor import (
         CloudRunJobExecutor,
     )
+    from google_meridian_mcp_server.execution.worker import build_worker_catalog
     from google_meridian_mcp_server.persistence.optimization_run_registry import (
         LocalOptimizationRunRegistry,
     )
@@ -71,7 +86,8 @@ def _build_cloud_service(*, backend: str, shared_dir):
         model_cache_root="/tmp/mmm-models-cloudgate",
         result_cache_enabled=False,
     )
-    catalog = build_model_catalog(local_cfg)
+    catalog = build_worker_catalog(local_cfg)
+    runner = _InProcessCatalogRunner(catalog)
     registry = LocalOptimizationRunRegistry(str(shared_dir))
     jobs = FakeJobsClient(base_env=worker_base_env)
     execs = FakeExecutionsClient(jobs)
@@ -83,10 +99,10 @@ def _build_cloud_service(*, backend: str, shared_dir):
         jobs_client=jobs,
         executions_client=execs,
     )
-    return OptimizationService(catalog, registry, executor, cloud_cfg)
+    return OptimizationService(runner, registry, executor, cloud_cfg)
 
 
-def _run_cloud_gate() -> list[str]:
+async def _run_cloud_gate() -> list[str]:
     """Run the local cloud-executor live gate + cross-backend JAX gate.
 
     Returns a list of failure strings (empty == all green/skipped).
@@ -106,7 +122,7 @@ def _run_cloud_gate() -> list[str]:
     for model_id in ("national-revenue", "geo-revenue"):
         label = f"cloud/{model_id}/run_optimization[cloud_cpu,tensorflow]"
         try:
-            assert_cloud_live_optimization(tf_service, model_id)
+            await assert_cloud_live_optimization(tf_service, model_id)
             print(f"  PASS {label}")
         except AssertionError as exc:
             failures.append(f"{label}: {exc}")
@@ -125,7 +141,7 @@ def _run_cloud_gate() -> list[str]:
         jax_dir.mkdir(parents=True, exist_ok=True)
         jax_service = _build_cloud_service(backend="jax", shared_dir=jax_dir)
         try:
-            assert_cloud_live_optimization(jax_service, "national-revenue")
+            await assert_cloud_live_optimization(jax_service, "national-revenue")
             print(f"  PASS {jax_label}")
         except AssertionError as exc:
             failures.append(f"{jax_label}: {exc}")
@@ -147,7 +163,7 @@ async def _run() -> int:
     async with Client(mcp) as client:
         report = await run_matrix(client)
 
-    cloud_failures = _run_cloud_gate()
+    cloud_failures = await _run_cloud_gate()
 
     print(
         f"\n{len(report.passed)} passed, "
@@ -167,7 +183,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--force", action="store_true", help="Rebuild fixtures first")
     args = parser.parse_args()
-    if not (DEFAULT_OUT_ROOT.exists() and any(DEFAULT_OUT_ROOT.iterdir())) or args.force:
+    if (
+        not (DEFAULT_OUT_ROOT.exists() and any(DEFAULT_OUT_ROOT.iterdir()))
+        or args.force
+    ):
         _ensure_fixtures(args.force)
     sys.exit(asyncio.run(_run()))
 

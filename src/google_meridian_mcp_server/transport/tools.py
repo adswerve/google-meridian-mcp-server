@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import logging
 from typing import Annotated, Any, Literal
 
 from fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from google_meridian_mcp_server.domain.errors import MeridianMcpError
+from google_meridian_mcp_server.domain.errors import InternalError, MeridianMcpError
 from google_meridian_mcp_server.domain.filters import (
     AnalysisFilters,
     ChannelSummaryType,
@@ -16,7 +19,6 @@ from google_meridian_mcp_server.domain.filters import (
     ResponseCurveType,
     ResponseDynamicsType,
     TrainingDataset,
-    normalize_filters,
 )
 from google_meridian_mcp_server.domain.optimization import (
     FutureOptimizationConfig,
@@ -27,6 +29,8 @@ from google_meridian_mcp_server.services.model_catalog_service import (
     ModelCatalogService,
 )
 from google_meridian_mcp_server.services.optimization_service import OptimizationService
+
+log = logging.getLogger(__name__)
 
 READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True,
@@ -43,23 +47,54 @@ def _error_response(error: MeridianMcpError) -> dict[str, Any]:
     }
 
 
+def _guarded(fn):
+    """Tool-surface catch-all: no handler may ever leak a raw exception.
+
+    A ``MeridianMcpError`` becomes its own error envelope (same behavior the
+    per-handler ``try/except MeridianMcpError`` blocks used to provide).
+    Anything else (a bug, an OS error that slipped past a lower layer, etc.)
+    becomes an ``internal_error`` envelope instead of an uncaught exception
+    escaping into the MCP transport for a completely unrelated tool call.
+    ``functools.wraps`` preserves ``__wrapped__`` so FastMCP's schema
+    introspection (``inspect.signature``) still sees the original handler's
+    parameters/annotations, not ``(*args, **kwargs)``.
+    """
+
+    @functools.wraps(fn)
+    async def _wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return await fn(*args, **kwargs)
+        except MeridianMcpError as error:
+            return _error_response(error)
+        except Exception as exc:  # noqa: BLE001 - tool-surface catch-all
+            # R2: MeridianMcpError above is a normal domain outcome and stays
+            # unlogged; anything landing here is unexpected, so log it
+            # server-side before converting it to the internal_error envelope
+            # -- otherwise the operator gets no signal at all.
+            log.exception("unhandled error in tool handler")
+            return _error_response(InternalError(f"{type(exc).__name__}: {exc}"))
+
+    return _wrapped
+
+
 def _catalog_service(ctx: Context) -> ModelCatalogService:
-    return ModelCatalogService(ctx.lifespan_context["model_catalog"])
+    return ModelCatalogService(ctx.lifespan_context["discovery_cache"])
 
 
 def _analysis_service(ctx: Context) -> AnalysisService:
     return AnalysisService(
-        catalog=ctx.lifespan_context["model_catalog"],
+        runner=ctx.lifespan_context["analysis_runner"],
         result_cache=ctx.lifespan_context["result_cache"],
     )
 
 
 def _optimization_service(ctx: Context) -> OptimizationService:
     return OptimizationService(
-        catalog=ctx.lifespan_context["model_catalog"],
+        runner=ctx.lifespan_context["analysis_runner"],
         registry=ctx.lifespan_context["optimization_registry"],
         executor=ctx.lifespan_context["optimization_executor"],
         cfg=ctx.lifespan_context["config"],
+        result_cache=ctx.lifespan_context["result_cache"],
     )
 
 
@@ -67,14 +102,17 @@ def register_tools(mcp: FastMCP) -> None:
     """Register all tool handlers on the provided FastMCP server instance."""
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def list_models(ctx: Context) -> list[dict[str, Any]] | dict[str, Any]:
         """List all available Meridian marketing-mix models. Call this first to get model_id values needed by every other tool. Returns id, display_name, format, and last_modified for each model."""
-        try:
-            return _catalog_service(ctx).list_models()
-        except MeridianMcpError as error:
-            return _error_response(error)
+        # F6: list_models does discovery I/O (local fs walk or GCS list) synchronously;
+        # offload to a thread so a slow/degraded backend can't stall the event loop
+        # (and therefore every other in-flight tool call) while this resolves.
+        service = _catalog_service(ctx)
+        return await asyncio.to_thread(service.list_models)
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_model_overview(
         model_id: Annotated[
             str,
@@ -86,12 +124,10 @@ def register_tools(mcp: FastMCP) -> None:
         ctx: Context,
     ) -> dict[str, Any]:
         """Get full model metadata including time range, geos, channels, and the valid parameter values for every other tool. Call this after list_models and before analysis tools. The response includes an 'available_tool_options' section that maps each tool name to its accepted 'output_type' or 'dataset' enum values."""
-        try:
-            return _analysis_service(ctx).get_model_overview(model_id)
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_model_overview(model_id)
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_training_data(
         model_id: Annotated[
             str,
@@ -116,16 +152,14 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Retrieve raw input datasets by name (e.g. 'media_spend', 'kpi', 'controls', 'population') merged into one table — including non-channel series. Use when you want a specific dataset as stored. To investigate a channel's full picture across types, use get_channel_data instead."""
-        try:
-            return _analysis_service(ctx).get_training_data(
-                model_id,
-                dataset,
-                normalize_filters(filters),
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_training_data(
+            model_id,
+            dataset,
+            filters,
+        )
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_channel_summary(
         model_id: Annotated[
             str,
@@ -149,16 +183,14 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Get channel-level performance summaries from the fitted model. Use this to answer questions like 'which channel has the best ROI?', 'what is the baseline contribution?', or 'what is the marginal return on the next dollar of spend?'."""
-        try:
-            return _analysis_service(ctx).get_channel_summary(
-                model_id,
-                output_type,
-                normalize_filters(filters),
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_channel_summary(
+            model_id,
+            output_type,
+            filters,
+        )
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_contribution(
         model_id: Annotated[
             str,
@@ -182,16 +214,14 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Get how much each media channel contributed to the KPI. Use this to answer 'what share of conversions did each channel drive?' or 'how did channel contributions change over time?'."""
-        try:
-            return _analysis_service(ctx).get_contribution(
-                model_id,
-                output_type,
-                normalize_filters(filters),
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_contribution(
+            model_id,
+            output_type,
+            filters,
+        )
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_adstock_decay(
         model_id: Annotated[
             str,
@@ -215,16 +245,14 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Get media carryover (adstock) dynamics — how long a channel's effect persists after exposure. Use this to answer 'how quickly does TV advertising effect decay?' or 'which channels have the longest-lasting impact?'."""
-        try:
-            return _analysis_service(ctx).get_adstock_decay(
-                model_id,
-                output_type,
-                normalize_filters(filters),
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_adstock_decay(
+            model_id,
+            output_type,
+            filters,
+        )
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_response_curves(
         model_id: Annotated[
             str,
@@ -248,16 +276,14 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Get the spend-response relationship for each channel — how KPI changes as spend increases or decreases. Use this to answer 'what happens if we double search spend?' or 'which channels show diminishing returns?'."""
-        try:
-            return _analysis_service(ctx).get_response_curves(
-                model_id,
-                output_type,
-                normalize_filters(filters),
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_response_curves(
+            model_id,
+            output_type,
+            filters,
+        )
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_reach_frequency(
         model_id: Annotated[
             str,
@@ -275,15 +301,13 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Get optimal-frequency analysis for reach & frequency channels: expected ROI across weekly frequency levels plus the optimal frequency per channel. Only available for models with reach & frequency data."""
-        try:
-            return _analysis_service(ctx).get_reach_frequency(
-                model_id,
-                normalize_filters(filters),
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_reach_frequency(
+            model_id,
+            filters,
+        )
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_channel_data(
         model_id: Annotated[
             str,
@@ -301,15 +325,13 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Everything about a channel in one table — spend, impressions, reach/frequency — across all channel types (paid media, RF, organic, non-media). Use to investigate one or more channels directly. For raw datasets by name (including non-channel series like KPI or controls), use get_training_data instead."""
-        try:
-            return _analysis_service(ctx).get_channel_data(
-                model_id,
-                normalize_filters(filters),
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_channel_data(
+            model_id,
+            filters,
+        )
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_model_fit(
         model_id: Annotated[
             str,
@@ -327,15 +349,13 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Get model fit over time: expected vs actual outcome, baseline, and residual (actual - expected) per time period, with confidence intervals. Pass a 'geos' filter to fit only selected markets (aggregated to one series). Use this to judge how well the model tracks observed outcomes."""
-        try:
-            return _analysis_service(ctx).get_model_fit(
-                model_id,
-                normalize_filters(filters),
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_model_fit(
+            model_id,
+            filters,
+        )
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_spend_scenario(
         model_id: Annotated[
             str,
@@ -374,18 +394,16 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """Simulate adding spend to one channel: returns expected outcome lift and efficiency (ROI/mROI for revenue models, CPIK/mCPIK otherwise) at the base and increased spend levels. Spend is PER TIME UNIT. Use this to answer 'what happens to ROI if I add $X per week to search?'."""
-        try:
-            return _analysis_service(ctx).get_spend_scenario(
-                model_id,
-                channel,
-                spend_increase,
-                base_spend,
-                normalize_filters(filters),
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _analysis_service(ctx).get_spend_scenario(
+            model_id,
+            channel,
+            spend_increase,
+            base_spend,
+            filters,
+        )
 
     @mcp.tool
+    @_guarded
     async def run_optimization(
         model_id: Annotated[
             str,
@@ -443,19 +461,17 @@ def register_tools(mcp: FastMCP) -> None:
         ] = False,
     ) -> dict[str, Any]:
         """Optimize how budget is split across paid-media & RF channels. Answers "how should I reallocate spend?" or "what mix best hits a 2x ROAS target?". Supply a scenario (fixed_budget | target_roas | target_mroas) and spend constraints via `config`. Long-running: returns a run_id immediately — then poll get_optimization_status until status is 'completed', then read get_optimization_result. An identical prior run (same model + config) is reused unless force_rerun=true; browse prior runs with list_optimizations."""
-        try:
-            return _optimization_service(ctx).run_optimization(
-                model_id,
-                config.model_dump(mode="json"),
-                label=label,
-                note=note,
-                compute_tier=compute_tier,
-                force_rerun=force_rerun,
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _optimization_service(ctx).run_optimization(
+            model_id,
+            config.model_dump(mode="json"),
+            label=label,
+            note=note,
+            compute_tier=compute_tier,
+            force_rerun=force_rerun,
+        )
 
     @mcp.tool
+    @_guarded
     async def run_future_optimization(
         model_id: Annotated[
             str, Field(min_length=1, description="Model identifier from list_models.")
@@ -504,19 +520,17 @@ def register_tools(mcp: FastMCP) -> None:
         ] = False,
     ) -> dict[str, Any]:
         """Optimize a FUTURE budget under explicit assumptions (not a demand forecast). Answers "how should I split next quarter's budget?" or "if TV CPMs rise 20%, what's the best future mix?". Meridian does not forecast the future: this carries forward a chosen historical reference window's costs/flighting/revenue (optionally scaled by cost_multipliers / revenue_per_kpi_multiplier) and optimizes the allocation over a future window you define with start_date + horizon. Long-running: returns a run_id immediately — poll get_optimization_status until 'completed', then get_optimization_result. Identical prior runs are reused unless force_rerun=true."""
-        try:
-            return _optimization_service(ctx).run_future_optimization(
-                model_id,
-                config.model_dump(mode="json"),
-                label=label,
-                note=note,
-                compute_tier=compute_tier,
-                force_rerun=force_rerun,
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        return await _optimization_service(ctx).run_future_optimization(
+            model_id,
+            config.model_dump(mode="json"),
+            label=label,
+            note=note,
+            compute_tier=compute_tier,
+            force_rerun=force_rerun,
+        )
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_optimization_status(
         run_id: Annotated[
             str,
@@ -528,12 +542,14 @@ def register_tools(mcp: FastMCP) -> None:
         ctx: Context,
     ) -> dict[str, Any]:
         """Poll a run started by run_optimization or run_future_optimization. Returns status (queued/running/completed/failed/canceled), current phase, last heartbeat, elapsed time, and an error object if it failed. Call repeatedly until status is 'completed', then call get_optimization_result."""
-        try:
-            return _optimization_service(ctx).get_status(run_id)
-        except MeridianMcpError as error:
-            return _error_response(error)
+        # F6: get_status drives executor.pump(), which can do registry/GCS I/O
+        # (and, per live handle, a Cloud Run liveness RPC) synchronously; offload
+        # so a slow backend can't block the whole tool surface.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(service.get_status, run_id)
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def get_optimization_result(
         run_id: Annotated[
             str,
@@ -545,12 +561,12 @@ def register_tools(mcp: FastMCP) -> None:
         ctx: Context,
     ) -> dict[str, Any]:
         """Fetch the full structured result of a completed optimization: optimized-vs-current spend per channel, expected outcome lift, and per-channel efficiency (ROI/ROAS for revenue models, CPIK otherwise). Raises optimization_not_ready until get_optimization_status reports 'completed'. Answers 'what is the recommended budget allocation?'. Future-optimization results also carry an `assumptions` echo (budget, budget_source, reference_mode, excluded_channels) so an auto-derived budget is never silent."""
-        try:
-            return _optimization_service(ctx).get_result(run_id)
-        except MeridianMcpError as error:
-            return _error_response(error)
+        # F6: registry read is synchronous (GCS on that backend); offload.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(service.get_result, run_id)
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
     async def list_optimizations(
         ctx: Context,
         model_id: Annotated[
@@ -568,31 +584,30 @@ def register_tools(mcp: FastMCP) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """List past optimization runs (newest first) with config summary, status, and headline result. Use to find and reuse prior work instead of re-running, or to get a run_id for get_optimization_result / delete_optimization. Filter by model_id and/or status."""
-        try:
-            return _optimization_service(ctx).list_runs(
-                model_id=model_id, status=status, limit=limit
-            )
-        except MeridianMcpError as error:
-            return _error_response(error)
+        # F6: registry listing is synchronous (GCS list on that backend); offload.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(
+            service.list_runs, model_id=model_id, status=status, limit=limit
+        )
 
     @mcp.tool
+    @_guarded
     async def delete_optimization(
         run_id: Annotated[str, Field(min_length=1, description="run_id to delete.")],
         ctx: Context,
     ) -> dict[str, Any]:
         """Permanently delete one optimization run and its stored result by run_id. Irreversible. Find run_ids via list_optimizations. To stop an in-flight run instead, use cancel_optimization."""
-        try:
-            return _optimization_service(ctx).delete(run_id)
-        except MeridianMcpError as error:
-            return _error_response(error)
+        # F6: cancels the executor entry + deletes registry files synchronously; offload.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(service.delete, run_id)
 
     @mcp.tool
+    @_guarded
     async def cancel_optimization(
         run_id: Annotated[str, Field(min_length=1, description="run_id to cancel.")],
         ctx: Context,
     ) -> dict[str, Any]:
         """Best-effort cancel of a queued or running optimization by run_id. Does not remove the run record (use delete_optimization for that) and has no effect on runs that already completed or failed."""
-        try:
-            return _optimization_service(ctx).cancel(run_id)
-        except MeridianMcpError as error:
-            return _error_response(error)
+        # F6: terminates the executor handle + writes registry state synchronously; offload.
+        service = _optimization_service(ctx)
+        return await asyncio.to_thread(service.cancel, run_id)

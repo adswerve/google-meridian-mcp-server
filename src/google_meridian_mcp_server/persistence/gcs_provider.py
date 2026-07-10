@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path, PurePosixPath
 
 from google_meridian_mcp_server.domain.errors import (
@@ -99,22 +100,56 @@ class GcsModelProvider(ModelProvider):
         return entries
 
     def materialize(self, entry: ModelCatalogEntry, dest_dir: Path) -> Path:
-        """Download a GCS model to a local cache directory if not present."""
+        """Download a GCS model to a local cache directory if not present, or
+        if the cached copy's etag no longer matches the catalog entry's."""
         gs_prefix = f"gs://{self._bucket_name}/"
         blob_name = entry.source_path[len(gs_prefix) :]
         relative_path = self._relative_path_from_blob_name(blob_name)
         local_path = build_cache_path(dest_dir, relative_path)
         local_path.parent.mkdir(parents=True, exist_ok=True)
+        etag_path = local_path.parent / f"{local_path.name}.etag"
 
+        # F12: a cached file's mere PRESENCE was previously treated as a hit
+        # whenever the entry HAD an etag, without ever comparing it to what
+        # was actually cached -- so a re-uploaded model (new etag, same local
+        # path) was never re-downloaded, and workers analyzed the stale model
+        # forever. The sidecar records the etag the CACHED file was downloaded
+        # with; only a match is a real cache hit.
+        #
+        # (A duplicate-submit race -- two concurrent materialize() calls both
+        # missing the cache and both downloading -- is benign: both write the
+        # same content via the atomic .part+os.replace path below, so the
+        # last os.replace just wins harmlessly. No code change needed there.)
         if local_path.is_file() and entry.etag_or_fingerprint:
-            log.debug("Cache hit for %s at %s", entry.model_id, local_path)
-            return local_path
+            cached_etag = etag_path.read_text().strip() if etag_path.is_file() else None
+            if cached_etag == entry.etag_or_fingerprint:
+                log.debug("Cache hit for %s at %s", entry.model_id, local_path)
+                return local_path
+            log.info(
+                "Cached etag for %s is stale (cached=%s, current=%s); re-downloading",
+                entry.model_id,
+                cached_etag,
+                entry.etag_or_fingerprint,
+            )
 
         log.info("Downloading %s to %s", entry.source_path, local_path)
         client = self._get_client()
         bucket = client.bucket(self._bucket_name)
 
         blob = bucket.blob(blob_name)
-        blob.download_to_filename(str(local_path))
+        part_path = local_path.with_suffix(local_path.suffix + f".part.{os.getpid()}")
+        try:
+            blob.download_to_filename(str(part_path))
+            os.replace(part_path, local_path)
+        finally:
+            part_path.unlink(missing_ok=True)
+
+        if entry.etag_or_fingerprint:
+            etag_part = etag_path.with_name(f"{etag_path.name}.part.{os.getpid()}")
+            try:
+                etag_part.write_text(entry.etag_or_fingerprint)
+                os.replace(etag_part, etag_path)
+            finally:
+                etag_part.unlink(missing_ok=True)
 
         return local_path

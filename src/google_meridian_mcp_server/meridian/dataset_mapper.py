@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from google_meridian_mcp_server.domain.filters import TRAINING_DATASETS
+
 _TIME_COLUMNS = ("time", "media_time")
 _CHANNEL_SUFFIX = "_channel"
 
@@ -63,23 +65,6 @@ def filter_records(
                     continue
         out.append(row)
     return out
-
-
-TRAINING_DATASETS = (
-    "kpi",
-    "revenue_per_kpi",
-    "population",
-    "media",
-    "media_spend",
-    "reach",
-    "frequency",
-    "rf_spend",
-    "organic_media",
-    "organic_reach",
-    "organic_frequency",
-    "non_media_treatments",
-    "controls",
-)
 
 
 def extract_training_dataset(mmm: Any, dataset: str) -> list[dict]:

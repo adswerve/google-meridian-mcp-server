@@ -78,4 +78,16 @@ def load_config() -> RuntimeConfig:
         cloud_run_region=os.getenv("CLOUD_RUN_REGION"),
         cloud_run_job_cpu=os.getenv("CLOUD_RUN_JOB_CPU"),
         cloud_run_job_gpu=os.getenv("CLOUD_RUN_JOB_GPU"),
+        analysis_max_parallel=int(os.getenv("ANALYSIS_MAX_PARALLEL", "2")),
+        analysis_worker_timeout=float(os.getenv("ANALYSIS_WORKER_TIMEOUT", "300")),
+        analysis_queue_wait_timeout=float(
+            os.getenv("ANALYSIS_QUEUE_WAIT_TIMEOUT", "30")
+        ),
+        analysis_max_response_bytes=int(
+            os.getenv("ANALYSIS_MAX_RESPONSE_BYTES", str(64 * 1024 * 1024))
+        ),
+        analysis_workdir_root=os.getenv("ANALYSIS_WORKDIR_ROOT", "/tmp/mmm-analysis"),
+        analysis_workdir_ttl_seconds=int(
+            os.getenv("ANALYSIS_WORKDIR_TTL_SECONDS", "604800")
+        ),
     )

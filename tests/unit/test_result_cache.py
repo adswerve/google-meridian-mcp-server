@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from google_meridian_mcp_server.persistence.cache import ResultCache
 
 
@@ -64,6 +66,82 @@ class TestResultCacheTTL:
         cache = ResultCache(enabled=True, ttl_seconds=3600)
         cache.put("t", "m", {}, "v")
         assert cache.get("t", "m", {}) == "v"
+
+
+class TestResultCacheBoundedLru:
+    def test_oldest_entries_evicted_past_max_entries(self):
+        """F5: an unbounded ResultCache grows forever and slowly OOMs the
+        server. Once more than max_entries distinct keys have been put, the
+        OLDEST entries must be evicted and the cache size must never exceed
+        the cap."""
+        cache = ResultCache(enabled=True, max_entries=3)
+        for i in range(5):
+            cache.put("t", "m", {"i": i}, f"v{i}")
+
+        assert len(cache._store) == 3
+        # The oldest two (i=0, i=1) were evicted.
+        assert cache.get("t", "m", {"i": 0}) is None
+        assert cache.get("t", "m", {"i": 1}) is None
+        # The most recent three survive.
+        assert cache.get("t", "m", {"i": 2}) == "v2"
+        assert cache.get("t", "m", {"i": 3}) == "v3"
+        assert cache.get("t", "m", {"i": 4}) == "v4"
+
+    def test_recently_read_entry_survives_eviction(self):
+        """F5: LRU ordering -- reading an entry (get) marks it
+        most-recently-used, so it survives an eviction that would otherwise
+        take it out on pure insertion order."""
+        cache = ResultCache(enabled=True, max_entries=2)
+        cache.put("t", "m", {"i": 0}, "v0")
+        cache.put("t", "m", {"i": 1}, "v1")
+
+        cache.get("t", "m", {"i": 0})  # touch i=0 -> now most-recently-used
+
+        cache.put("t", "m", {"i": 2}, "v2")  # over cap -> evict oldest (i=1, not i=0)
+
+        assert cache.get("t", "m", {"i": 0}) == "v0"  # survived: was touched
+        assert cache.get("t", "m", {"i": 1}) is None  # evicted: least recently used
+        assert cache.get("t", "m", {"i": 2}) == "v2"
+
+    def test_default_cap_matches_module_default(self):
+        from google_meridian_mcp_server.persistence.cache import (
+            DEFAULT_RESULT_CACHE_MAX_ENTRIES,
+        )
+
+        cache = ResultCache(enabled=True)
+        for i in range(DEFAULT_RESULT_CACHE_MAX_ENTRIES + 10):
+            cache.put("t", "m", {"i": i}, i)
+        assert len(cache._store) == DEFAULT_RESULT_CACHE_MAX_ENTRIES
+
+
+class TestResultCacheThreadSafety:
+    def test_uses_a_lock(self):
+        """R1: the F6 offload put optimization bookkeeping handlers on worker
+        threads, so ResultCache's get/put (read-modify-write over a plain
+        OrderedDict, including move_to_end/eviction) is no longer guaranteed
+        to run only on the event-loop thread. Structural guard: a lock exists
+        and is held across get/put."""
+        cache = ResultCache(enabled=True)
+        assert hasattr(cache, "_lock")
+
+    def test_concurrent_get_put_from_many_threads_stays_within_cap(self):
+        """Fire many concurrent get/put calls from a ThreadPoolExecutor: no
+        exception should escape, and the bounded-LRU cap must never be
+        exceeded even under concurrent eviction."""
+        cache = ResultCache(enabled=True, max_entries=8)
+
+        def _worker(i: int) -> None:
+            for j in range(50):
+                cache.put("t", "m", {"i": i, "j": j}, f"v{i}-{j}")
+                cache.get("t", "m", {"i": i, "j": j})
+                cache.get("t", "m", {"i": i, "j": max(j - 1, 0)})
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = [pool.submit(_worker, i) for i in range(16)]
+            for f in futures:
+                f.result()  # re-raises any exception from the worker
+
+        assert len(cache._store) <= 8
 
 
 class TestResultCacheKeyDeterminism:

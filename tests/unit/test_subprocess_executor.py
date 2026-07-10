@@ -1,4 +1,6 @@
+import asyncio
 import subprocess
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from google_meridian_mcp_server.domain.optimization import (
@@ -8,7 +10,9 @@ from google_meridian_mcp_server.domain.optimization import (
     RunStatus,
 )
 from google_meridian_mcp_server.execution.base_executor import BaseExecutor
-from google_meridian_mcp_server.execution.subprocess_executor import SubprocessExecutor
+from google_meridian_mcp_server.execution.subprocess_executor import (
+    AsyncSubprocessExecutor,
+)
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     LocalOptimizationRunRegistry,
 )
@@ -268,19 +272,227 @@ def test_subprocess_executor_builds_worker_command(tmp_path, monkeypatch):
     captured = {}
 
     class _Popen:
-        def __init__(self, cmd, env=None):
+        def __init__(self, cmd, env=None, **kwargs):
             captured["cmd"] = cmd
             captured["env"] = env
+            captured.update(kwargs)
 
         def poll(self):
             return None
 
     monkeypatch.setattr(subprocess, "Popen", _Popen)
-    ex = SubprocessExecutor(
-        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="jax"
+    ex = AsyncSubprocessExecutor(
+        reg,
+        max_parallel=2,
+        heartbeat_stale_seconds=60,
+        backend="jax",
+        log_root=tmp_path / "logs",
     )
     reg.create(_run("a"))
     ex.submit(_run("a"))
     assert "google_meridian_mcp_server.execution.worker" in captured["cmd"]
     assert captured["env"]["OPTIMIZATION_RUN_ID"] == "a"
     assert captured["env"]["MERIDIAN_BACKEND"] == "jax"
+
+
+def test_launch_redirects_and_new_session(monkeypatch, tmp_path):
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured.update(kwargs)
+
+        class _P:
+            pid = 4321
+
+        return _P()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    ex = AsyncSubprocessExecutor(
+        reg,
+        max_parallel=1,
+        heartbeat_stale_seconds=60,
+        backend="tensorflow",
+        log_root=tmp_path,
+    )
+    ex._launch(_run("r1"))
+    assert captured["start_new_session"] is True
+    assert captured["stdout"] is not None
+
+
+def test_reconcile_orphans_fails_running_and_queued_unconditionally(tmp_path):
+    """F1: a server restart must not strand a local-tier RUNNING/QUEUED run.
+
+    `_handles`/`_queue` are in-memory, so a fresh server starts with neither;
+    the PID-1 parent-death guard (worker.py) guarantees a local worker cannot
+    survive its parent server, so AsyncSubprocessExecutor.reconcile_orphans
+    must fail BOTH RUNNING and QUEUED unconditionally -- no heartbeat-staleness
+    grace period, even with a perfectly fresh heartbeat."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run("running-run"))
+    reg.write_state(
+        OptimizationRunState(
+            run_id="running-run",
+            status=RunStatus.RUNNING,
+            heartbeat_at=datetime.now(timezone.utc).isoformat(),  # FRESH heartbeat
+        )
+    )
+    reg.create(_run("queued-run"))
+    reg.write_state(OptimizationRunState(run_id="queued-run", status=RunStatus.QUEUED))
+
+    ex = AsyncSubprocessExecutor(
+        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="tensorflow"
+    )
+    ex.reconcile_orphans()
+
+    for run_id in ("running-run", "queued-run"):
+        state = reg.get_state(run_id)
+        assert state.status == RunStatus.FAILED
+        assert state.error["code"] == "worker_lost"
+
+
+def test_reconcile_orphans_does_not_touch_terminal_runs(tmp_path):
+    """F1 regression: reconcile_orphans must not clobber a run that already
+    reached a terminal state before the restart."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run("done-run"))
+    reg.write_state(OptimizationRunState(run_id="done-run", status=RunStatus.COMPLETED))
+
+    ex = AsyncSubprocessExecutor(
+        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="tensorflow"
+    )
+    ex.reconcile_orphans()
+
+    assert reg.get_state("done-run").status == RunStatus.COMPLETED
+
+
+def test_pump_skips_run_deleted_from_registry_while_queued(tmp_path):
+    """F2(a): a run_id popped off the internal queue whose registry record is
+    gone (e.g. deleted out-of-band, bypassing the executor.cancel() dequeue
+    OptimizationService.delete now performs) must be skipped by pump(), not
+    raise RunNotFoundError into whatever unrelated call triggered the pump."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    reg.create(_run("a"))
+    ex.submit(_run("a"))  # launched (max_parallel=1)
+    reg.create(_run("b"))
+    ex.submit(_run("b"))  # queued behind "a"
+
+    reg.delete("b")  # registry record gone; "b" is still sitting in ex._queue
+
+    ex._handles["a"].alive = False  # free the concurrency slot
+    ex.pump()  # must not raise RunNotFoundError
+
+    assert "b" not in ex._handles
+    assert "b" not in ex._queue
+
+
+def test_pump_fails_run_when_launch_raises(tmp_path):
+    """F2(b): a _launch failure (EMFILE, unwritable log_root, fork failure,
+    ...) must fail the run FAILED/worker_lost -- not leave it wedged QUEUED
+    forever -- and the raw exception must not escape pump()/submit()."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+
+    class _BoomExecutor(_FakeExecutor):
+        def _launch(self, run):
+            raise OSError("EMFILE: too many open files")
+
+    ex = _BoomExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    reg.create(_run("a"))
+    ex.submit(_run("a"))  # submit() calls pump() internally; must not raise
+
+    assert "a" not in ex._handles
+    state = reg.get_state("a")
+    assert state.status == RunStatus.FAILED
+    assert state.error["code"] == "worker_lost"
+    assert "EMFILE" in state.error["message"]
+
+
+def test_terminate_reaps_child_after_kill(monkeypatch, tmp_path):
+    """F9: _terminate reaps the child after SIGKILL so it doesn't linger as
+    a zombie."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = AsyncSubprocessExecutor(
+        reg, max_parallel=1, heartbeat_stale_seconds=60, backend="tensorflow"
+    )
+    monkeypatch.setattr(ex, "kill_group", lambda pid: None)
+
+    waited = {}
+
+    class _Handle:
+        pid = 4321
+
+        def wait(self, timeout=None):
+            waited["timeout"] = timeout
+            return 0
+
+    ex._terminate(_Handle())
+    assert "timeout" in waited  # wait() was called to reap the zombie
+
+
+def test_terminate_suppresses_wait_exceptions(monkeypatch, tmp_path):
+    """F9 regression: a wait() failure (e.g. TimeoutExpired) must not escape
+    _terminate -- it's best-effort zombie reaping, not a hard requirement."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = AsyncSubprocessExecutor(
+        reg, max_parallel=1, heartbeat_stale_seconds=60, backend="tensorflow"
+    )
+    monkeypatch.setattr(ex, "kill_group", lambda pid: None)
+
+    class _Handle:
+        pid = 4321
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+
+    ex._terminate(_Handle())  # must not raise
+
+
+async def test_concurrent_submits_do_not_corrupt_executor_state(tmp_path):
+    """F6(b): once the MCP tool handlers offload their sync service calls onto
+    worker threads (asyncio.to_thread), submit()/pump()/cancel() can run
+    concurrently from multiple threads against the same executor. The RLock
+    added to BaseExecutor must serialize access to `_handles`/`_queue` so N
+    concurrent submits neither raise nor lose/duplicate an entry."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=3, heartbeat_stale_seconds=60)
+
+    n = 20
+    runs = [_run(f"r{i}") for i in range(n)]
+    for run in runs:
+        reg.create(run)
+
+    await asyncio.gather(*(asyncio.to_thread(ex.submit, run) for run in runs))
+
+    # Nothing lost or duplicated across the two structures the lock protects.
+    tracked = set(ex._handles) | set(ex._queue)
+    assert len(ex._handles) + len(ex._queue) == n
+    assert tracked == {run.run_id for run in runs}
+    assert len(ex._handles) == 3  # concurrency gate still honored
+    assert len(ex._queue) == n - 3
+
+
+async def test_concurrent_pump_calls_do_not_raise_or_duplicate_launches(tmp_path):
+    """F6(b) regression: concurrent pump() calls (e.g. several get_optimization_status
+    polls landing at once, each offloaded to its own thread) must not double-launch
+    a queued run or raise."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=2, heartbeat_stale_seconds=60)
+
+    runs = [_run(f"p{i}") for i in range(6)]
+    for run in runs:
+        reg.create(run)
+        ex.submit(run)  # sequential seed: 2 launched, 4 queued
+
+    assert len(ex._handles) == 2
+    assert len(ex._queue) == 4
+
+    # Free one concurrency slot, then hammer pump() from many threads at once.
+    first_handle = next(iter(ex._handles.values()))
+    first_handle.alive = False
+
+    await asyncio.gather(*(asyncio.to_thread(ex.pump) for _ in range(10)))
+
+    # Exactly one run_id was ever launched per call to _launch -- no duplicates.
+    assert len(ex.launched) == len(set(ex.launched))
+    assert len(ex._handles) == 2  # gate still honored after the free slot backfilled
