@@ -87,6 +87,7 @@ window's spend, scaled to the horizon; `determined_by_target`: implied by a
 `target_roas`/`target_mroas` scenario rather than a fixed number) —
 `reference_mode` (which reference window was used), and `excluded_channels`
 (which channels were paused). This is the authoritative record of what a future
-plan assumed — state it verbatim rather than reconstructing the reference window
-or implied budget by hand. Future runs only. Full field reference:
-`budget-optimization.md`.
+plan assumed — read the actual assumed values from it rather than reconstructing
+the reference window or implied budget by hand, but state them to the user in
+plain terms, not as raw enum values (per the "speak the marketer's language"
+rule). Future runs only. Full field reference: `budget-optimization.md`.

@@ -59,6 +59,17 @@ See `references/taxonomy.md` for how each fact changes what is valid.
 - **Never present a point estimate as certain.** Analysis and optimization
   outputs carry credible intervals (`ci_lo`/`ci_hi`). Report the interval with
   the mean; a wide interval means low confidence, not a precise number.
+- **Speak the marketer's language — never leak internal vocabulary.** In
+  everything the user sees — questions, offers, next-step suggestions, result
+  summaries, caveats — refer to scenarios, options, metrics, fields, and tools
+  by what they *do* in plain business terms, never by their MCP names. The user
+  should never see `target_mroas`, `fixed_budget`, `cost_multipliers`,
+  `run_future_optimization`, and the like. Say "a profitability-first plan that
+  keeps spending on each channel only while the next dollar still clears the
+  return you set (e.g. still earns at least 1.5x)," not "a `target_mroas`
+  scenario." This holds even in casual
+  follow-ups ("want me to run X next?"). Ready plain-language phrasings for every
+  scenario, constraint, and reference option are in `references/consultation.md`.
 
 ## Model taxonomy (quick view)
 

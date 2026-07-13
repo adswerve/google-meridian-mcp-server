@@ -113,9 +113,12 @@ credible intervals from the analysis tools). The key fields:
   points; use them to show headroom vs. saturation behind the allocation.
 - **`assumptions`** (future runs only) — the plan's own assumptions echoed back:
   `budget`, `budget_source` (`explicit` / `derived_from_reference` /
-  `determined_by_target`), `reference_mode`, and `excluded_channels`. State these to
-  the user verbatim — this is the authoritative record of what the plan assumed,
-  including the auto-derived budget when none was given.
+  `determined_by_target`), `reference_mode`, and `excluded_channels`. This is the
+  authoritative record of what the plan assumed, including the auto-derived budget
+  when none was given. Read the *actual* assumed values from this field rather than
+  reconstructing them by hand — but state them to the user in plain terms, not as
+  raw enum values (per the "speak the marketer's language" rule; phrasings in the
+  "Say it in plain terms" table in `consultation.md`).
 
 **Optimized vs. non-optimized:** the value of the run is the *difference*. Lead
 with what changed (`spend_delta`) and the summary lift, not the raw optimized
@@ -126,18 +129,22 @@ change.
 ## Interrogate the result like a marketer
 
 The allocation is the start of the conversation, not the end. Before presenting it,
-check for the higher-value findings a raw reallocation hides:
+check for the higher-value findings a raw reallocation hides. When you offer any of
+these as a next step, name it in plain terms per SKILL.md's "speak the marketer's
+language" rule — see the "Say it in plain terms" table in `consultation.md`; the
+enum names below are for your routing, not for the user.
 
 - **Every channel's marginal ROI below ~1.0x → the lever is total budget, not the
   mix.** At that point the last dollar in *every* channel returns less than a
   dollar; a `fixed_budget` reallocation cannot fix over-investment. Offer a
-  `target_mroas` run (or a lower-budget test) instead.
+  profitability-first plan (`target_mroas`) or a lower-budget test instead.
 - **Don't freeze your best channel.** If a frozen or tightly-bound channel has the
   highest ROI/mROI, flag that the constraint is capping your upside — freezing the
   most efficient channel is usually backwards.
 - **A low-ROI channel pinned to its lower bound** means the band is protecting weak
-  spend; the model wanted to cut further. Offer a looser-band or unconstrained
-  scenario to show the true optimum before deciding what's operationally feasible.
+  spend; the model wanted to cut further. Offer a plan with a looser movement band
+  (or none) (`per_channel`/`global` loosened, or unconstrained) to show the true
+  optimum before deciding what's operationally feasible.
 - **ROAS is revenue, not profit.** Remind the user to apply contribution margin
   before acting; a ~1.0x ROAS plan can be unprofitable.
 
@@ -279,8 +286,10 @@ Channel and geo names still come from
   for the plan too. So the user should know whether the plan assumes "recent
   conditions," "same season last year," or "a stable long-run average" — don't
   reconstruct the reference window or the implied budget by hand; read the
-  result's `assumptions` field (`reference_mode`, `budget`, `budget_source`) and
-  state it verbatim, including the auto-derived budget when none was given.
+  actual assumed values from the result's `assumptions` field (`reference_mode`,
+  `budget`, `budget_source`) and state them in plain terms, not as raw enum values
+  (per the "Say it in plain terms" table in `consultation.md`) — including the
+  auto-derived budget when none was given.
 - **Extrapolation risk:** pushing a channel beyond its historical spend range (or
   applying a large `cost_multipliers`/`revenue_per_kpi_multiplier` shift) is the
   least reliable part of the curve — treat large moves skeptically.
