@@ -33,10 +33,14 @@ model — they are business facts only the user has:
   runs.
 
 Ask adaptively, **2–4 related questions per round**, in plain business language.
-Never surface internal field names or jargon in a question — no `cpmu`,
-`flighting`, `pct_of_spend`, `mode`, `reference`. Ask "is next quarter's TV
-buying expected to get more or less expensive?", not "what `cost_multipliers`
-should I use for TV?".
+Never surface internal field names or jargon **anywhere in your output** — not in
+questions, and not in offers, next-step suggestions, or result summaries either
+(the "speak the marketer's language" cardinal rule in `SKILL.md`). No `cpmu`,
+`flighting`, `pct_of_spend`, `mode`, `reference`, `target_mroas`. Ask "is next
+quarter's TV buying expected to get more or less expensive?", not "what
+`cost_multipliers` should I use for TV?". See the reverse translation table below
+for ready plain-language phrasings when you need to *name* a scenario or option
+back to the user.
 
 **2. Propose a concrete plan.** Once the genuinely-unknowable gaps are answered
 (or the user has clearly already stated them), propose the runs you intend to
@@ -110,11 +114,48 @@ an assumption you are making**, before the run.
 | "Our recent data is noisy — use a normal, stable baseline" | `future.reference: {mode: "full_history_average"}` |
 | "We're planning to put 40% into TV and 35% into Search" | `future.planned_allocation: {"TV": 0.4, "Search": 0.35}` |
 
+## Say it in plain terms (speaking back to the user)
+
+The table above is for *listening* (user phrase → tool field). This one is for
+*speaking*: when you need to name a scenario, constraint, or option **back** to
+the user — in an offer, a next-step suggestion, or a result summary — use the
+plain phrasing, never the MCP name. Lead with what it *does*; drop the internal
+term entirely.
+
+| Instead of saying… | Say something like… |
+| --- | --- |
+| "a `fixed_budget` reallocation" | "a same-budget plan — same total spend, just split smarter across channels" |
+| "raise the `budget` in a `fixed_budget` run" | "a what-if where we add money to the budget and see where it should go" |
+| "a `target_roas` scenario" | "a target-return plan — set the return you want on your spend and let it find the mix that hits it" |
+| "a `target_mroas` scenario" | "a profitability-first plan — keep spending on each channel only while the next dollar still clears the return you set (e.g. still earns at least 1.5x)" |
+| "a `global` constraint of ±20%" | "a plan that won't move any channel by more than about 20%, so nothing swings wildly" |
+| "a `per_channel` constraint / `0/0` bounds" | "a plan that holds [channel] where it is and lets the others move" |
+| "the `trailing` reference" | "planning off your most recent spending conditions" |
+| "the `same_period_last_year` reference" | "planning it like the same season last year" |
+| "the `full_history_average` reference" | "planning off a stable, long-run average rather than recent noise" |
+| "set `cost_multipliers` for TV to 1.15" | "assume TV gets about 15% more expensive next period" |
+| "the `planned_allocation`" | "the spend mix you had in mind (e.g. 40% TV / 35% Search)" |
+| "`excluded_channels: ['TV']`" | "pause TV entirely next period and spend that money elsewhere" |
+| "`budget_source: explicit`" | "the budget you gave me" |
+| "`budget_source: derived_from_reference`" | "a budget carried forward from [the baseline period you picked], scaled to the plan's length" |
+| "`budget_source: determined_by_target`" | "the spend level implied by the return target you set" |
+| "poll `get_optimization_status`" | "the optimization is running — I'll check back and share results when it's done" |
+
+When the honest answer needs a genuinely technical metric the user already knows
+(ROAS, marginal ROI, CPIK), those are fine — they are the marketer's own
+vocabulary, defined in `glossary.md`. The rule is about *internal* names
+(scenario/constraint/reference enums, field names, tool names), not about
+dumbing down real marketing metrics.
+
 ## Anti-patterns
 
-- **Dumping internal jargon on the user** instead of translating — asking "what
-  `reference` mode do you want?" rather than "should I plan off recent spend, the
-  same period last year, or a long-run average?"
+- **Dumping internal jargon on the user** instead of translating — anywhere in
+  your output, not just questions. Asking "what `reference` mode do you want?"
+  rather than "should I plan off recent spend, the same period last year, or a
+  long-run average?" — and equally, offering "want me to run a `target_mroas`
+  scenario next?" rather than "want me to try a profitability-first plan next?"
+  Use the "Say it in plain terms" table above whenever you name a scenario or
+  option back to the user.
 - **Asking for facts `get_model_overview` already answers** — channel/geo names,
   whether the model is revenue-capable, the training date range. Look these up;
   don't make the user repeat them.
