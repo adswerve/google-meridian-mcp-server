@@ -112,9 +112,12 @@ geo, revenue vs KPI) plus adversarial error-path checks, exiting non-zero on any
   (non-future `start_date`, unknown `cost_multipliers` channel →
   `invalid_optimization_config`). A **local cloud-executor gate** (faked `jobs.run`,
   real worker) covers the cloud launch/liveness/cancel contract with no GCP project;
-  a **cross-backend JAX gate** auto-runs when `jax` imports; a **real Cloud Run
-  smoke** (`scripts.validation.cloud_smoke`, `CLOUD_SMOKE=1`) covers a live project
-  (CPU tier verified).
+  a **real Cloud Run smoke** (`scripts.validation.cloud_smoke`, `CLOUD_SMOKE=1`)
+  covers a live project (CPU tier verified). A **cross-backend JAX gate** used to
+  auto-run here; it was **removed** with the backend knob in the Meridian 2.0
+  upgrade, because with a single backend there is nothing to cross. That is a real
+  coverage loss: no gate any longer proves that a model fitted under one engine
+  optimizes correctly under another.
 - Showcase ↔ tool parity is tracked in `docs/meridian-mcp-showcase-parity.md`.
 
 ## Module Map

@@ -6,6 +6,10 @@ document calls a committed artifact lands here instead.
 
 - `drift/` — the three baseline drift reports (spec §4) plus the Phase 7
   cloud-vs-local reports and the Phase 5 refit notes.
+- `cross-backend-gate-removed.md` — Task 16: what the deleted cross-backend
+  JAX gate in `live_validate.py` used to prove, why it cannot be repaired
+  (only one backend remains after Task 15/D2), and what covers that ground
+  now.
 - `geox-calibration-findings.md` — spec §9.1 spike.
 - `skills-audit.md` — spec §9.2 audit.
 - `weekly-optimization-grid-measurements.md` — spec §11.5 measurements.

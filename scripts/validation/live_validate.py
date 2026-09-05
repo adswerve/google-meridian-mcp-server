@@ -36,7 +36,7 @@ class _InProcessCatalogRunner:
         return analysis_ops.run_operation(self._catalog, operation, model_id, params)
 
 
-def _build_cloud_service(*, backend: str, shared_dir):
+def _build_cloud_service(*, shared_dir):
     """Wire an OptimizationService backed by a CloudRunJobExecutor whose jobs.run
     is faked to launch the REAL worker locally.
 
@@ -73,7 +73,6 @@ def _build_cloud_service(*, backend: str, shared_dir):
         gcs_models_prefix="m/",
         registry_backend="gcs",
         optimization_allowed_tiers=("cloud_cpu",),
-        optimization_backend_cloud_cpu=backend,
         cloud_run_project="fake",
         cloud_run_region="fake",
         cloud_run_job_cpu="opt-cpu",
@@ -103,7 +102,7 @@ def _build_cloud_service(*, backend: str, shared_dir):
 
 
 async def _run_cloud_gate() -> list[str]:
-    """Run the local cloud-executor live gate + cross-backend JAX gate.
+    """Run the local cloud-executor live gate.
 
     Returns a list of failure strings (empty == all green/skipped).
     """
@@ -118,35 +117,20 @@ async def _run_cloud_gate() -> list[str]:
     shared_dir = DEFAULT_OUT_ROOT / "_cloud_runs"
     shutil.rmtree(shared_dir, ignore_errors=True)
     shared_dir.mkdir(parents=True, exist_ok=True)
-    tf_service = _build_cloud_service(backend="tensorflow", shared_dir=shared_dir)
+    service = _build_cloud_service(shared_dir=shared_dir)
     for model_id in ("national-revenue", "geo-revenue"):
-        label = f"cloud/{model_id}/run_optimization[cloud_cpu,tensorflow]"
+        label = f"cloud/{model_id}/run_optimization[cloud_cpu]"
         try:
-            await assert_cloud_live_optimization(tf_service, model_id)
+            await assert_cloud_live_optimization(service, model_id)
             print(f"  PASS {label}")
         except AssertionError as exc:
             failures.append(f"{label}: {exc}")
             print(f"  FAIL {label}: {exc}")
 
-    # Cross-backend gate: a TF-fit model must optimize under JAX. Skip if jax
-    # is not importable in this environment.
-    jax_label = "cloud/national-revenue/run_optimization[cloud_cpu,jax]"
-    try:
-        import jax  # noqa: F401
-    except Exception:
-        print("  SKIP: jax not installed (cross-backend gate)")
-    else:
-        jax_dir = DEFAULT_OUT_ROOT / "_cloud_runs_jax"
-        shutil.rmtree(jax_dir, ignore_errors=True)
-        jax_dir.mkdir(parents=True, exist_ok=True)
-        jax_service = _build_cloud_service(backend="jax", shared_dir=jax_dir)
-        try:
-            await assert_cloud_live_optimization(jax_service, "national-revenue")
-            print(f"  PASS {jax_label}")
-        except AssertionError as exc:
-            failures.append(f"{jax_label}: {exc}")
-            print(f"  FAIL {jax_label}: {exc}")
-
+    # The cross-backend JAX gate that used to live here (a TF-fit model must
+    # optimize under JAX) was deleted with the backend knob: with one backend
+    # there is nothing to cross. This is a REAL coverage loss and is recorded
+    # in AGENTS.md rather than quietly dropped.
     return failures
 
 

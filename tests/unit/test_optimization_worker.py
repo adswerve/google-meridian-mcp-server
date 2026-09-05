@@ -1,8 +1,12 @@
 # tests/unit/test_optimization_worker.py
+import os
 import threading
 import time
 from typing import Any
 
+import google_meridian_mcp_server.bootstrap as bootstrap_mod
+import google_meridian_mcp_server.config as config_mod
+import google_meridian_mcp_server.execution.worker as worker_mod
 from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationConfig,
@@ -348,3 +352,46 @@ def test_catalog_get_optimizer_facade_returns_and_caches(monkeypatch):
     assert isinstance(facade1, OptimizerFacade)
     # Same cached instance
     assert facade1 is facade2
+
+
+def test_main_optimization_path_forces_x64_even_if_ambient_env_says_false(
+    monkeypatch,
+):
+    """D3: precision must be explicit everywhere, never inherited.
+
+    A worker started WITHOUT the executor's own env overrides (a manual
+    ``gcloud run jobs execute``, or a job-level env set outside this
+    process) must still compute in float64. If ``main()`` ever reverts to
+    ``os.environ.setdefault("MERIDIAN_ENABLE_JAX_X64", "true")``, an ambient
+    "false" would win and the worker would silently run float32 JAX while
+    every log and doc claims x64 -- this test fails the instant that
+    regresses.
+    """
+    monkeypatch.setenv("OPTIMIZATION_RUN_ID", "run-1")
+    monkeypatch.setenv("MERIDIAN_ENABLE_JAX_X64", "false")
+
+    monkeypatch.setattr(worker_mod, "build_worker_catalog", lambda cfg: object())
+    monkeypatch.setattr(
+        worker_mod, "run_worker", lambda run_id, *, registry, catalog: 0
+    )
+    monkeypatch.setattr(bootstrap_mod, "build_registry", lambda cfg: object())
+    monkeypatch.setattr(config_mod, "load_config", lambda: object())
+
+    rc = worker_mod.main(["worker.py"])
+
+    assert rc == 0
+    assert os.environ["MERIDIAN_ENABLE_JAX_X64"] == "true"
+
+
+def test_main_analysis_path_forces_x64_even_if_ambient_env_says_false(monkeypatch):
+    """Same guarantee as above, for the ``analysis`` subcommand branch."""
+    monkeypatch.setenv("MERIDIAN_ENABLE_JAX_X64", "false")
+
+    monkeypatch.setattr(worker_mod, "build_worker_catalog", lambda cfg: object())
+    monkeypatch.setattr(worker_mod, "run_analysis", lambda req, resp, *, catalog: 0)
+    monkeypatch.setattr(config_mod, "load_config", lambda: object())
+
+    rc = worker_mod.main(["worker.py", "analysis", "req.json", "resp.json"])
+
+    assert rc == 0
+    assert os.environ["MERIDIAN_ENABLE_JAX_X64"] == "true"

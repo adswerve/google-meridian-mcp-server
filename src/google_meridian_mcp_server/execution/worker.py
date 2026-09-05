@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv[1:2] == ["analysis"]:
         _start_parent_death_guard()
         os.environ["MERIDIAN_BACKEND"] = MERIDIAN_BACKEND  # before any meridian import
-        os.environ.setdefault("MERIDIAN_ENABLE_JAX_X64", "true")
+        os.environ["MERIDIAN_ENABLE_JAX_X64"] = "true"
         from google_meridian_mcp_server.config import load_config
 
         return run_analysis(
@@ -293,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     run_id = os.environ["OPTIMIZATION_RUN_ID"]
     # Set before importing meridian (build_worker_catalog does).
     os.environ["MERIDIAN_BACKEND"] = MERIDIAN_BACKEND
-    os.environ.setdefault("MERIDIAN_ENABLE_JAX_X64", "true")
+    os.environ["MERIDIAN_ENABLE_JAX_X64"] = "true"
 
     from google_meridian_mcp_server.bootstrap import build_registry
     from google_meridian_mcp_server.config import load_config

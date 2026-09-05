@@ -354,38 +354,25 @@ def probe_backend() -> str:
     NOT derived from ``worker_env()``: that function is frozen (see its own
     docstring) and, on a machine that never exported ``MERIDIAN_BACKEND``,
     reports no backend at all. This function instead mirrors the SAME
-    resolution the real analysis path uses, so a reader sees what the tools
-    genuinely ran on without touching anything that feeds ``capture_env``:
+    resolution the real analysis/optimization workers use -- both now pin
+    ``base_subprocess.MERIDIAN_BACKEND`` unconditionally (Phase 4 removed the
+    ``MERIDIAN_BACKEND`` env-var knob entirely and fixed the backend as a
+    module constant in ``src/`` instead) -- so a reader sees what the tools
+    genuinely ran on.
 
-    - ``server.py``'s lifespan builds
-      ``SyncSubprocessExecutor(env_base={"MERIDIAN_BACKEND":
-      os.getenv("MERIDIAN_BACKEND", "tensorflow"), ...})`` for the analysis
-      path.
-    - ``worker.py:main()`` falls back to the identical
-      ``os.environ.setdefault("MERIDIAN_BACKEND", "tensorflow")`` (the
-      "analysis" subcommand) / ``os.environ.get("MERIDIAN_BACKEND",
-      "tensorflow")`` (the optimization subcommand) if a worker is ever
-      launched without that override already set.
-
-    All three already hard-code the identical "tensorflow" default,
-    independently, in code this function does not touch: reading it here as
-    ``os.getenv("MERIDIAN_BACKEND", "tensorflow")`` reproduces that same
-    resolution (an operator's explicit ``MERIDIAN_BACKEND`` still wins, else
-    "tensorflow") rather than assuming a bare, unconditional literal -- it is
-    NOT importing a shared constant from ``src/`` on purpose: doing so would
-    require adding one to some file under
-    ``src/google_meridian_mcp_server/*.py``, and ANY edit there changes
-    ``src_tree_hash()`` (see below), which every existing snapshot's
-    ``capture_env`` also embeds -- editing src/ at all would mark every
-    existing snapshot stale, for the same irreplaceable-``v1.7-engine``
-    reason ``worker_env()`` must stay frozen.
-
-    Phase 4 removes the ``MERIDIAN_BACKEND`` env-var knob entirely and fixes
-    the backend as a module constant in ``src/`` instead. When that lands,
-    update ONLY this function -- to import that constant -- so the probe
-    keeps following whatever the code actually does, in both worlds.
+    This imports that constant directly rather than reading an environment
+    variable or guessing a default, so the probe follows the code instead of
+    guessing. Importing a name from ``src/`` here does not touch
+    ``src_tree_hash()`` (see below) -- that hash is computed from file
+    content on disk, not from what this module happens to import -- and this
+    value is NOT part of ``worker_env()``/``capture_env`` (see above), so
+    this change cannot mark any existing snapshot stale.
     """
-    return os.getenv("MERIDIAN_BACKEND", "tensorflow")
+    from google_meridian_mcp_server.execution.base_subprocess import (
+        MERIDIAN_BACKEND,
+    )
+
+    return MERIDIAN_BACKEND
 
 
 def _tree_hash(root: Path, *, glob: str = "*") -> str:
