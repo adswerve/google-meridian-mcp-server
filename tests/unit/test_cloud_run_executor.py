@@ -20,7 +20,6 @@ def _run(tier="cloud_cpu"):
         config_fingerprint="fp",
         compute_tier_requested="auto",
         compute_tier_resolved=tier,
-        backend="jax",
         size_score=1,
         created_at="2026-06-30T00:00:00+00:00",
         meridian_version="1.7.0",

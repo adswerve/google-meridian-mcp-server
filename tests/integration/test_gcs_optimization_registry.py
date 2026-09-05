@@ -24,7 +24,6 @@ def _run(run_id="m-1"):
         config_fingerprint="fp1",
         compute_tier_requested="auto",
         compute_tier_resolved="cloud_cpu",
-        backend="jax",
         size_score=1,
         created_at="2026-06-30T00:00:00+00:00",
         meridian_version="1.7.0",

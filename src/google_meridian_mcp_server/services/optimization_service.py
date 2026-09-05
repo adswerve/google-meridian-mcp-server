@@ -9,6 +9,7 @@ Meridian directly -- the SERVER process is Meridian-free.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import secrets
 from datetime import datetime, timezone
 from typing import Any
@@ -29,8 +30,25 @@ from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
 )
 
-_MERIDIAN_VERSION = "1.7.0"
-_SERVER_VERSION = "0.1.0"
+
+def _dist_version(name: str) -> str:
+    """Read a distribution version from metadata -- WITHOUT importing it.
+
+    The server process must never import meridian (ruff TID251 plus
+    tests/contract/test_server_meridian_free.py, which checks in a
+    subprocess). importlib.metadata reads the installed distribution's
+    metadata files, so this is safe here. "unknown" means a broken install,
+    and it will show up in the run provenance rather than being silent.
+    """
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+_MERIDIAN_VERSION = _dist_version("google-meridian")
+# Was hardcoded "0.1.0", already stale against pyproject's 0.3.1.
+_SERVER_VERSION = _dist_version("google-meridian-mcp-server")
 
 
 class InvalidOptimizationConfigError(MeridianMcpError):
@@ -125,7 +143,9 @@ class OptimizationService:
         except Exception as exc:  # pydantic ValidationError
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
-        fingerprint = config_fingerprint(model_id, config)
+        fingerprint = config_fingerprint(
+            model_id, config, meridian_version=_MERIDIAN_VERSION
+        )
         preflight = await self._preflight(
             model_id, config.model_dump(mode="json"), fingerprint
         )
@@ -165,7 +185,9 @@ class OptimizationService:
         except Exception as exc:  # pydantic ValidationError
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
-        fingerprint = config_fingerprint(model_id, config)
+        fingerprint = config_fingerprint(
+            model_id, config, meridian_version=_MERIDIAN_VERSION
+        )
         preflight = await self._preflight(
             model_id, config.model_dump(mode="json"), fingerprint
         )
@@ -222,7 +244,6 @@ class OptimizationService:
             )
         except ValueError as exc:
             raise InvalidOptimizationConfigError(str(exc)) from exc
-        backend = self._cfg.backend_for_tier(resolved)
 
         run_id = f"{_slug(model_id)}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(3)}"
         record = OptimizationRun(
@@ -234,7 +255,6 @@ class OptimizationService:
             config_fingerprint=fingerprint,
             compute_tier_requested=compute_tier,
             compute_tier_resolved=resolved,
-            backend=backend,
             size_score=score,
             created_at=datetime.now(timezone.utc).isoformat(),
             meridian_version=_MERIDIAN_VERSION,
@@ -255,7 +275,7 @@ class OptimizationService:
             "run_id": record.run_id,
             "status": status,
             "compute_tier_resolved": record.compute_tier_resolved,
-            "backend": record.backend,
+            "meridian_version": record.meridian_version,
             "size_score": record.size_score,
             "reused": reused,
         }
@@ -280,7 +300,7 @@ class OptimizationService:
             "finished_at": state.finished_at,
             "elapsed_seconds": elapsed,
             "compute_tier": record.compute_tier_resolved,
-            "backend": record.backend,
+            "meridian_version": record.meridian_version,
             "error": state.error,
         }
 

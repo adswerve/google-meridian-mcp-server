@@ -61,5 +61,18 @@ def test_fingerprint_is_stable_and_order_insensitive():
             "selected_geos": ["a", "b"],
         }
     )
-    assert config_fingerprint("m", a) == config_fingerprint("m", b)
-    assert config_fingerprint("m", a) != config_fingerprint("other", a)
+    assert config_fingerprint("m", a, meridian_version="2.0.0") == config_fingerprint(
+        "m", b, meridian_version="2.0.0"
+    )
+    assert config_fingerprint("m", a, meridian_version="2.0.0") != config_fingerprint(
+        "other", a, meridian_version="2.0.0"
+    )
+
+
+def test_fingerprint_changes_with_the_meridian_version():
+    """D10: a Meridian upgrade must not silently reuse a run computed by the
+    previous engine."""
+    config = OptimizationConfig.model_validate({"scenario": {"type": "fixed_budget"}})
+    assert config_fingerprint(
+        "m", config, meridian_version="1.7.0"
+    ) != config_fingerprint("m", config, meridian_version="2.0.0")
