@@ -25,20 +25,37 @@ Expected wall-clock: 27 real optimizer subprocess runs per label (13 for
 national-revenue, 14 for geo-revenue) plus ~250 analysis calls across the
 eight fixtures. Tens of minutes per label, six labels.
 
-Snapshot marker contract, for the (separate) diff tool: some case payloads
-carry a top-level ``known_racy_fields`` key -- a list of dot-separated
-object-key paths (e.g. ``"status.status"``) into that SAME snapshot, naming
-fields whose value may legitimately differ between labels because of an
-inherent race (see ``lifecycle__cancel``). The diff tool MUST (1) classify a
-change at any listed path as REVIEW rather than FAIL, and (2) EXCLUDE the
-``known_racy_fields`` key itself from the payload comparison -- otherwise a
-later change to the marker list (one more racy field added or removed) would
-misread as a payload diff on a key that was never data. Path syntax is
-deliberately minimal: only dot-separated object-key paths are supported.
-There is no escaping for a key that itself contains a literal dot, and no
-syntax for indexing through a list (e.g. a racy field inside a ``runs[]``
-entry) -- neither is needed by any case today. A future case that needs
-either must extend this contract explicitly; do not assume it works.
+Snapshot envelope (Fix wave 4): each snapshot file on disk is an explicit
+envelope, NOT a bare tool payload:
+
+    {"capture_env": <env fingerprint>, "known_racy_fields": [...]?, "payload": <normalized tool payload>}
+
+``known_racy_fields`` is present only for cases that need it (today, only
+``lifecycle__cancel``) and is a list of dot-separated object-key paths INTO
+``payload`` naming fields whose value may legitimately differ between
+labels because of an inherent race (e.g. ``"status.status"``). The diff
+tool compares ONLY ``payload`` between two labels' same-named snapshot;
+``capture_env`` and ``known_racy_fields`` are metadata, read but never
+diffed as data -- a change confined to either is not a payload difference.
+For any path listed in ``known_racy_fields``, the diff tool must classify a
+change there as REVIEW rather than FAIL. Path syntax is deliberately
+minimal: only dot-separated object-key paths are supported. There is no
+escaping for a key that itself contains a literal dot, and no syntax for
+indexing through a list (e.g. a racy field inside a ``runs[]`` entry) --
+neither is needed by any case today. A future case that needs either must
+extend this contract explicitly; do not assume it works.
+
+``capture_env`` makes environment identity a PER-SNAPSHOT property rather
+than a per-label one (an earlier revision of this module tracked it in a
+single label-wide sidecar, which required a three-branch ``--force`` rule
+and a destructive ``rmtree`` to stay correct -- both are gone). A snapshot
+is only ever skipped as "already captured" when it is a valid envelope AND
+its own ``capture_env`` matches what THIS run would capture under; a
+stale-environment snapshot is recaptured individually, exactly like a
+corrupt one, and no other file in the label is touched. ``--force`` is back
+to its plain original meaning: recapture regardless of whether an existing
+snapshot is valid or current. No destructive/whole-directory code path
+remains in this file.
 """
 
 from __future__ import annotations
@@ -49,7 +66,6 @@ import json
 import math
 import os
 import platform
-import shutil
 import sys
 import tempfile
 import time
@@ -75,20 +91,13 @@ _POLL_INTERVAL = 0.5
 _DEFAULT_POLL_TIMEOUT = 120.0  # was hard-coded as 240 attempts * 0.5s
 _TERMINAL = {"completed", "failed", "canceled"}
 
-# Sidecar recording the environment a label was FIRST captured under (spec
-# finding IMPORTANT 3). Deliberately separate from manifest.json: the
-# manifest is written last and only for a complete label, while this must be
-# written on the very first snapshot so a later resume under a different
-# MERIDIAN_BACKEND/package set can be refused instead of silently mixing two
-# environments into one "label".
-_ENV_SIDECAR_NAME = "capture_env.json"
-
 # IMPORTANT 5: after cancel_optimization the snapshotted get_optimization_status
 # can legitimately land on either "canceled" or "completed" depending on which
-# side won the race. This key, alongside the snapshot, tells the (separate)
-# diff tool which dotted paths inside THIS snapshot are known-racy so it can
-# classify a change there as REVIEW instead of FAIL, without hiding the value
-# and without adding it to normalize.VOLATILE_FIELDS.
+# side won the race. This key, in the snapshot ENVELOPE (not the payload --
+# Fix wave 4), tells the (separate) diff tool which dotted paths into
+# `payload` are known-racy so it can classify a change there as REVIEW
+# instead of FAIL, without hiding the value and without adding it to
+# normalize.VOLATILE_FIELDS.
 KNOWN_RACY_FIELDS_KEY = "known_racy_fields"
 
 
@@ -105,25 +114,50 @@ def case_path(root: Path, label: str, variant_key: str, case: ToolCase) -> Path:
     return Path(root) / label / variant_key / f"{case.tool}__{case.name}.json"
 
 
-def is_valid_snapshot(path: Path) -> bool:
-    """A file is only a legitimate skip if it is a non-empty, parseable JSON
-    snapshot (spec finding CRITICAL 1).
+def validate_label(label: str, out_root: Path) -> Path:
+    """CRITICAL, defence in depth: ``--label`` is operator-supplied and is
+    joined straight into a filesystem path.
 
-    ``path.exists()`` alone is not enough: a truncated/killed write (or a
-    zero-byte file from any other cause) previously read as "already
-    captured", the label read as complete, and the diff tool hit a JSON
-    decode error against data that was never really there.
+    Reproduced without this check: ``--label ""`` collapses ``label_dir`` to
+    ``out_root`` itself; ``--label ".."`` targets the parent; ``--label
+    "/abs/path"`` escapes entirely, because ``Path('/a/b') / '/c/d'`` is
+    ``/c/d`` in pathlib, not a joined path. Reject a label that is empty or
+    contains ``/``, ``\\`` or ``..`` up front, THEN independently assert
+    that the resulting directory really does resolve to a direct child of
+    ``out_root`` -- a second, structural check that does not rely on having
+    enumerated every bad substring.
+    """
+    if not label or "/" in label or "\\" in label or ".." in label:
+        raise SystemExit(
+            f"invalid --label {label!r}: must be non-empty and must not "
+            "contain '/', '\\', or '..' -- it is joined directly into a "
+            "filesystem path."
+        )
+    label_dir = Path(out_root) / label
+    resolved_root = Path(out_root).resolve()
+    assert label_dir.resolve().parent == resolved_root, (
+        f"invalid --label {label!r}: resolved outside {resolved_root} "
+        f"(got {label_dir.resolve()})"
+    )
+    return label_dir
+
+
+def read_snapshot(path: Path) -> dict[str, Any] | None:
+    """Load a snapshot ENVELOPE. Returns ``None`` if the file is missing,
+    empty, not valid JSON, or not a JSON object (CRITICAL 1, generalized to
+    the envelope shape): none of those is a legitimate skip candidate, and
+    ``path.exists()`` alone was never enough to tell.
     """
     if not path.exists():
-        return False
+        return None
     try:
         text = path.read_text()
         if not text.strip():
-            return False
-        json.loads(text)
+            return None
+        data = json.loads(text)
     except (OSError, json.JSONDecodeError):
-        return False
-    return True
+        return None
+    return data if isinstance(data, dict) else None
 
 
 # MINOR New-4: 5 minutes is far longer than any single write_snapshot call
@@ -163,42 +197,34 @@ def sweep_stale_tmp_files(
             tmp_path.unlink(missing_ok=True)
 
 
-def _clear_label_directory(label_dir: Path) -> None:
-    """IMPORTANT A: ``--force`` with no selector means "recapture this whole
-    label from scratch" -- make that literally true.
+def write_snapshot(
+    path: Path,
+    payload: Any,
+    *,
+    capture_env: dict[str, Any],
+    racy_fields: list[str] | None = None,
+) -> None:
+    """Normalize the payload, wrap it in a self-describing envelope, and
+    write atomically.
 
-    Without this, a forced full recapture that fails partway through could
-    rewrite the env sidecar to the NEW environment (on the first case that
-    DOES succeed) while a case that failed to recapture left its OLD
-    snapshot on disk -- still perfectly parseable, so a later plain resume
-    would see a matching sidecar, skip that stale file as "already
-    captured", and complete a label that silently mixes two environments.
-    Removing the whole directory upfront makes the partial-failure case safe
-    by construction: whatever this pass fails to (re)capture simply has no
-    file at all, and a later plain resume genuinely recaptures it instead of
-    trusting a leftover.
+    Fix wave 4: the envelope's ``capture_env`` is what makes environment
+    identity a per-SNAPSHOT property -- ``capture_env`` and
+    ``known_racy_fields`` are metadata about the payload, so only ``payload``
+    itself is passed through ``normalize`` (they are not tool output and
+    must not be tokenized as if they were).
 
-    Scoped to exactly ``label_dir`` -- never anything above it (``out_root``,
-    sibling labels). Prints what it did: an operator who typed ``--force``
-    should see that something was cleared.
+    Resumability (spec section 7.2) depends on the atomic write: a case
+    whose output file exists is (conditionally) skipped, so a half-written
+    file from a killed capture would be silently accepted as a finished one.
+    Temp file plus ``os.replace`` makes a partial file impossible.
     """
-    if not label_dir.exists():
-        return
-    print(f"--force with no selector: clearing existing label directory {label_dir}")
-    shutil.rmtree(label_dir)
-
-
-def write_snapshot(path: Path, payload: Any) -> None:
-    """Normalize, then write atomically.
-
-    Resumability (spec section 7.2) depends on this: a case whose output file
-    exists is skipped, so a half-written file from a killed capture would be
-    silently accepted as a finished one. Temp file plus ``os.replace`` makes
-    a partial file impossible.
-    """
+    envelope: dict[str, Any] = {"capture_env": capture_env}
+    if racy_fields:
+        envelope[KNOWN_RACY_FIELDS_KEY] = list(racy_fields)
+    envelope["payload"] = normalize(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(normalize(payload), indent=2, sort_keys=True))
+    tmp.write_text(json.dumps(envelope, indent=2, sort_keys=True))
     os.replace(tmp, path)
 
 
@@ -245,13 +271,14 @@ def worker_env() -> dict[str, str]:
 def capture_environment(
     transport: str, worker_environment: dict[str, str]
 ) -> dict[str, Any]:
-    """The environment-identifying material for IMPORTANT 3's sidecar.
+    """The environment-identifying material recorded in every snapshot's
+    ``capture_env`` (Fix wave 4; formerly a label-wide sidecar, IMPORTANT 3).
 
     Deliberately the SAME material ``manifest.build_manifest`` already
     records (package versions + the recorded worker-env keys), reusing
     ``manifest``'s own helpers rather than inventing a parallel notion of
     "environment". Excludes ``manifest.probe_fixtures``: that is per-fixture
-    provenance, not per-label environment, and re-running it on every
+    provenance, not per-capture environment, and re-running it on every
     ``capture()`` call (including single-case reruns) would be needlessly
     expensive.
     """
@@ -261,112 +288,6 @@ def capture_environment(
         "packages": package_versions(),
         "worker_env": {key: worker_environment.get(key) for key in _RECORDED_ENV_KEYS},
     }
-
-
-def _describe_env_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
-    diffs = []
-    for key in sorted(set(previous) | set(current)):
-        if previous.get(key) != current.get(key):
-            diffs.append(f"{key}: {previous.get(key)!r} -> {current.get(key)!r}")
-    return diffs
-
-
-def _read_capture_environment(path: Path) -> dict[str, Any] | None:
-    """Like ``is_valid_snapshot``, applied to the env sidecar (MINOR New-2):
-    ``None`` means "unreadable/corrupt", not "matches nothing in particular"
-    -- callers must treat that as an unverifiable environment, not a match.
-    """
-    try:
-        text = path.read_text()
-        if not text.strip():
-            return None
-        data = json.loads(text)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-_FULL_RECAPTURE_HOWTO = (
-    "Re-run with --force and NO --tools/--cases/--variants to fully "
-    "recapture this label under the new environment (this rewrites the "
-    "sidecar), or choose a fresh --label."
-)
-
-
-def check_capture_environment(
-    label_dir: Path, current: dict[str, Any], *, force: bool, has_selector: bool
-) -> str | None:
-    """Refuse to resume a label under a different (or unverifiable)
-    environment than it was captured under (IMPORTANT 3, MINOR New-2).
-
-    ``has_selector`` must be True whenever this run is narrowed by
-    ``--tools``/``--cases``/``--variants`` -- i.e. it is NOT a full-label
-    recapture. Three situations, per IMPORTANT New-1:
-
-      1. No ``--force``: always refuse on a real mismatch or an unreadable
-         sidecar.
-      2. ``--force`` WITH a selector: still refuse. A selective recapture
-         under a different environment would leave two environments mixed
-         into one label -- exactly the failure this guard exists to
-         prevent -- so ``--force`` does not override it. Only a full,
-         unfiltered ``--force`` may.
-      3. ``--force`` with NO selector: a legitimate whole-label recapture.
-         The label truly becomes the new environment: return ``None`` (the
-         caller -- see ``_clear_label_directory``, IMPORTANT A -- clears the
-         whole label directory, including this sidecar, before capturing
-         anything, then rewrites it on the first snapshot actually written).
-
-    Returns ``None`` when there is nothing to refuse: a fresh label (no
-    sidecar yet), a sidecar whose recorded environment matches ``current``,
-    or situation 3 above.
-    """
-    path = label_dir / _ENV_SIDECAR_NAME
-    if not path.exists():
-        return None
-    previous = _read_capture_environment(path)
-    if previous is None:
-        if force and not has_selector:
-            return None
-        if force:
-            return (
-                f"capture environment sidecar for label {label_dir.name!r} is "
-                f"corrupt or unreadable ({path}), so its environment cannot be "
-                "verified -- and --force was passed WITH a selector "
-                "(--tools/--cases/--variants), which only recaptures specific "
-                "cases and cannot safely override an unverifiable environment. "
-                f"{_FULL_RECAPTURE_HOWTO}"
-            )
-        return (
-            f"capture environment sidecar for label {label_dir.name!r} is corrupt "
-            f"or unreadable ({path}), so its environment cannot be verified. "
-            f"Refusing to resume into an unknown-environment label. "
-            f"{_FULL_RECAPTURE_HOWTO}"
-        )
-    if previous == current:
-        return None
-    if force and not has_selector:
-        return None
-    diffs = "; ".join(_describe_env_diff(previous, current))
-    if force:
-        return (
-            f"capture environment changed for label {label_dir.name!r} since it "
-            f"was first captured: {diffs}. --force was passed WITH a selector "
-            "(--tools/--cases/--variants), which only recaptures specific cases "
-            "-- doing that under a different environment would leave two "
-            f"environments mixed into one label. {_FULL_RECAPTURE_HOWTO}"
-        )
-    return (
-        f"capture environment changed for label {label_dir.name!r} since it was "
-        f"first captured: {diffs}. Refusing to resume into a mixed-environment "
-        f"label -- that would silently break the one-variable-per-diff "
-        f"guarantee. {_FULL_RECAPTURE_HOWTO}"
-    )
-
-
-def record_capture_environment(label_dir: Path, current: dict[str, Any]) -> None:
-    path = label_dir / _ENV_SIDECAR_NAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(current, indent=2, sort_keys=True))
 
 
 def selected_cases(
@@ -537,7 +458,11 @@ async def run_lifecycle_case(
     resubmit (must be reused) -> list -> delete -> status (must be a typed
     not-found envelope).
 
-    ``cancel``: submit a different config -> cancel -> status -> delete.
+    ``cancel``: submit a different config -> cancel -> status -> delete. Its
+    returned dict carries a ``KNOWN_RACY_FIELDS_KEY`` entry; ``capture()``
+    pops that out of the payload and into the snapshot envelope before
+    writing (Fix wave 4) -- callers of THIS function still see it embedded,
+    exactly as before.
     """
     if name == "cancel":
         submit = await call_tool(
@@ -684,7 +609,9 @@ async def capture(
 ) -> int:
     """``variants_selected`` must be True whenever ``variant_keys`` came from
     an explicit ``--variants`` (as opposed to defaulting to every known
-    fixture) -- see CRITICAL 2."""
+    fixture) -- see CRITICAL 2 / manifest suppression, below."""
+    label_dir = validate_label(label, out_root)  # CRITICAL: defence in depth
+
     known_specs = matrix.fixture_specs()
     known_keys = {v.key for v in known_specs}
     unknown = [key for key in variant_keys if key not in known_keys]
@@ -699,40 +626,22 @@ async def capture(
     if not specs:
         raise SystemExit("no variants requested")
 
-    # IMPORTANT New-1 / MINOR C: --tools/--cases always narrow this run.
-    # --variants only narrows it if the requested set is a PROPER subset of
-    # every known fixture -- naming all of them (e.g. an explicit Phase 7
-    # cloud spelling) is a full-label run in substance and must not be
-    # refused the way a genuine subset would be. This governs what --force
-    # is allowed to override (see check_capture_environment) and whether a
-    # forced recapture wipes the label (below); it is DELIBERATELY separate
-    # from the (unrelated, more conservative) manifest-suppression guard
-    # further down, which still suppresses on any explicit --variants use.
+    # CRITICAL 2(a) / MINOR C: --tools/--cases always narrow this run below
+    # the whole label; --variants only narrows it if the requested set is a
+    # PROPER subset of every known fixture -- naming all of them (e.g. an
+    # explicit Phase 7 cloud spelling) is a full-label run in substance.
+    # This is the ONLY remaining notion of "a selector was used" now that
+    # environment tracking is per-snapshot: it governs manifest suppression
+    # alone.
     variants_narrow = variants_selected and set(variant_keys) != known_keys
-    has_selector = bool(tools or cases_filter or variants_narrow)
-
-    label_dir = Path(out_root) / label
-
-    # IMPORTANT A: a full, unfiltered --force means "start this label over".
-    # Clear it BEFORE capturing anything, so a partial failure this pass
-    # cannot leave a stale (possibly different-environment) snapshot for a
-    # later plain resume to silently trust.
-    if force and not has_selector:
-        _clear_label_directory(label_dir)
+    is_partial_run = bool(tools or cases_filter or variants_narrow)
 
     sweep_stale_tmp_files(label_dir)  # MINOR 8: clear orphans from a killed run
 
-    # IMPORTANT 3: refuse to resume this label under a different capture
-    # environment than it was started with -- checked BEFORE touching any
-    # case, using the worker environment the tools will actually run under.
+    # Fix wave 4: environment identity is a PER-SNAPSHOT property (each
+    # envelope's own `capture_env`), not a per-label sidecar. `--force` is
+    # back to its plain meaning: recapture regardless of validity/currency.
     current_env = capture_environment(transport, worker_env())
-    env_conflict = check_capture_environment(
-        label_dir, current_env, force=force, has_selector=has_selector
-    )
-    if env_conflict:
-        print(env_conflict)
-        return 1
-    env_recorded = False
 
     written: list[str] = []
     skipped: list[str] = []
@@ -759,10 +668,25 @@ async def capture(
             ):
                 path = case_path(out_root, label, variant.key, case)
                 if not force:
-                    if is_valid_snapshot(path):
+                    envelope = read_snapshot(path) if path.exists() else None
+                    if (
+                        envelope is not None
+                        and envelope.get("capture_env") == current_env
+                    ):
                         skipped.append(str(path))
                         continue
-                    if path.exists():
+                    if envelope is not None:
+                        # Fix wave 4: a valid envelope from a STALE
+                        # environment is not a valid skip either -- recapture
+                        # it individually. Nothing else in the label is
+                        # touched: this is a per-file decision, not a
+                        # per-label one.
+                        recaptured.append(str(path))
+                        print(
+                            f"  RECAPTURE (stale environment) "
+                            f"{variant.key}/{case.tool}__{case.name}"
+                        )
+                    elif path.exists():
                         # CRITICAL 1: corrupt/empty is not a valid skip --
                         # re-capture it instead of trusting a truncated file.
                         recaptured.append(str(path))
@@ -784,10 +708,14 @@ async def capture(
                     failures.append(f"{variant.key}/{case.tool}__{case.name}: {exc}")
                     print(f"  FAIL {variant.key}/{case.tool}__{case.name}: {exc}")
                     continue
-                if not env_recorded:
-                    record_capture_environment(label_dir, current_env)
-                    env_recorded = True
-                write_snapshot(path, payload)
+                racy_fields = None
+                if isinstance(payload, dict) and KNOWN_RACY_FIELDS_KEY in payload:
+                    # Fix wave 4: this marker is envelope metadata, not
+                    # payload -- move it out before writing.
+                    racy_fields = payload.pop(KNOWN_RACY_FIELDS_KEY)
+                write_snapshot(
+                    path, payload, capture_env=current_env, racy_fields=racy_fields
+                )
                 written.append(str(path))
                 print(f"  captured {variant.key}/{case.tool}__{case.name}")
 
@@ -804,7 +732,7 @@ async def capture(
         )
         return 1
 
-    if tools or cases_filter or variants_selected:
+    if is_partial_run:
         print(
             "NOTE: a selector was used, so manifest.json was NOT written. "
             "Re-run without --tools/--cases/--variants to finish this label."

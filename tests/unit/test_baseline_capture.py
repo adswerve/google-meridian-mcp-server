@@ -1,4 +1,4 @@
-"""Snapshot layout, atomic writes, resumability and failure accounting."""
+"""Snapshot envelope, atomic writes, resumability and failure accounting."""
 
 import json
 import os
@@ -78,23 +78,75 @@ def test_snapshot_path_is_label_variant_tool_case(tmp_path):
     )
 
 
-def test_write_snapshot_normalizes_volatile_fields(tmp_path):
+# ---------------------------------------------------------------------------
+# Fix wave 4 -- the snapshot envelope: {"capture_env": ..., "payload": ...},
+# with an optional "known_racy_fields". Replaces the bare-payload file.
+# ---------------------------------------------------------------------------
+
+
+def test_write_snapshot_wraps_the_payload_in_a_self_describing_envelope(tmp_path):
     path = tmp_path / "a" / "b.json"
-    cb.write_snapshot(path, {"run_id": "m-20260904T101500-a1b2c3", "rows": [[1.0]]})
-    assert json.loads(path.read_text()) == {"run_id": "<run_id>", "rows": [[1.0]]}
+    env = {"transport": "inprocess", "python": "3.12.8"}
+    cb.write_snapshot(
+        path, {"run_id": "m-20260904T101500-a1b2c3", "rows": [[1.0]]}, capture_env=env
+    )
+    on_disk = json.loads(path.read_text())
+    assert on_disk == {
+        "capture_env": env,
+        "payload": {"run_id": "<run_id>", "rows": [[1.0]]},
+    }
+
+
+def test_write_snapshot_includes_known_racy_fields_only_when_given(tmp_path):
+    with_racy = tmp_path / "with_racy.json"
+    cb.write_snapshot(
+        with_racy,
+        {"status": {"status": "completed"}},
+        capture_env={},
+        racy_fields=["status.status"],
+    )
+    on_disk = json.loads(with_racy.read_text())
+    assert on_disk["known_racy_fields"] == ["status.status"]
+    assert "known_racy_fields" not in on_disk["payload"]  # moved OUT of the payload
+
+    without_racy = tmp_path / "without_racy.json"
+    cb.write_snapshot(without_racy, {"ok": True}, capture_env={})
+    assert "known_racy_fields" not in json.loads(without_racy.read_text())
 
 
 def test_write_snapshot_leaves_no_temp_file_behind(tmp_path):
     path = tmp_path / "b.json"
-    cb.write_snapshot(path, {"ok": True})
+    cb.write_snapshot(path, {"ok": True}, capture_env={})
     assert sorted(p.name for p in tmp_path.iterdir()) == ["b.json"]
 
 
 def test_write_snapshot_overwrites_in_place(tmp_path):
     path = tmp_path / "b.json"
-    cb.write_snapshot(path, {"v": 1})
-    cb.write_snapshot(path, {"v": 2})
-    assert json.loads(path.read_text()) == {"v": 2}
+    cb.write_snapshot(path, {"v": 1}, capture_env={})
+    cb.write_snapshot(path, {"v": 2}, capture_env={})
+    assert json.loads(path.read_text())["payload"] == {"v": 2}
+
+
+def test_read_snapshot_returns_none_for_missing_empty_corrupt_or_non_object(tmp_path):
+    assert cb.read_snapshot(tmp_path / "missing.json") is None
+
+    empty = tmp_path / "empty.json"
+    empty.write_text("")
+    assert cb.read_snapshot(empty) is None
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{oops")
+    assert cb.read_snapshot(corrupt) is None
+
+    not_an_object = tmp_path / "list.json"
+    not_an_object.write_text("[1, 2, 3]")
+    assert cb.read_snapshot(not_an_object) is None
+
+
+def test_read_snapshot_returns_the_envelope_for_a_valid_file(tmp_path):
+    path = tmp_path / "ok.json"
+    cb.write_snapshot(path, {"a": 1}, capture_env={"e": "x"})
+    assert cb.read_snapshot(path) == {"capture_env": {"e": "x"}, "payload": {"a": 1}}
 
 
 def test_prepare_env_isolates_the_registry(tmp_path, monkeypatch):
@@ -378,10 +430,9 @@ async def test_lifecycle_cancel_polls_to_terminal_and_flags_the_racy_field(monke
 
 
 def test_cli_poll_timeout_defaults_to_the_module_constant_and_reaches_poll():
-    """Replaces a bare constant echo (asserted nothing behavioural; only
-    failed pre-fix because the symbol was renamed). Asserts the actual CLI
-    wiring: --poll-timeout's default resolves from the same constant _poll
-    itself defaults to, so changing one without the other would be caught."""
+    """Asserts the actual CLI wiring: --poll-timeout's default resolves from
+    the same constant _poll itself defaults to, so changing one without the
+    other would be caught (not just asserting the constant's own value)."""
     args = cb._parse_args(["--label", "x"])
     assert args.poll_timeout == cb._DEFAULT_POLL_TIMEOUT
 
@@ -405,7 +456,7 @@ async def test_poll_respects_a_custom_timeout(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# MINOR 8 -- stale .tmp files must be swept at the start of a label capture.
+# MINOR 8 / New-4 -- stale .tmp files are swept, but only genuinely old ones.
 # ---------------------------------------------------------------------------
 
 
@@ -437,371 +488,9 @@ def test_sweep_stale_tmp_files_removes_only_old_orphans(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# capture() itself -- untested before this change (the TEST GAP finding).
-# Each test below is written to FAIL against the pre-fix code.
-# ---------------------------------------------------------------------------
-
-
-async def test_capture_recaptures_a_corrupt_or_empty_snapshot_instead_of_skipping(
-    tmp_path, monkeypatch
-):
-    _patch_matrix(monkeypatch, ["v1"], [CASE])
-    _patch_client(
-        monkeypatch,
-        _FakeCaptureClient(
-            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"value": 42}}
-        ),
-    )
-    path = cb.case_path(tmp_path, "L", "v1", CASE)
-    path.parent.mkdir(parents=True)
-    path.write_text("")  # truncated to zero bytes, as in the empirical repro
-    stray_tmp = path.parent / "leftover.tmp"
-    stray_tmp.write_text("junk")
-    old_time = time.time() - cb._STALE_TMP_AGE_SECONDS - 10
-    os.utime(stray_tmp, (old_time, old_time))  # old enough for the sweep (MINOR New-4)
-
-    rc = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=False,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-
-    assert rc == 0
-    assert json.loads(path.read_text()) == {"value": 42}
-    assert not stray_tmp.exists()  # MINOR 8, exercised through capture()
-
-
-async def test_capture_writes_no_manifest_when_variants_selector_is_used(
-    tmp_path, monkeypatch
-):
-    _patch_matrix(monkeypatch, ["v1", "v2"], [CASE])
-    _patch_client(
-        monkeypatch,
-        _FakeCaptureClient(
-            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
-        ),
-    )
-
-    rc = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],  # a genuine subset of the known ["v1", "v2"]
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=False,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-
-    assert rc == 0
-    assert not (tmp_path / "L" / "manifest.json").exists()
-
-
-async def test_capture_fails_loudly_on_an_unknown_variant_name(tmp_path, monkeypatch):
-    _patch_matrix(monkeypatch, ["national-revenue"], [CASE])
-
-    with pytest.raises(SystemExit, match="TYPO-DOES-NOT-EXIST"):
-        await cb.capture(
-            label="L",
-            transport="inprocess",
-            url=None,
-            variant_keys=["national-revenue", "TYPO-DOES-NOT-EXIST"],
-            tools=None,
-            cases_filter=None,
-            compute_tier=None,
-            force=False,
-            out_root=tmp_path,
-            variants_selected=True,
-        )
-    assert not (tmp_path / "L").exists()  # nothing narrowed, nothing written
-
-
-async def test_capture_refuses_to_resume_a_label_after_the_environment_changed(
-    tmp_path, monkeypatch
-):
-    # A second known fixture ("v2") that is never requested -- so
-    # variant_keys=["v1"] below is a genuine PROPER SUBSET, not "--variants
-    # naming every fixture" (MINOR C), which is intentionally exempt from
-    # this guard and covered by its own dedicated test.
-    _patch_matrix(monkeypatch, ["v1", "v2"], [CASE])
-    _patch_client(
-        monkeypatch,
-        _FakeCaptureClient(
-            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
-        ),
-    )
-
-    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "tensorflow"})
-    rc1 = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=False,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-    assert rc1 == 0
-    assert (tmp_path / "L" / cb._ENV_SIDECAR_NAME).exists()
-
-    # Same label, a second (different) case, but the backend changed underneath us.
-    case2 = ToolCase("get_channel_summary", "cpik", {}, frozenset(), "service")
-    _patch_matrix(monkeypatch, ["v1", "v2"], [case2])
-    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
-
-    rc2 = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=False,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-    assert rc2 == 1
-    assert not cb.case_path(tmp_path, "L", "v1", case2).exists()
-
-    # IMPORTANT New-1: --force alone does NOT override a mismatch when this
-    # run is narrowed by a selector (here, variants_selected=True) -- see the
-    # dedicated three-branch test below for the full rule.
-    rc3 = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=True,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-    assert rc3 == 1
-    assert not cb.case_path(tmp_path, "L", "v1", case2).exists()
-
-
-async def test_capture_counts_failures_and_exits_nonzero(tmp_path, monkeypatch):
-    _patch_matrix(monkeypatch, ["v1"], [CASE])
-    _patch_client(
-        monkeypatch,
-        _FakeCaptureClient(
-            {"get_model_overview": _OVERVIEW_OK}, raise_on={"get_channel_summary"}
-        ),
-    )
-
-    rc = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=False,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-
-    assert rc == 1
-    assert not cb.case_path(tmp_path, "L", "v1", CASE).exists()
-    assert not (tmp_path / "L" / "manifest.json").exists()
-
-
-# ---------------------------------------------------------------------------
-# IMPORTANT New-1 -- --force must not launder a mixed-environment label
-# through a selector; only a full, unfiltered --force may recapture it.
-# ---------------------------------------------------------------------------
-
-
-async def test_force_environment_override_requires_no_selector(tmp_path, monkeypatch):
-    """Reproduces the reviewer's finding: force=True + cases_filter under a
-    changed backend used to return rc 0 and rewrite the sidecar while an
-    existing snapshot stayed captured under the OLD backend -- permanently
-    laundering a mixed-environment label. Covers all three situations from
-    the fix: force+selector (still refused), force+no selector (legitimate
-    full recapture), and plain no-force (still refused afterwards, i.e. the
-    full recapture did not leave the guard permanently open)."""
-    _patch_matrix(monkeypatch, ["v1"], [CASE])
-    _patch_client(
-        monkeypatch,
-        _FakeCaptureClient(
-            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
-        ),
-    )
-    # A full (no-selector) run reaches the real manifest-building code, which
-    # needs real fixtures on disk; stub it out since this test is only about
-    # the environment guard, not manifest content.
-    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
-    monkeypatch.setattr(
-        cb, "write_manifest", lambda label_dir, manifest: label_dir / "manifest.json"
-    )
-
-    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "tensorflow"})
-    rc0 = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=False,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-    assert rc0 == 0
-    sidecar = tmp_path / "L" / cb._ENV_SIDECAR_NAME
-    original_env = json.loads(sidecar.read_text())
-
-    case2 = ToolCase("get_channel_summary", "cpik", {}, frozenset(), "service")
-    _patch_matrix(monkeypatch, ["v1"], [case2])
-    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
-
-    # (1) --force WITH a selector (--cases): must still refuse, not launder.
-    rc_selector = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=["cpik"],
-        compute_tier=None,
-        force=True,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-    assert rc_selector == 1
-    assert not cb.case_path(tmp_path, "L", "v1", case2).exists()
-    assert json.loads(sidecar.read_text()) == original_env  # NOT laundered
-
-    # (2) --force with NO selector at all: a legitimate whole-label recapture.
-    rc_full = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=True,
-        out_root=tmp_path,
-        variants_selected=False,
-    )
-    assert rc_full == 0
-    assert cb.case_path(tmp_path, "L", "v1", case2).exists()
-    new_env = json.loads(sidecar.read_text())
-    assert new_env != original_env
-    assert new_env["worker_env"]["MERIDIAN_BACKEND"] == "jax"
-
-    # (3) No --force at all, under yet another environment: still refused --
-    # the full recapture in (2) did not leave this guard permanently open.
-    case3 = ToolCase("get_channel_summary", "marginal_roi", {}, frozenset(), "service")
-    _patch_matrix(monkeypatch, ["v1"], [case3])
-    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "tensorflow"})
-    rc_no_force = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=False,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-    assert rc_no_force == 1
-    assert not cb.case_path(tmp_path, "L", "v1", case3).exists()
-
-
-# ---------------------------------------------------------------------------
-# MINOR New-2 -- a corrupt sidecar must refuse cleanly, not crash.
-# ---------------------------------------------------------------------------
-
-
-async def test_capture_refuses_on_a_corrupt_sidecar_instead_of_crashing(
-    tmp_path, monkeypatch
-):
-    _patch_matrix(monkeypatch, ["v1"], [CASE])
-    _patch_client(
-        monkeypatch,
-        _FakeCaptureClient(
-            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
-        ),
-    )
-    label_dir = tmp_path / "L"
-    label_dir.mkdir(parents=True)
-    (label_dir / cb._ENV_SIDECAR_NAME).write_text("{oops")
-
-    rc = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=False,
-        out_root=tmp_path,
-        variants_selected=True,
-    )
-    assert rc == 1
-    assert not cb.case_path(tmp_path, "L", "v1", CASE).exists()
-
-
-async def test_force_with_no_selector_recovers_from_a_corrupt_sidecar(
-    tmp_path, monkeypatch
-):
-    _patch_matrix(monkeypatch, ["v1"], [CASE])
-    _patch_client(
-        monkeypatch,
-        _FakeCaptureClient(
-            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
-        ),
-    )
-    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
-    monkeypatch.setattr(
-        cb, "write_manifest", lambda label_dir, manifest: label_dir / "manifest.json"
-    )
-    label_dir = tmp_path / "L"
-    label_dir.mkdir(parents=True)
-    (label_dir / cb._ENV_SIDECAR_NAME).write_text("{oops")
-
-    rc = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=True,
-        out_root=tmp_path,
-        variants_selected=False,
-    )
-    assert rc == 0
-    assert cb.case_path(tmp_path, "L", "v1", CASE).exists()
-    json.loads((label_dir / cb._ENV_SIDECAR_NAME).read_text())  # valid again
-
-
-# ---------------------------------------------------------------------------
-# MINOR New-3 -- the cancel branch must reap unconditionally, even when the
-# post-cancel poll never reaches a terminal state.
+# MINOR New-3 / IMPORTANT B -- the cancel branch reaps unconditionally, but a
+# failed reap FAILS the case (deleted is payload here, unlike
+# run_optimization_case's purely-cleanup reap).
 # ---------------------------------------------------------------------------
 
 
@@ -834,8 +523,7 @@ async def test_lifecycle_cancel_fails_the_case_when_the_reap_fails_after_a_succe
     """IMPORTANT B: `deleted` is part of THIS case's snapshotted payload
     (unlike run_optimization_case's purely-cleanup reap), so a failed
     delete_optimization must fail the case -- never be recorded as
-    `deleted: null`. (Replaces a test that asserted exactly that null,
-    encoding the defect as intended behaviour.)"""
+    `deleted: null`."""
 
     class _Client:
         async def call_tool(self, name, args):
@@ -880,60 +568,75 @@ async def test_lifecycle_cancel_reap_failure_does_not_replace_the_primary_poll_e
 
 
 # ---------------------------------------------------------------------------
-# IMPORTANT A -- a forced full recapture that partially fails must not leave
-# a complete-looking label mixing two environments.
+# CRITICAL, defence in depth -- --label must not escape out_root.
 # ---------------------------------------------------------------------------
 
 
-async def test_force_full_recapture_wipes_the_label_so_partial_failure_cannot_mix_environments(
+def test_validate_label_accepts_a_normal_label(tmp_path):
+    assert cb.validate_label("v2.0-jax", tmp_path) == tmp_path / "v2.0-jax"
+
+
+def test_validate_label_rejects_empty_slash_backslash_and_dotdot(tmp_path):
+    for bad in ["", "a/b", "a\\b", "..", "../x", "x/..", "/abs/path"]:
+        with pytest.raises(SystemExit, match="invalid --label"):
+            cb.validate_label(bad, tmp_path)
+
+
+async def test_capture_rejects_an_empty_label(tmp_path):
+    with pytest.raises(SystemExit, match="invalid --label"):
+        await cb.capture(
+            label="",
+            transport="inprocess",
+            url=None,
+            variant_keys=["v1"],
+            tools=None,
+            cases_filter=None,
+            compute_tier=None,
+            force=False,
+            out_root=tmp_path,
+        )
+    assert list(tmp_path.iterdir()) == []  # nothing touched
+
+
+async def test_capture_rejects_a_dotdot_label(tmp_path):
+    with pytest.raises(SystemExit, match="invalid --label"):
+        await cb.capture(
+            label="..",
+            transport="inprocess",
+            url=None,
+            variant_keys=["v1"],
+            tools=None,
+            cases_filter=None,
+            compute_tier=None,
+            force=False,
+            out_root=tmp_path,
+        )
+
+
+# ---------------------------------------------------------------------------
+# capture() itself.
+# ---------------------------------------------------------------------------
+
+
+async def test_capture_recaptures_a_corrupt_or_empty_snapshot_instead_of_skipping(
     tmp_path, monkeypatch
 ):
-    """End-to-end reproduction of the reviewer's sequence: a tensorflow
-    label, then a forced full recapture under jax where ONE case's tool call
-    fails. Before the fix, the sidecar was rewritten to jax on the first
-    successful snapshot of pass 1 while the failing case's tensorflow-era
-    file stayed on disk (still valid JSON) -- so a later plain resume saw a
-    matching sidecar, skipped the stale file as "already captured", and
-    completed with a manifest: a complete-looking label secretly containing
-    one tensorflow snapshot and one jax snapshot."""
-    case_a = ToolCase(
-        "get_channel_summary", "roi", {"output_type": "roi"}, frozenset(), "service"
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    _patch_client(
+        monkeypatch,
+        _FakeCaptureClient(
+            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"value": 42}}
+        ),
     )
-    case_b = ToolCase(
-        "get_channel_summary", "cpik", {"output_type": "cpik"}, frozenset(), "service"
-    )
+    path = cb.case_path(tmp_path, "L", "v1", CASE)
+    path.parent.mkdir(parents=True)
+    path.write_text("")  # truncated to zero bytes, as in the empirical repro
+    stray_tmp = path.parent / "leftover.tmp"
+    stray_tmp.write_text("junk")
+    old_time = time.time() - cb._STALE_TMP_AGE_SECONDS - 10
+    os.utime(stray_tmp, (old_time, old_time))  # old enough for the sweep (MINOR New-4)
 
-    class _Client:
-        def __init__(self, fail_output_type=None):
-            self.fail_output_type = fail_output_type
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc_info):
-            return False
-
-        async def call_tool(self, name, args):
-            if name == "get_model_overview":
-                return _Result(_OVERVIEW_OK)
-            if (
-                name == "get_channel_summary"
-                and args.get("output_type") == self.fail_output_type
-            ):
-                raise TimeoutError("blew up")
-            return _Result({"output_type": args.get("output_type")})
-
-    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
-
-    _patch_matrix(monkeypatch, ["v1"], [case_a, case_b])
-    a_path = cb.case_path(tmp_path, "L", "v1", case_a)
-    b_path = cb.case_path(tmp_path, "L", "v1", case_b)
-    manifest_path = tmp_path / "L" / "manifest.json"
-
-    # Pass 0: establish the label under tensorflow -- both cases succeed.
-    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "tensorflow"})
-    monkeypatch.setattr(cb, "build_client", lambda transport, url: _Client())
-    rc0 = await cb.capture(
+    rc = await cb.capture(
         label="L",
         transport="inprocess",
         url=None,
@@ -943,68 +646,15 @@ async def test_force_full_recapture_wipes_the_label_so_partial_failure_cannot_mi
         compute_tier=None,
         force=False,
         out_root=tmp_path,
-        variants_selected=False,
+        variants_selected=True,
     )
-    assert rc0 == 0
-    assert a_path.exists() and b_path.exists()
-    assert manifest_path.exists()
 
-    # Pass 1: --force, NO selector, under jax -- case_b's tool call fails.
-    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
-    monkeypatch.setattr(
-        cb, "build_client", lambda transport, url: _Client(fail_output_type="cpik")
-    )
-    rc1 = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=True,
-        out_root=tmp_path,
-        variants_selected=False,
-    )
-    assert rc1 == 1
-    # case_b's stale TENSORFLOW-era snapshot must NOT survive this pass.
-    assert not b_path.exists()
-    assert a_path.exists()  # the case that succeeded is genuinely jax-era
-    sidecar = json.loads((tmp_path / "L" / cb._ENV_SIDECAR_NAME).read_text())
-    assert sidecar["worker_env"]["MERIDIAN_BACKEND"] == "jax"
-    assert not manifest_path.exists()  # incomplete: no manifest yet
-
-    # Pass 2: plain resume (no --force). Must genuinely RECAPTURE case_b
-    # under jax rather than skip a stale tensorflow file, and finish clean.
-    monkeypatch.setattr(
-        cb, "build_client", lambda transport, url: _Client(fail_output_type=None)
-    )
-    rc2 = await cb.capture(
-        label="L",
-        transport="inprocess",
-        url=None,
-        variant_keys=["v1"],
-        tools=None,
-        cases_filter=None,
-        compute_tier=None,
-        force=False,
-        out_root=tmp_path,
-        variants_selected=False,
-    )
-    assert rc2 == 0
-    # b_path did not exist after pass 1 (asserted above) and exists now, so
-    # this write is a genuine fresh capture under jax, never a leftover.
-    assert b_path.exists()
-    assert manifest_path.exists()
+    assert rc == 0
+    assert json.loads(path.read_text())["payload"] == {"value": 42}
+    assert not stray_tmp.exists()  # MINOR 8, exercised through capture()
 
 
-# ---------------------------------------------------------------------------
-# MINOR C -- --variants naming every known fixture is not a narrowing
-# selector for the --force override rule.
-# ---------------------------------------------------------------------------
-
-
-async def test_variants_naming_every_fixture_is_not_treated_as_a_selector(
+async def test_capture_writes_no_manifest_for_a_genuine_variants_subset(
     tmp_path, monkeypatch
 ):
     _patch_matrix(monkeypatch, ["v1", "v2"], [CASE])
@@ -1014,14 +664,12 @@ async def test_variants_naming_every_fixture_is_not_treated_as_a_selector(
             {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
         ),
     )
-    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
 
-    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "tensorflow"})
-    rc0 = await cb.capture(
+    rc = await cb.capture(
         label="L",
         transport="inprocess",
         url=None,
-        variant_keys=["v1", "v2"],  # --variants naming BOTH known fixtures
+        variant_keys=["v1"],  # a genuine subset of the known ["v1", "v2"]
         tools=None,
         cases_filter=None,
         compute_tier=None,
@@ -1029,23 +677,286 @@ async def test_variants_naming_every_fixture_is_not_treated_as_a_selector(
         out_root=tmp_path,
         variants_selected=True,
     )
-    assert rc0 == 0
-    sidecar_path = tmp_path / "L" / cb._ENV_SIDECAR_NAME
-    assert json.loads(sidecar_path.read_text())["worker_env"]["MERIDIAN_BACKEND"] == (
-        "tensorflow"
-    )
 
-    # --force, backend changed, --variants STILL naming every known fixture:
-    # in substance a full-label recapture, so --force must override, unlike
-    # a genuine subset (covered by test_force_environment_override_requires_no_selector).
-    case2 = ToolCase("get_channel_summary", "cpik", {}, frozenset(), "service")
-    _patch_matrix(monkeypatch, ["v1", "v2"], [case2])
-    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
-    rc1 = await cb.capture(
+    assert rc == 0
+    assert not (tmp_path / "L" / "manifest.json").exists()
+
+
+async def test_capture_writes_a_manifest_when_variants_names_every_fixture(
+    tmp_path, monkeypatch
+):
+    """MINOR C, carried into Fix wave 4: --variants naming ALL known fixtures
+    is a full-label run in substance -- unlike a genuine subset, it must NOT
+    suppress the manifest."""
+    _patch_matrix(monkeypatch, ["v1", "v2"], [CASE])
+    _patch_client(
+        monkeypatch,
+        _FakeCaptureClient(
+            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
+        ),
+    )
+    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
+
+    rc = await cb.capture(
         label="L",
         transport="inprocess",
         url=None,
-        variant_keys=["v1", "v2"],
+        variant_keys=["v1", "v2"],  # every known fixture, named explicitly
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+
+    assert rc == 0
+    assert (tmp_path / "L" / "manifest.json").exists()
+
+
+async def test_capture_fails_loudly_on_an_unknown_variant_name(tmp_path, monkeypatch):
+    _patch_matrix(monkeypatch, ["national-revenue"], [CASE])
+
+    with pytest.raises(SystemExit, match="TYPO-DOES-NOT-EXIST"):
+        await cb.capture(
+            label="L",
+            transport="inprocess",
+            url=None,
+            variant_keys=["national-revenue", "TYPO-DOES-NOT-EXIST"],
+            tools=None,
+            cases_filter=None,
+            compute_tier=None,
+            force=False,
+            out_root=tmp_path,
+            variants_selected=True,
+        )
+    assert not (tmp_path / "L").exists()  # nothing narrowed, nothing written
+
+
+async def test_capture_counts_failures_and_exits_nonzero(tmp_path, monkeypatch):
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    _patch_client(
+        monkeypatch,
+        _FakeCaptureClient(
+            {"get_model_overview": _OVERVIEW_OK}, raise_on={"get_channel_summary"}
+        ),
+    )
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+
+    assert rc == 1
+    assert not cb.case_path(tmp_path, "L", "v1", CASE).exists()
+    assert not (tmp_path / "L" / "manifest.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Fix wave 4's central invariant -- environment identity is per-snapshot: a
+# stale-environment snapshot is recaptured INDIVIDUALLY, disturbing nothing
+# else in the label. No sidecar, no three-branch --force rule, no rmtree.
+# ---------------------------------------------------------------------------
+
+
+async def test_capture_skips_a_snapshot_whose_environment_still_matches(
+    tmp_path, monkeypatch
+):
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    current_env = cb.capture_environment("inprocess", cb.worker_env())
+    path = cb.case_path(tmp_path, "L", "v1", CASE)
+    cb.write_snapshot(path, {"value": "original"}, capture_env=current_env)
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            raise AssertionError(f"case tool should not be called: {name}")
+
+    _patch_client(monkeypatch, _Client())
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc == 0
+    assert json.loads(path.read_text())["payload"] == {"value": "original"}
+
+
+async def test_capture_recaptures_only_the_case_whose_snapshot_environment_is_stale(
+    tmp_path, monkeypatch
+):
+    """The new invariant, directly: capture a case, change MERIDIAN_BACKEND,
+    re-run WITHOUT --force -- that specific snapshot is recaptured, and NO
+    OTHER case is disturbed. This is the per-file replacement for the old
+    label-wide sidecar/three-branch-force/rmtree machinery."""
+    case_a = ToolCase(
+        "get_channel_summary", "roi", {"output_type": "roi"}, frozenset(), "service"
+    )
+    case_b = ToolCase(
+        "get_channel_summary", "cpik", {"output_type": "cpik"}, frozenset(), "service"
+    )
+    _patch_matrix(monkeypatch, ["v1"], [case_a, case_b])
+
+    calls = []
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            calls.append(args.get("output_type"))
+            return _Result({"output_type": args.get("output_type"), "fresh": True})
+
+    _patch_client(monkeypatch, _Client())
+
+    a_path = cb.case_path(tmp_path, "L", "v1", case_a)
+    b_path = cb.case_path(tmp_path, "L", "v1", case_b)
+
+    stale_env = cb.capture_environment("inprocess", {"MERIDIAN_BACKEND": "tensorflow"})
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    current_env = cb.capture_environment("inprocess", cb.worker_env())
+
+    cb.write_snapshot(
+        a_path, {"output_type": "roi", "stale": True}, capture_env=stale_env
+    )
+    cb.write_snapshot(
+        b_path, {"output_type": "cpik", "current": True}, capture_env=current_env
+    )
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+
+    assert rc == 0
+    # ONLY case_a's tool was actually called again -- case_b was never touched.
+    assert calls == ["roi"]
+    assert json.loads(a_path.read_text())["payload"]["fresh"] is True
+    assert json.loads(b_path.read_text())["payload"] == {
+        "output_type": "cpik",
+        "current": True,
+    }
+
+
+async def test_capture_failure_in_one_case_does_not_disturb_an_unrelated_snapshot(
+    tmp_path, monkeypatch
+):
+    """No wipe/rmtree exists any more: a failure in one case can only ever
+    fail to write ITS OWN file. An existing, valid, current snapshot for a
+    different case is left completely alone."""
+    case_a = ToolCase(
+        "get_channel_summary", "roi", {"output_type": "roi"}, frozenset(), "service"
+    )
+    case_b = ToolCase(
+        "get_channel_summary", "cpik", {"output_type": "cpik"}, frozenset(), "service"
+    )
+    _patch_matrix(monkeypatch, ["v1"], [case_a, case_b])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    current_env = cb.capture_environment("inprocess", cb.worker_env())
+
+    a_path = cb.case_path(tmp_path, "L", "v1", case_a)
+    b_path = cb.case_path(tmp_path, "L", "v1", case_b)
+    cb.write_snapshot(a_path, {"safe": True}, capture_env=current_env)
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            raise TimeoutError("case_b's tool blew up")
+
+    _patch_client(monkeypatch, _Client())
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+
+    assert rc == 1
+    assert not b_path.exists()
+    assert json.loads(a_path.read_text())["payload"] == {"safe": True}  # untouched
+
+
+async def test_force_recaptures_a_snapshot_even_when_its_environment_still_matches(
+    tmp_path, monkeypatch
+):
+    """--force is back to its plain meaning: recapture regardless of whether
+    the existing snapshot is valid or current."""
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    current_env = cb.capture_environment("inprocess", cb.worker_env())
+    path = cb.case_path(tmp_path, "L", "v1", CASE)
+    cb.write_snapshot(path, {"value": "first"}, capture_env=current_env)
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            return _Result({"value": "second"})
+
+    _patch_client(monkeypatch, _Client())
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
         tools=None,
         cases_filter=None,
         compute_tier=None,
@@ -1053,8 +964,5 @@ async def test_variants_naming_every_fixture_is_not_treated_as_a_selector(
         out_root=tmp_path,
         variants_selected=True,
     )
-    assert rc1 == 0
-    assert cb.case_path(tmp_path, "L", "v1", case2).exists()
-    assert (
-        json.loads(sidecar_path.read_text())["worker_env"]["MERIDIAN_BACKEND"] == "jax"
-    )
+    assert rc == 0
+    assert json.loads(path.read_text())["payload"] == {"value": "second"}
