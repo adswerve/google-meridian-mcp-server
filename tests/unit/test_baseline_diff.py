@@ -135,21 +135,63 @@ def test_broken_ci_ordering_in_object_rows_is_review():
     assert db.ci_findings(payload)[0].verdict == "REVIEW"
 
 
-def test_removed_backend_is_acknowledged_not_failed():
-    """`backend` is a direct top-level key of both the submit envelope and
-    the get_status envelope (optimization_service.py:258,283) -- i.e. at
-    pointer `/backend` when a case's own payload is the pointer root, which
-    is how every case is diffed."""
-    findings = db.compare({"backend": "jax", "run_id": "x"}, {"run_id": "x"})
-    assert [f.verdict for f in findings] == ["ACKNOWLEDGED"]
+# Every top-level key any capture_baseline.py case dict actually uses:
+# run_optimization_case -> {submit, status, result}; run_lifecycle_case
+# (non-cancel) -> {submit, status, result, reused, listing, deleted,
+# status_after_delete}; (cancel) -> {submit, canceled, status, deleted}.
+# `None` stands for the case root itself, which match() also accepts (per
+# its own documented design) even though no real case is ever diffed as a
+# bare root object.
+_REAL_ENVELOPE_KEYS = (
+    None,
+    "submit",
+    "status",
+    "result",
+    "reused",
+    "listing",
+    "deleted",
+    "status_after_delete",
+    "canceled",
+)
+
+
+@pytest.mark.parametrize("envelope_key", _REAL_ENVELOPE_KEYS)
+def test_removed_backend_is_acknowledged_at_every_real_pointer_shape(envelope_key):
+    """`backend` is a direct key of the dict returned by both
+    optimization_service.py's `_submit_envelope` (~line 258) and
+    `get_status` (~line 283) -- and those dicts land UNCHANGED one level
+    inside the composite case dict capture_baseline.py actually snapshots
+    (see _REAL_ENVELOPE_KEYS above), never at a bare payload root. This
+    parametrization is what pins the anchor: it FAILS if the match is too
+    narrow (e.g. root-only, the fix-wave-1 regression) OR too wide (e.g. the
+    original depth-crossing glob)."""
+    if envelope_key is None:
+        a, b = {"backend": "jax", "run_id": "x"}, {"run_id": "x"}
+        pointer = "/backend"
+    else:
+        a = {envelope_key: {"backend": "jax", "run_id": "x"}}
+        b = {envelope_key: {"run_id": "x"}}
+        pointer = f"/{envelope_key}/backend"
+    findings = db.compare(a, b)
+    assert [f.verdict for f in findings] == ["ACKNOWLEDGED"], (envelope_key, findings)
     assert "backend" in findings[0].detail
-    assert findings[0].pointer == "/backend"
+    assert findings[0].pointer == pointer
 
 
-def test_added_meridian_version_is_acknowledged_not_failed():
-    findings = db.compare({"run_id": "x"}, {"run_id": "x", "meridian_version": "2.0.0"})
-    assert [f.verdict for f in findings] == ["ACKNOWLEDGED"]
-    assert findings[0].pointer == "/meridian_version"
+@pytest.mark.parametrize("envelope_key", _REAL_ENVELOPE_KEYS)
+def test_added_meridian_version_is_acknowledged_at_every_real_pointer_shape(
+    envelope_key,
+):
+    if envelope_key is None:
+        a, b = {"run_id": "x"}, {"run_id": "x", "meridian_version": "2.0.0"}
+        pointer = "/meridian_version"
+    else:
+        a = {envelope_key: {"run_id": "x"}}
+        b = {envelope_key: {"run_id": "x", "meridian_version": "2.0.0"}}
+        pointer = f"/{envelope_key}/meridian_version"
+    findings = db.compare(a, b)
+    assert [f.verdict for f in findings] == ["ACKNOWLEDGED"], (envelope_key, findings)
+    assert findings[0].pointer == pointer
 
 
 def test_an_unrelated_added_key_is_still_a_fail():
@@ -157,18 +199,37 @@ def test_an_unrelated_added_key_is_still_a_fail():
     assert [f.verdict for f in findings] == ["FAIL"]
 
 
+def test_an_unrelated_key_under_a_known_envelope_key_is_still_a_fail():
+    """Being nested under a known envelope key (e.g. `submit`) acknowledges
+    ONLY backend/meridian_version -- not anything else that happens to sit
+    next to them."""
+    findings = db.compare({"submit": {}}, {"submit": {"surprise": 1}})
+    assert [f.verdict for f in findings] == ["FAIL"]
+
+
 def test_backend_key_nested_in_an_error_envelope_is_not_acknowledged():
-    """IMPORTANT 3 regression: fnmatch's `*` crosses `/`, so a depth-crossing
-    glob like `*/backend` would ALSO match domain/errors.py's unrelated
-    `backend` key inside an error envelope's `details` (e.g. pointer
-    /details/backend for ModelNotFoundError/BackendUnavailableError/
-    AuthenticationFailedError). That is a silent-PASS vector for a real
-    drift in a completely different, agent-visible contract. The
-    acknowledged entry is anchored to the exact real pointer (/backend) and
-    must NOT reach this unrelated, deeper field -- it must still FAIL."""
+    """IMPORTANT 3 regression: the original glob (`*/backend`, `fnmatch`'s
+    `*` crosses `/`) matched `backend` at ANY depth, including
+    domain/errors.py's unrelated `backend` key inside an error envelope's
+    `details` (e.g. pointer /details/backend for ModelNotFoundError/
+    BackendUnavailableError/AuthenticationFailedError) -- a silent-PASS
+    vector for a real drift in a completely different, agent-visible
+    contract. `details` is not one of capture_baseline.py's known envelope
+    keys, so this must still FAIL."""
     findings = db.compare({"details": {"backend": "jax"}}, {"details": {}})
     assert [f.verdict for f in findings] == ["FAIL"]
     assert findings[0].pointer == "/details/backend"
+
+
+def test_backend_two_levels_under_a_known_envelope_key_is_not_acknowledged():
+    """The match is depth-limited to exactly one level under a known
+    envelope key (or the root) -- not an arbitrary-depth walk. This is what
+    makes '/error/details/backend'-shaped pointers safe in general, not
+    just the one case above."""
+    findings = db.compare(
+        {"submit": {"nested": {"backend": "jax"}}}, {"submit": {"nested": {}}}
+    )
+    assert [f.verdict for f in findings] == ["FAIL"]
 
 
 def test_exit_code_is_one_on_any_fail_or_review():
@@ -205,6 +266,22 @@ def test_known_racy_field_is_review_not_fail():
     )
     assert [f.verdict for f in findings] == ["REVIEW"]
     assert "racy" in findings[0].detail.lower()
+
+
+def test_known_racy_field_detail_is_not_duplicated_with_the_report_reason_column():
+    """The report's REVIEW table has a Reason column that already spells out
+    'known racy field' in full (see _review_reason) -- the Finding's own
+    detail should carry only a short marker, not repeat the whole
+    explanation a second time in the adjacent column."""
+    findings = db.diff_case(
+        {"status": {"status": "canceled"}},
+        {"status": {"status": "completed"}},
+        "",
+        racy_fields=frozenset({"status.status"}),
+    )
+    assert findings[0].detail == (
+        "value changed: 'canceled' -> 'completed' (known racy field)"
+    )
 
 
 def test_racy_field_declaration_does_not_shield_unrelated_paths():
@@ -258,11 +335,13 @@ def test_headline_is_not_waived_wholesale():
 def test_headline_unparseable_change_is_structural_fail():
     """Must go through the headline-specific fallback, not generic string
     comparison -- both would report FAIL here, so the discriminating
-    assertion is on the DETAIL text, which only the headline code path
-    produces."""
+    assertion pins the EXACT detail text _compare_headline's fallback
+    produces (verified by actually deleting the headline dispatch and
+    confirming this test then fails, which the generic 'value changed: ...'
+    message alone would not catch on the verdict check above)."""
     findings = db.compare({"headline": "weird"}, {"headline": "also weird"})
     assert [f.verdict for f in findings] == ["FAIL"]
-    assert "headline" in findings[0].detail.lower()
+    assert findings[0].detail == "headline value changed: 'weird' -> 'also weird'"
 
 
 def test_headline_differently_formatted_but_numerically_equal_produces_no_findings():
@@ -304,6 +383,24 @@ def test_headline_sign_flip_at_noise_floor_is_suppressed():
 
 def test_nan_vs_nan_is_unchanged():
     assert db.compare({"residual": math.nan}, {"residual": math.nan}) == []
+
+
+def test_identity_field_holding_nan_on_both_sides_is_unchanged():
+    """Fix wave 2 Minor: the identity-field exact-compare branch ran BEFORE
+    NaN handling, so `nan != nan` (True, by IEEE unordered comparison)
+    reported a nonsensical 'identity value changed: nan -> nan' for a value
+    that, by this module's own NaN-equality convention, did not change.
+    An identity should never legitimately be NaN, but the report must not
+    lie about it either way."""
+    assert db.compare({"row_count": math.nan}, {"row_count": math.nan}) == []
+
+
+def test_identity_field_becoming_nan_is_still_a_fail():
+    # Both sides float so the numeric-type-change branch doesn't fire first
+    # and this actually exercises the identity-field NaN check itself.
+    findings = db.compare({"row_count": 5.0}, {"row_count": math.nan})
+    assert [f.verdict for f in findings] == ["FAIL"]
+    assert "identity" in findings[0].detail
 
 
 def test_number_becoming_nan_is_structural_fail():
@@ -482,7 +579,10 @@ def test_main_end_to_end_clean_diff_exits_zero(tmp_path):
 
 
 def test_key_containing_a_slash_fails_loudly_instead_of_corrupting_pointers():
-    with pytest.raises(ValueError, match="/"):
+    """A channel named e.g. 'Search/Brand' is plausible input, not a
+    programming error -- SystemExit with a clean message, not a bare
+    ValueError/traceback, matching every other user-facing abort here."""
+    with pytest.raises(SystemExit, match="/"):
         db.compare({"a/count": 1}, {"a/count": 2})
 
 
@@ -524,6 +624,22 @@ def test_report_summary_counts_include_case_set_differences():
     assert "Verdict: FAIL -- exit code 1" in report
     summary = report.split("## Summary")[1].split("##")[0]
     assert "FAIL (including case-set differences above): 1" in summary
+
+
+def test_report_summary_shows_how_many_compared_cases_were_clean():
+    """A reader must be able to tell which compared cases were clean versus
+    merely absent from every FAIL/REVIEW/ACKNOWLEDGED section -- '9
+    compared, 2 clean' must be visible, not just inferable by counting."""
+    findings_by_case = {
+        "clean_one": [],
+        "clean_two": [],
+        "has_a_finding": [db.Finding("FAIL", "/x", "value changed")],
+    }
+    manifest = _base_manifest()
+    missing = {"only_in_a": [], "only_in_b": []}
+    report = db.render_report("a", "b", findings_by_case, manifest, manifest, missing)
+    summary = report.split("## Summary")[1].split("##")[0]
+    assert "3" in summary and "2 clean" in summary
 
 
 def test_report_review_section_has_a_reason_column_and_is_not_called_numeric():

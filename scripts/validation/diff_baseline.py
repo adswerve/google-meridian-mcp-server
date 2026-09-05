@@ -110,10 +110,14 @@ def _pointer_for(pointer: str, key: str) -> str:
     pointer built beneath it: e.g. a key ``"a/count"`` one level down
     produces the exact same trailing segment as the identity field
     ``"count"`` to ``_leaf``, silently mis-classifying an ordinary field as
-    an identity. Rather than risk that, fail loudly and name the key.
+    an identity. Rather than risk that, fail loudly and name the key --
+    ``SystemExit``, not a bare ``ValueError``/traceback, matching every other
+    user-facing abort in this module (``_load_snapshot``, ``check_manifests``):
+    a channel named e.g. ``"Search/Brand"`` is entirely plausible input, not
+    a programming error, and deserves a clean message, not a stack trace.
     """
     if "/" in key:
-        raise ValueError(
+        raise SystemExit(
             f"key {key!r} under pointer {pointer or '/'} contains a literal "
             "'/', which this module's dot-free pointer scheme cannot "
             "represent without ambiguity. Extend the pointer contract "
@@ -280,6 +284,14 @@ def compare(a: Any, b: Any, pointer: str = "") -> list[Finding]:
                 )
             ]
         if _leaf(pointer) in IDENTITY_FIELDS:
+            # An identity should never legitimately be NaN -- but `a != b`
+            # is True for NaN vs NaN (IEEE unordered comparison), which
+            # would otherwise report a nonsensical, un-actionable
+            # "identity value changed: nan -> nan" for a value that, by
+            # this module's own equality convention (see _compare_numbers),
+            # did not change at all.
+            if math.isnan(a) and math.isnan(b):
+                return []
             if a != b:
                 return [Finding("FAIL", pointer, f"identity value changed: {a} -> {b}")]
             return []
@@ -381,12 +393,13 @@ def diff_case(
     result: list[Finding] = []
     for finding in findings:
         if finding.verdict == "FAIL" and finding.pointer in racy_pointers:
+            # Short marker only -- the report's REVIEW table already carries
+            # a Reason column (see _review_reason) that spells out "known
+            # racy field" in full; repeating the whole explanation here
+            # would say the same thing twice in adjacent columns.
             result.append(
                 Finding(
-                    "REVIEW",
-                    finding.pointer,
-                    f"{finding.detail} -- known racy field (declared in "
-                    "known_racy_fields; inherent race, not a defect)",
+                    "REVIEW", finding.pointer, f"{finding.detail} (known racy field)"
                 )
             )
         else:
@@ -689,10 +702,12 @@ def render_report(
             lines.append(f"- **FAIL** case present only in `{label_b}`: `{name}`")
         lines.append("")
 
+    clean_count = sum(1 for findings in findings_by_case.values() if not findings)
     lines += [
         "## Summary",
         "",
-        f"- Cases compared: {len(findings_by_case)}",
+        f"- Cases compared: {len(findings_by_case)} ({clean_count} clean -- no "
+        "findings in any section)",
         f"- Case-set differences (case present in only one label): {missing_count}",
         f"- FAIL (including case-set differences above): {total_fail}",
         f"- REVIEW: {counts['REVIEW']}",
