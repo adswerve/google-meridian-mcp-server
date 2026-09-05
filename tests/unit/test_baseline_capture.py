@@ -63,6 +63,19 @@ def _patch_client(monkeypatch, client):
     monkeypatch.setattr(cb, "build_client", lambda transport, url: client)
 
 
+def _env(worker_environment, variant_key="v1"):
+    """Build a capture_env exactly the way `capture()` itself does for one
+    variant, so hand-crafted test envelopes match real `capture()` output
+    byte for byte. `variant_key` need not be a real fixture -- a
+    nonexistent fixture dir hashes to a fixed (still-comparable) sentinel."""
+    return cb.capture_environment(
+        "inprocess",
+        worker_environment,
+        fixture_hash=cb.fixture_content_hash(cb.DEFAULT_OUT_ROOT / variant_key),
+        src_hash=cb.src_tree_hash(),
+    )
+
+
 async def _no_sleep(*_args, **_kwargs):
     return None
 
@@ -141,6 +154,15 @@ def test_read_snapshot_returns_none_for_missing_empty_corrupt_or_non_object(tmp_
     not_an_object = tmp_path / "list.json"
     not_an_object.write_text("[1, 2, 3]")
     assert cb.read_snapshot(not_an_object) is None
+
+
+def test_read_snapshot_rejects_an_object_with_no_payload_key(tmp_path):
+    """MINOR 1: a JSON object with a `capture_env` but no `payload` is the
+    exact failure class CRITICAL 1 closed for the bare-payload file --
+    nothing writes such a file today, but it must not read as valid."""
+    path = tmp_path / "no_payload.json"
+    path.write_text(json.dumps({"capture_env": {"e": "x"}}))
+    assert cb.read_snapshot(path) is None
 
 
 def test_read_snapshot_returns_the_envelope_for_a_valid_file(tmp_path):
@@ -582,6 +604,22 @@ def test_validate_label_rejects_empty_slash_backslash_and_dotdot(tmp_path):
             cb.validate_label(bad, tmp_path)
 
 
+def test_validate_label_rejects_a_single_dot_cleanly(tmp_path):
+    """MINOR 2: "." passes the substring filter (it contains neither "/",
+    "\\", nor ".."), so only the structural resolve() check catches it --
+    and it used to be a bare `assert`, which (a) surfaces as an ugly
+    AssertionError instead of a clean SystemExit/exit 1, and (b) vanishes
+    entirely under `python -O`. This must raise SystemExit specifically,
+    not AssertionError."""
+    with pytest.raises(SystemExit, match="invalid --label"):
+        cb.validate_label(".", tmp_path)
+
+
+def test_validate_label_rejects_an_absolute_path(tmp_path):
+    with pytest.raises(SystemExit, match="invalid --label"):
+        cb.validate_label("/etc/passwd", tmp_path)
+
+
 async def test_capture_rejects_an_empty_label(tmp_path):
     with pytest.raises(SystemExit, match="invalid --label"):
         await cb.capture(
@@ -652,6 +690,49 @@ async def test_capture_recaptures_a_corrupt_or_empty_snapshot_instead_of_skippin
     assert rc == 0
     assert json.loads(path.read_text())["payload"] == {"value": 42}
     assert not stray_tmp.exists()  # MINOR 8, exercised through capture()
+
+
+async def test_capture_recaptures_an_envelope_with_matching_env_but_no_payload(
+    tmp_path, monkeypatch
+):
+    """MINOR 1: `0 recaptured, 2 skipped` was the reviewer's repro -- an
+    envelope whose `capture_env` matches but has no `payload` key must not
+    be a valid skip. Same failure class as CRITICAL 1."""
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    current_env = _env(cb.worker_env())
+    path = cb.case_path(tmp_path, "L", "v1", CASE)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"capture_env": current_env}))  # no "payload" key
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            return _Result({"value": 42})
+
+    _patch_client(monkeypatch, _Client())
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc == 0
+    assert json.loads(path.read_text())["payload"] == {"value": 42}
 
 
 async def test_capture_writes_no_manifest_for_a_genuine_variants_subset(
@@ -772,7 +853,7 @@ async def test_capture_skips_a_snapshot_whose_environment_still_matches(
 ):
     _patch_matrix(monkeypatch, ["v1"], [CASE])
     monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
-    current_env = cb.capture_environment("inprocess", cb.worker_env())
+    current_env = _env(cb.worker_env())
     path = cb.case_path(tmp_path, "L", "v1", CASE)
     cb.write_snapshot(path, {"value": "original"}, capture_env=current_env)
 
@@ -841,9 +922,9 @@ async def test_capture_recaptures_only_the_case_whose_snapshot_environment_is_st
     a_path = cb.case_path(tmp_path, "L", "v1", case_a)
     b_path = cb.case_path(tmp_path, "L", "v1", case_b)
 
-    stale_env = cb.capture_environment("inprocess", {"MERIDIAN_BACKEND": "tensorflow"})
+    stale_env = _env({"MERIDIAN_BACKEND": "tensorflow"})
     monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
-    current_env = cb.capture_environment("inprocess", cb.worker_env())
+    current_env = _env(cb.worker_env())
 
     cb.write_snapshot(
         a_path, {"output_type": "roi", "stale": True}, capture_env=stale_env
@@ -889,7 +970,7 @@ async def test_capture_failure_in_one_case_does_not_disturb_an_unrelated_snapsho
     )
     _patch_matrix(monkeypatch, ["v1"], [case_a, case_b])
     monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
-    current_env = cb.capture_environment("inprocess", cb.worker_env())
+    current_env = _env(cb.worker_env())
 
     a_path = cb.case_path(tmp_path, "L", "v1", case_a)
     b_path = cb.case_path(tmp_path, "L", "v1", case_b)
@@ -934,7 +1015,7 @@ async def test_force_recaptures_a_snapshot_even_when_its_environment_still_match
     the existing snapshot is valid or current."""
     _patch_matrix(monkeypatch, ["v1"], [CASE])
     monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
-    current_env = cb.capture_environment("inprocess", cb.worker_env())
+    current_env = _env(cb.worker_env())
     path = cb.case_path(tmp_path, "L", "v1", CASE)
     cb.write_snapshot(path, {"value": "first"}, capture_env=current_env)
 
@@ -966,3 +1047,228 @@ async def test_force_recaptures_a_snapshot_even_when_its_environment_still_match
     )
     assert rc == 0
     assert json.loads(path.read_text())["payload"] == {"value": "second"}
+
+
+# ---------------------------------------------------------------------------
+# MINOR 3 -- capture_env also carries a fixture content hash and a src/ tree
+# hash, so a rebuilt fixture or an edited src/ mid-label invalidates exactly
+# the snapshots affected, which the once-at-the-end manifest cannot see.
+# ---------------------------------------------------------------------------
+
+
+def test_tree_hash_changes_when_a_files_content_changes(tmp_path):
+    (tmp_path / "a.txt").write_text("v1")
+    h1 = cb._tree_hash(tmp_path)
+    (tmp_path / "a.txt").write_text("v2")
+    assert cb._tree_hash(tmp_path) != h1
+
+
+def test_tree_hash_excludes_pycache(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1")
+    pycache = tmp_path / "__pycache__"
+    pycache.mkdir()
+    (pycache / "a.cpython-312.pyc").write_bytes(b"whatever")
+    h1 = cb._tree_hash(tmp_path, glob="*.py")
+    (pycache / "a.cpython-312.pyc").write_bytes(b"totally different bytes")
+    assert cb._tree_hash(tmp_path, glob="*.py") == h1  # pycache change ignored
+    (tmp_path / "a.py").write_text("x = 2")
+    assert cb._tree_hash(tmp_path, glob="*.py") != h1  # real source change caught
+
+
+def test_tree_hash_missing_root_is_a_stable_sentinel(tmp_path):
+    missing = tmp_path / "does-not-exist"
+    assert cb._tree_hash(missing) == cb._tree_hash(missing)
+    assert "missing" in cb._tree_hash(missing)
+
+
+def test_fixture_content_hash_reuses_file_fingerprint_not_a_second_scheme(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "model.binpb").write_bytes(b"data")
+    calls = []
+    real_fingerprint = cb.file_fingerprint
+
+    def _spy(path):
+        calls.append(path)
+        return real_fingerprint(path)
+
+    monkeypatch.setattr(cb, "file_fingerprint", _spy)
+    cb.fixture_content_hash(tmp_path)
+    assert calls == [tmp_path / "model.binpb"]
+
+
+def test_src_tree_hash_only_looks_at_py_files_under_the_server_package():
+    """Deliberately not asserting a specific value (the real src/ tree
+    changes over time) -- just that it is a real, non-sentinel hash, since
+    the real google_meridian_mcp_server package exists in this repo."""
+    h = cb.src_tree_hash()
+    assert isinstance(h, str)
+    assert "missing" not in h
+
+
+async def test_capture_recaptures_when_the_fixture_content_changes(
+    tmp_path, monkeypatch
+):
+    """Minor 3, directly: rebuilding a fixture (e.g. a re-fit mid-Phase-4)
+    changes its content hash, which invalidates exactly the snapshots
+    captured against it -- even though MERIDIAN_BACKEND and every tracked
+    package are unchanged."""
+    fixture_root = tmp_path / "fixtures"
+    (fixture_root / "v1").mkdir(parents=True)
+    model_file = fixture_root / "v1" / "model.binpb"
+    model_file.write_bytes(b"original")
+    monkeypatch.setattr(cb, "DEFAULT_OUT_ROOT", fixture_root)
+    monkeypatch.setattr(cb, "src_tree_hash", lambda: "fixed-src-hash")
+    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+
+    calls = []
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            calls.append(name)
+            return _Result({"fresh": True})
+
+    _patch_client(monkeypatch, _Client())
+    label_root = tmp_path / "out"
+
+    rc0 = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=label_root,
+        variants_selected=True,
+    )
+    assert rc0 == 0
+    path = cb.case_path(label_root, "L", "v1", CASE)
+    assert json.loads(path.read_text())["payload"] == {"fresh": True}
+
+    # Rebuild the fixture: same bytes... no, DIFFERENT bytes, same path.
+    model_file.write_bytes(b"rebuilt")
+    calls.clear()
+
+    rc1 = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=label_root,
+        variants_selected=True,
+    )
+    assert rc1 == 0
+    assert calls == ["get_channel_summary"]  # genuinely recaptured, not skipped
+
+
+# ---------------------------------------------------------------------------
+# MINOR 4 -- pre-flight visibility before an expensive capture, no gate.
+# ---------------------------------------------------------------------------
+
+
+async def test_capture_prints_a_preflight_summary_before_executing(
+    tmp_path, monkeypatch, capsys
+):
+    case_a = ToolCase(
+        "get_channel_summary", "roi", {"output_type": "roi"}, frozenset(), "service"
+    )
+    case_b = ToolCase(
+        "get_channel_summary", "cpik", {"output_type": "cpik"}, frozenset(), "service"
+    )
+    _patch_matrix(monkeypatch, ["v1"], [case_a, case_b])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    current_env = _env(cb.worker_env())
+
+    a_path = cb.case_path(tmp_path, "L", "v1", case_a)
+    cb.write_snapshot(a_path, {"ok": True}, capture_env=current_env)  # current
+    # case_b has no file at all -> missing.
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            return _Result({"fresh": True})
+
+    _patch_client(monkeypatch, _Client())
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert (
+        "Pre-flight: 1 current, 0 stale, 1 missing -> 1 case(s) will be executed" in out
+    )
+
+
+async def test_capture_preflight_summary_notes_force_executes_everything(
+    tmp_path, monkeypatch, capsys
+):
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    current_env = _env(cb.worker_env())
+    path = cb.case_path(tmp_path, "L", "v1", CASE)
+    cb.write_snapshot(path, {"ok": True}, capture_env=current_env)
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            return _Result({"fresh": True})
+
+    _patch_client(monkeypatch, _Client())
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=True,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert (
+        "Pre-flight: 1 current, 0 stale, 0 missing -> 1 case(s) will be executed "
+        "(--force: every case, regardless of currency)" in out
+    )

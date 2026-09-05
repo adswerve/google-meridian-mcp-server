@@ -49,19 +49,30 @@ extend this contract explicitly; do not assume it works.
 than a per-label one (an earlier revision of this module tracked it in a
 single label-wide sidecar, which required a three-branch ``--force`` rule
 and a destructive ``rmtree`` to stay correct -- both are gone). A snapshot
-is only ever skipped as "already captured" when it is a valid envelope AND
-its own ``capture_env`` matches what THIS run would capture under; a
+is only ever skipped as "already captured" when it is a valid envelope
+(Minor 1: which requires a ``payload`` key, not just a JSON object) AND its
+own ``capture_env`` matches what THIS run would capture under; a
 stale-environment snapshot is recaptured individually, exactly like a
 corrupt one, and no other file in the label is touched. ``--force`` is back
 to its plain original meaning: recapture regardless of whether an existing
 snapshot is valid or current. No destructive/whole-directory code path
 remains in this file.
+
+``capture_env`` also carries (Minor 3) a content hash of the fixture the
+case ran against and a hash of the ``src/`` tree the server ran from, so
+that rebuilding a fixture or editing ``src/`` MID-LABEL -- a realistic
+sequence when a resumed capture straddles a source change -- invalidates
+exactly the snapshots affected, which the once-at-the-end manifest cannot
+see. Before executing anything, ``capture()`` prints a one-line pre-flight
+summary (Minor 4: current/stale/missing/will-execute counts) so that cost
+is visible before it is incurred, without gating or prompting on it.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -74,6 +85,7 @@ from typing import Any
 
 from scripts.generate_validation_models import DEFAULT_OUT_ROOT
 from scripts.validation import matrix
+from scripts.validation.fixture_probe import file_fingerprint
 from scripts.validation.manifest import (
     _RECORDED_ENV_KEYS,
     build_manifest,
@@ -86,6 +98,15 @@ from scripts.validation.payloads import extract
 from scripts.validation.remote_smoke import normalize_mcp_url
 
 BASELINE_ROOT = DEFAULT_OUT_ROOT / "_baseline"
+
+# Fix wave 5 (MINOR 3): the server code the payloads actually depend on, so
+# that editing src/ mid-label invalidates exactly the snapshots affected.
+# Resolved from this file's own location (matches the pattern already used
+# by scripts/qa/future_optimization_qa.py's _REPO_ROOT), NOT from cwd --
+# unlike DEFAULT_OUT_ROOT, which the rest of this module already assumes is
+# cwd-relative; this one is cheap to make robust, so it is.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SRC_ROOT = _REPO_ROOT / "src" / "google_meridian_mcp_server"
 
 _POLL_INTERVAL = 0.5
 _DEFAULT_POLL_TIMEOUT = 120.0  # was hard-coded as 240 attempts * 0.5s
@@ -121,11 +142,19 @@ def validate_label(label: str, out_root: Path) -> Path:
     Reproduced without this check: ``--label ""`` collapses ``label_dir`` to
     ``out_root`` itself; ``--label ".."`` targets the parent; ``--label
     "/abs/path"`` escapes entirely, because ``Path('/a/b') / '/c/d'`` is
-    ``/c/d`` in pathlib, not a joined path. Reject a label that is empty or
-    contains ``/``, ``\\`` or ``..`` up front, THEN independently assert
-    that the resulting directory really does resolve to a direct child of
-    ``out_root`` -- a second, structural check that does not rely on having
-    enumerated every bad substring.
+    ``/c/d`` in pathlib, not a joined path; ``--label "."`` slips past the
+    substring filter below and collapses to ``out_root`` itself exactly like
+    ``""`` does. Reject a label that is empty or contains ``/``, ``\\`` or
+    ``..`` up front, THEN independently check that the resulting directory
+    really does resolve to a direct child of ``out_root`` -- a second,
+    structural check that does not rely on having enumerated every bad
+    substring (it is what actually catches ``"."``).
+
+    MINOR 2: that second check used to be a bare ``assert``, which (a) dies
+    with an ugly ``AssertionError`` traceback instead of a clean exit 1, and
+    (b) VANISHES ENTIRELY under ``python -O``, silently letting
+    ``label_dir`` fall back to ``out_root``. It is a real ``if``/``raise``
+    now, so it fires regardless of how Python was invoked.
     """
     if not label or "/" in label or "\\" in label or ".." in label:
         raise SystemExit(
@@ -135,18 +164,24 @@ def validate_label(label: str, out_root: Path) -> Path:
         )
     label_dir = Path(out_root) / label
     resolved_root = Path(out_root).resolve()
-    assert label_dir.resolve().parent == resolved_root, (
-        f"invalid --label {label!r}: resolved outside {resolved_root} "
-        f"(got {label_dir.resolve()})"
-    )
+    if label_dir.resolve().parent != resolved_root:
+        raise SystemExit(
+            f"invalid --label {label!r}: resolved outside {resolved_root} "
+            f"(got {label_dir.resolve()})"
+        )
     return label_dir
 
 
 def read_snapshot(path: Path) -> dict[str, Any] | None:
     """Load a snapshot ENVELOPE. Returns ``None`` if the file is missing,
-    empty, not valid JSON, or not a JSON object (CRITICAL 1, generalized to
-    the envelope shape): none of those is a legitimate skip candidate, and
-    ``path.exists()`` alone was never enough to tell.
+    empty, not valid JSON, not a JSON object, or (MINOR 1) a JSON object
+    with no ``"payload"`` key -- CRITICAL 1, generalized to the envelope
+    shape: none of those is a legitimate skip candidate, and
+    ``path.exists()`` alone was never enough to tell. MINOR 1 matters
+    because a same-environment, ``payload``-less envelope would otherwise
+    read as a valid, current snapshot and be skipped forever with no data
+    in it -- the exact failure class CRITICAL 1 closed for the bare-payload
+    file, reopened by the envelope's extra structure.
     """
     if not path.exists():
         return None
@@ -157,7 +192,34 @@ def read_snapshot(path: Path) -> dict[str, Any] | None:
         data = json.loads(text)
     except (OSError, json.JSONDecodeError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict) or "payload" not in data:
+        return None
+    return data
+
+
+def _snapshot_status(path: Path, current_env: dict[str, Any]) -> str:
+    """Classify one case's on-disk state against ``current_env``, shared by
+    the MINOR 4 pre-flight summary and the real skip decision so the two
+    can never disagree:
+
+      'missing'   -- no file at all.
+      'corrupt'   -- exists but ``read_snapshot`` rejects it (empty, not
+                     JSON, not an object, or missing ``payload`` -- CRITICAL
+                     1 / MINOR 1).
+      'stale_env' -- a valid envelope, but its own ``capture_env`` no
+                     longer matches (environment, fixture content, or src/
+                     content changed -- IMPORTANT 3 / MINOR 3).
+      'current'   -- a valid envelope whose ``capture_env`` matches: the
+                     only legitimate skip.
+    """
+    if not path.exists():
+        return "missing"
+    envelope = read_snapshot(path)
+    if envelope is None:
+        return "corrupt"
+    if envelope.get("capture_env") == current_env:
+        return "current"
+    return "stale_env"
 
 
 # MINOR New-4: 5 minutes is far longer than any single write_snapshot call
@@ -268,25 +330,88 @@ def worker_env() -> dict[str, str]:
     return BaseSubprocessExecutor().child_env()
 
 
+def _tree_hash(root: Path, *, glob: str = "*") -> str:
+    """Deterministic content hash of every ``glob``-matching file under
+    ``root``, combining ``fixture_probe.file_fingerprint`` per file (Minor
+    3: reusing that hashing, not inventing a second one) by relative path.
+
+    ``__pycache__`` is always excluded: bytecode caches churn on ordinary
+    interpreter runs, independent of any real source or fixture change, and
+    hashing them would manufacture false staleness. A missing ``root``
+    degrades to a fixed sentinel string rather than raising -- this feeds a
+    staleness COMPARISON (do two hashes match), not a hard dependency, so a
+    missing tree just becomes its own consistent, comparable value.
+    """
+    root = Path(root)
+    if not root.exists():
+        return f"<missing:{root}>"
+    files = sorted(
+        p for p in root.rglob(glob) if p.is_file() and "__pycache__" not in p.parts
+    )
+    combined = hashlib.sha256()
+    for path in files:
+        combined.update(str(path.relative_to(root)).encode())
+        combined.update(file_fingerprint(path).encode())
+    return combined.hexdigest()
+
+
+def fixture_content_hash(fixture_dir: Path) -> str:
+    """Content hash of one fixture directory (Minor 3), so rebuilding a
+    fixture mid-label invalidates exactly the snapshots captured against it
+    -- every file in the directory, not just the model file, since a
+    variant's args/expectations can depend on sidecar fixture data too.
+    """
+    return _tree_hash(fixture_dir)
+
+
+def src_tree_hash() -> str:
+    """Content hash of the server package the tool payloads actually run
+    (Minor 3) -- ``*.py`` files under ``src/google_meridian_mcp_server``
+    only.
+
+    Deliberately NOT ``git rev-parse HEAD``: any commit at all -- docs,
+    tests, this harness itself -- would invalidate every snapshot in a
+    label and force a full recapture, which for a Cloud Run label costs
+    real money. Hashing the tree instead means only an actual change to the
+    server code invalidates anything. Excludes ``*.egg-info`` (build/install
+    metadata, not code) by construction (the glob is ``*.py`` and egg-info
+    holds none) and ``__pycache__`` (see ``_tree_hash``).
+    """
+    return _tree_hash(_SRC_ROOT, glob="*.py")
+
+
 def capture_environment(
-    transport: str, worker_environment: dict[str, str]
+    transport: str,
+    worker_environment: dict[str, str],
+    *,
+    fixture_hash: str,
+    src_hash: str,
 ) -> dict[str, Any]:
     """The environment-identifying material recorded in every snapshot's
     ``capture_env`` (Fix wave 4; formerly a label-wide sidecar, IMPORTANT 3).
 
-    Deliberately the SAME material ``manifest.build_manifest`` already
-    records (package versions + the recorded worker-env keys), reusing
-    ``manifest``'s own helpers rather than inventing a parallel notion of
-    "environment". Excludes ``manifest.probe_fixtures``: that is per-fixture
-    provenance, not per-capture environment, and re-running it on every
-    ``capture()`` call (including single-case reruns) would be needlessly
-    expensive.
+    The package-version/worker-env material is the SAME ``manifest.build_manifest``
+    already records, reusing ``manifest``'s own helpers rather than inventing
+    a parallel notion of "environment". Excludes ``manifest.probe_fixtures``:
+    that is per-fixture PROVENANCE (backend/precision the model was trained
+    under), not a content hash, and re-running it on every ``capture()`` call
+    (including single-case reruns) would be needlessly expensive -- it
+    imports Meridian in a subprocess.
+
+    ``fixture_hash`` and ``src_hash`` (Minor 3) close a gap the manifest
+    cannot: the manifest is written once, at the end, so it records the
+    POST-change state for the whole label -- it cannot see that a fixture
+    was rebuilt or ``src/`` was edited midway through a label that started
+    earlier and is now being resumed. Per-snapshot hashes catch that at the
+    only granularity that matters: the individual case.
     """
     return {
         "transport": transport,
         "python": platform.python_version(),
         "packages": package_versions(),
         "worker_env": {key: worker_environment.get(key) for key in _RECORDED_ENV_KEYS},
+        "fixture_hash": fixture_hash,
+        "src_hash": src_hash,
     }
 
 
@@ -641,7 +766,11 @@ async def capture(
     # Fix wave 4: environment identity is a PER-SNAPSHOT property (each
     # envelope's own `capture_env`), not a per-label sidecar. `--force` is
     # back to its plain meaning: recapture regardless of validity/currency.
-    current_env = capture_environment(transport, worker_env())
+    # Fix wave 5 (MINOR 3): capture_env also carries a fixture content hash
+    # (per variant, computed once each below) and a src/ tree hash (once
+    # here -- it does not vary by variant).
+    worker_environment = worker_env()
+    src_hash = src_tree_hash()
 
     written: list[str] = []
     skipped: list[str] = []
@@ -649,6 +778,11 @@ async def capture(
     failures: list[str] = []
 
     async with build_client(transport, url) as client:
+        # Phase 1: resolve every variant's overview and case list ONCE.
+        # Needed before MINOR 4's pre-flight summary can be computed (the
+        # case list depends on the overview), and reused for phase 2 so
+        # get_model_overview is still called exactly once per variant.
+        plan: list[tuple[Any, list[ToolCase], dict[str, Any]]] = []
         for variant in specs:
             try:
                 overview = await call_tool(
@@ -663,32 +797,65 @@ async def capture(
             all_cases = matrix.tool_cases(
                 variant, overview
             ) + matrix.adversarial_tool_cases(variant)
-            for case in selected_cases(
+            variant_cases = selected_cases(
                 all_cases, tools=tools, cases_filter=cases_filter
-            ):
+            )
+            variant_env = capture_environment(
+                transport,
+                worker_environment,
+                fixture_hash=fixture_content_hash(DEFAULT_OUT_ROOT / variant.key),
+                src_hash=src_hash,
+            )
+            plan.append((variant, variant_cases, variant_env))
+
+        # MINOR 4: visibility before cost, no gate/prompt -- the same
+        # command is used against Cloud Run, where execution is not free.
+        n_current = n_stale = n_missing = 0
+        for _variant, variant_cases, variant_env in plan:
+            for case in variant_cases:
+                status = _snapshot_status(
+                    case_path(out_root, label, _variant.key, case), variant_env
+                )
+                if status == "current":
+                    n_current += 1
+                elif status == "missing":
+                    n_missing += 1
+                else:
+                    n_stale += 1
+        n_will_execute = (
+            (n_current + n_stale + n_missing) if force else (n_stale + n_missing)
+        )
+        print(
+            f"Pre-flight: {n_current} current, {n_stale} stale, {n_missing} missing "
+            f"-> {n_will_execute} case(s) will be executed"
+            + (" (--force: every case, regardless of currency)" if force else "")
+        )
+
+        # Phase 2: execute.
+        for variant, variant_cases, variant_env in plan:
+            for case in variant_cases:
                 path = case_path(out_root, label, variant.key, case)
                 if not force:
-                    envelope = read_snapshot(path) if path.exists() else None
-                    if (
-                        envelope is not None
-                        and envelope.get("capture_env") == current_env
-                    ):
+                    status = _snapshot_status(path, variant_env)
+                    if status == "current":
                         skipped.append(str(path))
                         continue
-                    if envelope is not None:
-                        # Fix wave 4: a valid envelope from a STALE
-                        # environment is not a valid skip either -- recapture
-                        # it individually. Nothing else in the label is
-                        # touched: this is a per-file decision, not a
+                    if status == "stale_env":
+                        # Fix wave 4/5: a valid envelope whose capture_env
+                        # (environment OR fixture/src content, Minor 3) no
+                        # longer matches is not a valid skip either --
+                        # recapture it individually. Nothing else in the
+                        # label is touched: a per-file decision, never a
                         # per-label one.
                         recaptured.append(str(path))
                         print(
                             f"  RECAPTURE (stale environment) "
                             f"{variant.key}/{case.tool}__{case.name}"
                         )
-                    elif path.exists():
-                        # CRITICAL 1: corrupt/empty is not a valid skip --
-                        # re-capture it instead of trusting a truncated file.
+                    elif status == "corrupt":
+                        # CRITICAL 1 / MINOR 1: corrupt, empty, or
+                        # payload-less is not a valid skip -- re-capture it
+                        # instead of trusting a truncated/malformed file.
                         recaptured.append(str(path))
                         print(
                             f"  RECAPTURE (corrupt/empty snapshot) "
@@ -714,7 +881,7 @@ async def capture(
                     # payload -- move it out before writing.
                     racy_fields = payload.pop(KNOWN_RACY_FIELDS_KEY)
                 write_snapshot(
-                    path, payload, capture_env=current_env, racy_fields=racy_fields
+                    path, payload, capture_env=variant_env, racy_fields=racy_fields
                 )
                 written.append(str(path))
                 print(f"  captured {variant.key}/{case.tool}__{case.name}")
