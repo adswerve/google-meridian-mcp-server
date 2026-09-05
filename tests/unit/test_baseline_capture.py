@@ -528,7 +528,11 @@ async def test_capture_fails_loudly_on_an_unknown_variant_name(tmp_path, monkeyp
 async def test_capture_refuses_to_resume_a_label_after_the_environment_changed(
     tmp_path, monkeypatch
 ):
-    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    # A second known fixture ("v2") that is never requested -- so
+    # variant_keys=["v1"] below is a genuine PROPER SUBSET, not "--variants
+    # naming every fixture" (MINOR C), which is intentionally exempt from
+    # this guard and covered by its own dedicated test.
+    _patch_matrix(monkeypatch, ["v1", "v2"], [CASE])
     _patch_client(
         monkeypatch,
         _FakeCaptureClient(
@@ -554,7 +558,7 @@ async def test_capture_refuses_to_resume_a_label_after_the_environment_changed(
 
     # Same label, a second (different) case, but the backend changed underneath us.
     case2 = ToolCase("get_channel_summary", "cpik", {}, frozenset(), "service")
-    _patch_matrix(monkeypatch, ["v1"], [case2])
+    _patch_matrix(monkeypatch, ["v1", "v2"], [case2])
     monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
 
     rc2 = await cb.capture(
@@ -826,7 +830,13 @@ async def test_lifecycle_cancel_reaps_even_when_the_poll_times_out(monkeypatch):
     assert deleted_run_ids == ["r1"]  # reaped despite the poll timeout
 
 
-async def test_lifecycle_cancel_reap_failure_does_not_mask_the_terminal_status():
+async def test_lifecycle_cancel_fails_the_case_when_the_reap_fails_after_a_successful_poll():
+    """IMPORTANT B: `deleted` is part of THIS case's snapshotted payload
+    (unlike run_optimization_case's purely-cleanup reap), so a failed
+    delete_optimization must fail the case -- never be recorded as
+    `deleted: null`. (Replaces a test that asserted exactly that null,
+    encoding the defect as intended behaviour.)"""
+
     class _Client:
         async def call_tool(self, name, args):
             if name == "run_optimization":
@@ -839,6 +849,212 @@ async def test_lifecycle_cancel_reap_failure_does_not_mask_the_terminal_status()
                 raise TimeoutError("reap blew up")
             raise AssertionError(name)
 
-    out = await cb.run_lifecycle_case(_Client(), "m", "cancel", compute_tier=None)
-    assert out["status"]["status"] == "completed"
-    assert out["deleted"] is None
+    with pytest.raises(cb.CaptureFailure, match="delete_optimization"):
+        await cb.run_lifecycle_case(_Client(), "m", "cancel", compute_tier=None)
+
+
+async def test_lifecycle_cancel_reap_failure_does_not_replace_the_primary_poll_error(
+    monkeypatch,
+):
+    """The Minor 7 non-masking property, preserved for IMPORTANT B: when the
+    poll ALSO failed, that original error must remain the reported cause --
+    the reap's own failure must not overwrite it."""
+    monkeypatch.setattr(cb.asyncio, "sleep", _no_sleep)
+
+    class _Client:
+        async def call_tool(self, name, args):
+            if name == "run_optimization":
+                return _Result({"run_id": "r1"})
+            if name == "cancel_optimization":
+                return _Result({"run_id": "r1", "status": "canceled"})
+            if name == "get_optimization_status":
+                raise TimeoutError("status blew up")
+            if name == "delete_optimization":
+                raise RuntimeError("reap also blew up")
+            raise AssertionError(name)
+
+    with pytest.raises(cb.CaptureFailure, match="status blew up"):
+        await cb.run_lifecycle_case(
+            _Client(), "m", "cancel", compute_tier=None, poll_timeout=0.5
+        )
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT A -- a forced full recapture that partially fails must not leave
+# a complete-looking label mixing two environments.
+# ---------------------------------------------------------------------------
+
+
+async def test_force_full_recapture_wipes_the_label_so_partial_failure_cannot_mix_environments(
+    tmp_path, monkeypatch
+):
+    """End-to-end reproduction of the reviewer's sequence: a tensorflow
+    label, then a forced full recapture under jax where ONE case's tool call
+    fails. Before the fix, the sidecar was rewritten to jax on the first
+    successful snapshot of pass 1 while the failing case's tensorflow-era
+    file stayed on disk (still valid JSON) -- so a later plain resume saw a
+    matching sidecar, skipped the stale file as "already captured", and
+    completed with a manifest: a complete-looking label secretly containing
+    one tensorflow snapshot and one jax snapshot."""
+    case_a = ToolCase(
+        "get_channel_summary", "roi", {"output_type": "roi"}, frozenset(), "service"
+    )
+    case_b = ToolCase(
+        "get_channel_summary", "cpik", {"output_type": "cpik"}, frozenset(), "service"
+    )
+
+    class _Client:
+        def __init__(self, fail_output_type=None):
+            self.fail_output_type = fail_output_type
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            if (
+                name == "get_channel_summary"
+                and args.get("output_type") == self.fail_output_type
+            ):
+                raise TimeoutError("blew up")
+            return _Result({"output_type": args.get("output_type")})
+
+    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
+
+    _patch_matrix(monkeypatch, ["v1"], [case_a, case_b])
+    a_path = cb.case_path(tmp_path, "L", "v1", case_a)
+    b_path = cb.case_path(tmp_path, "L", "v1", case_b)
+    manifest_path = tmp_path / "L" / "manifest.json"
+
+    # Pass 0: establish the label under tensorflow -- both cases succeed.
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "tensorflow"})
+    monkeypatch.setattr(cb, "build_client", lambda transport, url: _Client())
+    rc0 = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=False,
+    )
+    assert rc0 == 0
+    assert a_path.exists() and b_path.exists()
+    assert manifest_path.exists()
+
+    # Pass 1: --force, NO selector, under jax -- case_b's tool call fails.
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    monkeypatch.setattr(
+        cb, "build_client", lambda transport, url: _Client(fail_output_type="cpik")
+    )
+    rc1 = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=True,
+        out_root=tmp_path,
+        variants_selected=False,
+    )
+    assert rc1 == 1
+    # case_b's stale TENSORFLOW-era snapshot must NOT survive this pass.
+    assert not b_path.exists()
+    assert a_path.exists()  # the case that succeeded is genuinely jax-era
+    sidecar = json.loads((tmp_path / "L" / cb._ENV_SIDECAR_NAME).read_text())
+    assert sidecar["worker_env"]["MERIDIAN_BACKEND"] == "jax"
+    assert not manifest_path.exists()  # incomplete: no manifest yet
+
+    # Pass 2: plain resume (no --force). Must genuinely RECAPTURE case_b
+    # under jax rather than skip a stale tensorflow file, and finish clean.
+    monkeypatch.setattr(
+        cb, "build_client", lambda transport, url: _Client(fail_output_type=None)
+    )
+    rc2 = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=False,
+    )
+    assert rc2 == 0
+    # b_path did not exist after pass 1 (asserted above) and exists now, so
+    # this write is a genuine fresh capture under jax, never a leftover.
+    assert b_path.exists()
+    assert manifest_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# MINOR C -- --variants naming every known fixture is not a narrowing
+# selector for the --force override rule.
+# ---------------------------------------------------------------------------
+
+
+async def test_variants_naming_every_fixture_is_not_treated_as_a_selector(
+    tmp_path, monkeypatch
+):
+    _patch_matrix(monkeypatch, ["v1", "v2"], [CASE])
+    _patch_client(
+        monkeypatch,
+        _FakeCaptureClient(
+            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
+        ),
+    )
+    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
+
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "tensorflow"})
+    rc0 = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1", "v2"],  # --variants naming BOTH known fixtures
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc0 == 0
+    sidecar_path = tmp_path / "L" / cb._ENV_SIDECAR_NAME
+    assert json.loads(sidecar_path.read_text())["worker_env"]["MERIDIAN_BACKEND"] == (
+        "tensorflow"
+    )
+
+    # --force, backend changed, --variants STILL naming every known fixture:
+    # in substance a full-label recapture, so --force must override, unlike
+    # a genuine subset (covered by test_force_environment_override_requires_no_selector).
+    case2 = ToolCase("get_channel_summary", "cpik", {}, frozenset(), "service")
+    _patch_matrix(monkeypatch, ["v1", "v2"], [case2])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    rc1 = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1", "v2"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=True,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc1 == 0
+    assert cb.case_path(tmp_path, "L", "v1", case2).exists()
+    assert (
+        json.loads(sidecar_path.read_text())["worker_env"]["MERIDIAN_BACKEND"] == "jax"
+    )

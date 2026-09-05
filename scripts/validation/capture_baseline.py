@@ -49,6 +49,7 @@ import json
 import math
 import os
 import platform
+import shutil
 import sys
 import tempfile
 import time
@@ -160,6 +161,31 @@ def sweep_stale_tmp_files(
             continue  # raced with another process removing/renaming it
         if age >= max_age_seconds:
             tmp_path.unlink(missing_ok=True)
+
+
+def _clear_label_directory(label_dir: Path) -> None:
+    """IMPORTANT A: ``--force`` with no selector means "recapture this whole
+    label from scratch" -- make that literally true.
+
+    Without this, a forced full recapture that fails partway through could
+    rewrite the env sidecar to the NEW environment (on the first case that
+    DOES succeed) while a case that failed to recapture left its OLD
+    snapshot on disk -- still perfectly parseable, so a later plain resume
+    would see a matching sidecar, skip that stale file as "already
+    captured", and complete a label that silently mixes two environments.
+    Removing the whole directory upfront makes the partial-failure case safe
+    by construction: whatever this pass fails to (re)capture simply has no
+    file at all, and a later plain resume genuinely recaptures it instead of
+    trusting a leftover.
+
+    Scoped to exactly ``label_dir`` -- never anything above it (``out_root``,
+    sibling labels). Prints what it did: an operator who typed ``--force``
+    should see that something was cleared.
+    """
+    if not label_dir.exists():
+        return
+    print(f"--force with no selector: clearing existing label directory {label_dir}")
+    shutil.rmtree(label_dir)
 
 
 def write_snapshot(path: Path, payload: Any) -> None:
@@ -286,8 +312,9 @@ def check_capture_environment(
          unfiltered ``--force`` may.
       3. ``--force`` with NO selector: a legitimate whole-label recapture.
          The label truly becomes the new environment: return ``None`` (the
-         caller rewrites the sidecar on the first snapshot actually
-         written).
+         caller -- see ``_clear_label_directory``, IMPORTANT A -- clears the
+         whole label directory, including this sidecar, before capturing
+         anything, then rewrites it on the first snapshot actually written).
 
     Returns ``None`` when there is nothing to refuse: a fresh label (no
     sidecar yet), a sidecar whose recorded environment matches ``current``,
@@ -419,6 +446,14 @@ async def run_optimization_case(
     the real cause. So the primary outcome/error is captured first, the reap
     is attempted unconditionally afterwards and only logged on failure, and
     whatever the primary path produced (return value or raised error) wins.
+
+    NOTE the deliberate asymmetry with ``run_lifecycle_case``'s ``cancel``
+    branch (IMPORTANT B): here the reap is pure cleanup with NO
+    representation in the returned payload, so a WARN-and-continue on
+    failure is correct and must stay that way. There, ``deleted`` is itself
+    part of the snapshotted payload, so a failed reap must fail the case
+    instead of being logged and recorded as ``null``. Do not "fix" one to
+    match the other.
     """
     submit = await call_tool(client, tool, _submit_args(args, compute_tier))
     run_id = submit.get("run_id") if isinstance(submit, dict) else None
@@ -523,24 +558,35 @@ async def run_lifecycle_case(
         # machinery as everywhere else) so we snapshot a settled outcome
         # rather than an arbitrary intermediate one.
         #
-        # MINOR New-3: the reap must happen regardless of whether that poll
-        # succeeds -- otherwise a run that never reaches a terminal state
-        # fails the case AND leaks the run (delete_optimization used to sit
-        # after _poll unconditionally succeeding). Same non-masking pattern
-        # as MINOR 7's run_optimization_case: capture the primary outcome or
-        # error first, always attempt the reap afterwards, only log its
-        # failure, and let the primary result/error win.
+        # MINOR New-3 / IMPORTANT B: the reap must be attempted regardless of
+        # whether that poll succeeds -- otherwise a run that never reaches a
+        # terminal state leaks (New-3). BUT this is NOT the same shape as
+        # run_optimization_case's reap: there, deletion is pure cleanup with
+        # no representation in the payload, so warn-and-continue on failure
+        # is correct and MUST stay that way. HERE, `deleted` is itself part
+        # of this case's snapshotted payload -- a failed delete_optimization
+        # must FAIL the case (the cardinal "a failed tool call is a failure,
+        # never a snapshot" rule), not be recorded as `deleted: null`. If the
+        # poll already failed, that original error remains the reported
+        # cause; the reap failure is only logged, never allowed to replace
+        # it (the Minor 7 non-masking property, preserved).
         status = None
         primary_error: CaptureFailure | None = None
         try:
             status = await _poll(client, run_id, timeout=poll_timeout)
         except CaptureFailure as exc:
             primary_error = exc
+        deleted = None
         try:
             deleted = await call_tool(client, "delete_optimization", {"run_id": run_id})
         except CaptureFailure as reap_exc:
-            print(f"  WARN: failed to reap run {run_id} after cancel: {reap_exc}")
-            deleted = None
+            if primary_error is None:
+                primary_error = reap_exc
+            else:
+                print(
+                    f"  WARN: failed to reap run {run_id} after cancel (case "
+                    f"already failing on: {primary_error}): {reap_exc}"
+                )
         if primary_error is not None:
             raise primary_error
         return {
@@ -653,12 +699,27 @@ async def capture(
     if not specs:
         raise SystemExit("no variants requested")
 
-    # IMPORTANT New-1: --tools/--cases/--variants all narrow this run to less
-    # than the whole label; whether one of them was used determines what
-    # --force is allowed to override (see check_capture_environment).
-    has_selector = bool(tools or cases_filter or variants_selected)
+    # IMPORTANT New-1 / MINOR C: --tools/--cases always narrow this run.
+    # --variants only narrows it if the requested set is a PROPER subset of
+    # every known fixture -- naming all of them (e.g. an explicit Phase 7
+    # cloud spelling) is a full-label run in substance and must not be
+    # refused the way a genuine subset would be. This governs what --force
+    # is allowed to override (see check_capture_environment) and whether a
+    # forced recapture wipes the label (below); it is DELIBERATELY separate
+    # from the (unrelated, more conservative) manifest-suppression guard
+    # further down, which still suppresses on any explicit --variants use.
+    variants_narrow = variants_selected and set(variant_keys) != known_keys
+    has_selector = bool(tools or cases_filter or variants_narrow)
 
     label_dir = Path(out_root) / label
+
+    # IMPORTANT A: a full, unfiltered --force means "start this label over".
+    # Clear it BEFORE capturing anything, so a partial failure this pass
+    # cannot leave a stale (possibly different-environment) snapshot for a
+    # later plain resume to silently trust.
+    if force and not has_selector:
+        _clear_label_directory(label_dir)
+
     sweep_stale_tmp_files(label_dir)  # MINOR 8: clear orphans from a killed run
 
     # IMPORTANT 3: refuse to resume this label under a different capture
