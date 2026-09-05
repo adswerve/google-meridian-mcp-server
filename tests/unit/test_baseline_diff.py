@@ -135,24 +135,26 @@ def test_broken_ci_ordering_in_object_rows_is_review():
     assert db.ci_findings(payload)[0].verdict == "REVIEW"
 
 
-# Every top-level key any capture_baseline.py case dict actually uses:
-# run_optimization_case -> {submit, status, result}; run_lifecycle_case
-# (non-cancel) -> {submit, status, result, reused, listing, deleted,
-# status_after_delete}; (cancel) -> {submit, canceled, status, deleted}.
-# `None` stands for the case root itself, which match() also accepts (per
-# its own documented design) even though no real case is ever diffed as a
-# bare root object.
-_REAL_ENVELOPE_KEYS = (
-    None,
-    "submit",
-    "status",
-    "result",
-    "reused",
-    "listing",
-    "deleted",
-    "status_after_delete",
-    "canceled",
-)
+# The four case-dict keys where backend/meridian_version are structurally
+# reachable (see acknowledged.py's "Fix wave 3" docstring section for the
+# call-site derivation of each): `submit`/`status` from the first
+# submit/status calls, `reused` from a SECOND submit call, and
+# `status_after_delete` from a SECOND status call. `None` stands for the
+# case root itself, which match() also accepts (per its own documented
+# design) even though no real case is ever diffed as a bare root object.
+_REAL_ENVELOPE_KEYS = (None, "submit", "status", "reused", "status_after_delete")
+
+# Every OTHER top-level key a capture_baseline.py case dict actually uses,
+# where backend/meridian_version never structurally occur: `result` is
+# get_result's {run_id, **result} (analysis payload, no backend);
+# `listing` is list_optimizations' OptimizationRunSummary entries (no
+# backend); `deleted` is delete_optimization's {run_id, deleted} (no
+# backend); `canceled` is cancel_optimization's {run_id, status} (no
+# backend). A field appearing under any of these is a real, unrelated
+# drift and must FAIL -- Fix wave 2 wrongly included all of these by
+# enumerating every case-dict key rather than deriving where the field
+# actually occurs.
+_ENVELOPE_KEYS_WITHOUT_BACKEND = ("result", "listing", "deleted", "canceled")
 
 
 @pytest.mark.parametrize("envelope_key", _REAL_ENVELOPE_KEYS)
@@ -192,6 +194,33 @@ def test_added_meridian_version_is_acknowledged_at_every_real_pointer_shape(
     findings = db.compare(a, b)
     assert [f.verdict for f in findings] == ["ACKNOWLEDGED"], (envelope_key, findings)
     assert findings[0].pointer == pointer
+
+
+@pytest.mark.parametrize("envelope_key", _ENVELOPE_KEYS_WITHOUT_BACKEND)
+def test_backend_removed_under_an_envelope_key_that_never_carries_it_is_not_acknowledged(
+    envelope_key,
+):
+    """Minor 2 (fix wave 3): result/listing/deleted/canceled never
+    structurally carry backend -- a `backend` key appearing there anyway is
+    a real, unrelated drift (or a hypothetical future field) and must not
+    be silently waved through just because it sits under a key some OTHER
+    case dict happens to use."""
+    a = {envelope_key: {"backend": "jax", "run_id": "x"}}
+    b = {envelope_key: {"run_id": "x"}}
+    findings = db.compare(a, b)
+    assert [f.verdict for f in findings] == ["FAIL"], (envelope_key, findings)
+    assert findings[0].pointer == f"/{envelope_key}/backend"
+
+
+@pytest.mark.parametrize("envelope_key", _ENVELOPE_KEYS_WITHOUT_BACKEND)
+def test_meridian_version_added_under_an_envelope_key_that_never_carries_it_is_not_acknowledged(
+    envelope_key,
+):
+    a = {envelope_key: {"run_id": "x"}}
+    b = {envelope_key: {"run_id": "x", "meridian_version": "2.0.0"}}
+    findings = db.compare(a, b)
+    assert [f.verdict for f in findings] == ["FAIL"], (envelope_key, findings)
+    assert findings[0].pointer == f"/{envelope_key}/meridian_version"
 
 
 def test_an_unrelated_added_key_is_still_a_fail():
@@ -368,6 +397,41 @@ def test_headline_sign_flip_at_noise_floor_is_suppressed():
     a = {"headline": "ROAS 1e-15 -> 2.0 at budget 100000.0"}
     b = {"headline": "ROAS -1e-15 -> 2.0 at budget 100000.0"}
     assert db.compare(a, b) == []
+
+
+# Fix wave 3, Minor 1: headline dispatches on `_leaf(pointer) == "headline"`,
+# so it fires at ANY depth, including inside list elements -- the real shape
+# is /listing/runs/<N>/headline (see the acknowledged.py-adjacent discovery
+# that `headline` is never at get_status's own root, only inside a scoped
+# `list_optimizations` listing). Nothing previously asserted this: a future
+# refactor that anchored headline handling to a fixed depth (e.g. only
+# `/headline` or only index 0) would pass all other tests. N > 0 is
+# included specifically so a hard-coded index cannot pass either.
+
+
+def _listing_with_headline(value: str, *, index: int) -> dict:
+    runs = [{"run_id": f"r{i}"} for i in range(index)]
+    runs.append({"run_id": f"r{index}", "headline": value})
+    return {"listing": {"runs": runs, "count": index + 1}}
+
+
+@pytest.mark.parametrize("index", [0, 1, 3])
+def test_headline_over_tolerance_at_any_list_index_in_a_real_listing(index):
+    a = _listing_with_headline("ROAS 1.5 -> 2.0 at budget 100000.0", index=index)
+    b = _listing_with_headline("ROAS 1.9 -> 2.0 at budget 100000.0", index=index)
+    findings = db.compare(a, b)
+    assert [f.verdict for f in findings] == ["REVIEW"], (index, findings)
+    assert findings[0].pointer == f"/listing/runs/{index}/headline"
+
+
+@pytest.mark.parametrize("index", [0, 2])
+def test_headline_label_change_at_any_list_index_in_a_real_listing(index):
+    a = _listing_with_headline("ROAS 1.5 -> 2.0 at budget 100000.0", index=index)
+    b = _listing_with_headline("CPIK 1.5 -> 2.0 at budget 100000.0", index=index)
+    findings = db.compare(a, b)
+    assert [f.verdict for f in findings] == ["FAIL"], (index, findings)
+    assert findings[0].pointer == f"/listing/runs/{index}/headline"
+    assert "label changed" in findings[0].detail
 
 
 # --- Fix wave: adversarial review findings. ---

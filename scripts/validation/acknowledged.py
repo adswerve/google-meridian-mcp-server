@@ -23,22 +23,48 @@ envelope; every case is a COMPOSITE dict of named sub-responses:
 ``optimization_service.py`` puts ``backend``/``meridian_version`` as a direct
 top-level key of the dict returned by ``_submit_envelope`` (~line 258) and by
 ``get_status`` (~line 283) -- both of which land, UNCHANGED, one level down
-inside the composite case dict above. So the real pointers are
-``/submit/backend``, ``/status/backend`` and ``/reused/backend`` (``reused``
-wraps a second ``run_optimization`` submit call) -- and, structurally, also
-``/status_after_delete/backend`` (it wraps the SAME ``get_optimization_status``
-call as ``status``, just made after deletion; that call normally errors
-post-delete, so this pointer is rarely hit in practice, but the match must
-not depend on that). ``/backend`` at the bare root is never actually
-produced by anything ``capture_baseline.py`` diffs.
+inside the composite case dict above. ``/backend`` at the bare root is never
+actually produced by anything ``capture_baseline.py`` diffs; ``match()``
+still accepts it (per this module's own documented design: the case root is
+a valid parent), it is just never hit in practice.
 
-``_KNOWN_ENVELOPE_KEYS`` is the closed set of composite-case keys above,
-enumerated from ``capture_baseline.py``'s own case construction rather than
-assumed. ``match()`` accepts the field at the case root OR nested exactly
-one level under one of these keys -- NOT a depth-crossing glob (which is
-what over-matched in the first place: ``fnmatch``'s ``*`` crosses ``/`` and
-would also reach ``domain/errors.py``'s unrelated ``backend`` key inside an
-error envelope's ``details``, e.g. ``/details/backend`` -- a different,
+Fix wave 3 -- NARROWED to what was actually derived, not merely enumerated.
+Fix wave 2 built ``_KNOWN_ENVELOPE_KEYS`` from EVERY key any case dict uses,
+which included ``result``/``listing``/``deleted``/``canceled`` even though
+none of them structurally carries ``backend``/``meridian_version`` today --
+an over-match by inclusion rather than derivation (if a future worker result
+payload ever gained an unrelated ``backend`` key, its removal would be
+silently ACKNOWLEDGED). The set below is restricted to the four keys where
+the field is actually reachable, one call site at a time:
+
+  - ``submit`` -- ``run_optimization_case``'s and ``run_lifecycle_case``'s
+    (both scenarios) ``submit`` is the raw ``_submit_envelope`` result
+    (optimization_service.py:258).
+  - ``status`` -- both functions' ``status`` is the raw ``get_status`` result
+    (optimization_service.py:283).
+  - ``reused`` -- ``run_lifecycle_case``'s ``reused`` is a SECOND raw
+    ``run_optimization`` tool call (a second ``_submit_envelope``,
+    optimization_service.py:258 again).
+  - ``status_after_delete`` -- ``run_lifecycle_case``'s (non-cancel) ``gone``
+    is the SAME ``get_optimization_status`` call as ``status``, made again
+    after deletion (optimization_service.py:283 again; the call normally
+    errors post-delete, so this pointer is rarely hit in practice, but the
+    match must not depend on that).
+
+Excluded, and why: ``result`` is ``get_result``'s ``{run_id, **result}``
+(optimization_service.py:287-289) -- the analysis result payload, no
+``backend`` field. ``listing`` is ``list_optimizations``'s
+``OptimizationRunSummary`` entries (:290-303) -- no ``backend`` field.
+``deleted`` is ``delete_optimization``'s ``{run_id, deleted}`` (:309-316) --
+no ``backend`` field. ``canceled`` is ``cancel_optimization``'s
+``{run_id, status}`` (:304-308) -- no ``backend`` field. A field appearing
+under any of these four is therefore an unrelated, real drift and must FAIL.
+
+``match()`` accepts the field at the case root OR nested exactly one level
+under one of the four keys above -- NOT a depth-crossing glob (which is what
+over-matched in the first place: ``fnmatch``'s ``*`` crosses ``/`` and would
+also reach ``domain/errors.py``'s unrelated ``backend`` key inside an error
+envelope's ``details``, e.g. ``/details/backend`` -- a different,
 agent-visible contract from the one these two entries describe, and that
 must still FAIL). A hard-coded key set is chosen over a fully generic
 depth-limited walk because these are the ONLY places the real field can
@@ -51,20 +77,18 @@ from __future__ import annotations
 
 import dataclasses
 
-# Every top-level key any case dict in capture_baseline.py actually uses
-# (see the module docstring above for the full derivation from
-# run_optimization_case / run_lifecycle_case). A field is acknowledged when
-# it sits at the case root, or one level under one of these -- nowhere else.
+# The ONLY case-dict keys where backend/meridian_version are structurally
+# reachable today (see the "Fix wave 3" section of the module docstring for
+# the call-site-by-call-site derivation of each). A field is acknowledged
+# when it sits at the case root, or one level under one of these four --
+# nowhere else, and in particular not under `result`/`listing`/`deleted`/
+# `canceled`, which never carry it.
 _KNOWN_ENVELOPE_KEYS = frozenset(
     {
         "submit",
         "status",
-        "result",
         "reused",
-        "listing",
-        "deleted",
         "status_after_delete",
-        "canceled",
     }
 )
 
