@@ -63,6 +63,71 @@ def test_probe_fixtures_passes_the_worker_env_to_the_child(tmp_path, monkeypatch
     assert captured["env"]["MERIDIAN_BACKEND"] == "tensorflow"
 
 
+def test_probe_fixtures_backend_override_wins_over_worker_env(tmp_path, monkeypatch):
+    """Regression guard: ``worker_env`` alone (no override) is exactly the
+    original bug -- it carries no MERIDIAN_BACKEND unless an operator
+    happened to export one, so the probe would fall back to Meridian's own
+    library default. ``backend_override`` must win, and must not mutate the
+    ``worker_env`` dict the caller passed in (that dict is also recorded
+    verbatim in the manifest and must stay untouched)."""
+    captured = {}
+
+    class _Completed:
+        stdout = '{"fixture": "f", "files": {}}'
+
+    def _fake_run(argv, **kwargs):
+        captured["env"] = kwargs["env"]
+        return _Completed()
+
+    monkeypatch.setattr(manifest.subprocess, "run", _fake_run)
+    original_worker_env = {"PATH": "/bin"}  # deliberately no MERIDIAN_BACKEND
+    manifest.probe_fixtures(
+        tmp_path, ["f"], worker_env=original_worker_env, backend_override="tensorflow"
+    )
+    assert captured["env"]["MERIDIAN_BACKEND"] == "tensorflow"
+    assert "MERIDIAN_BACKEND" not in original_worker_env  # not mutated
+
+
+def test_probe_fixtures_without_a_backend_override_is_unchanged(tmp_path, monkeypatch):
+    """No ``backend_override`` (the default) must reproduce the exact,
+    pre-fix behaviour: whatever ``worker_env`` itself carries, untouched."""
+    captured = {}
+
+    class _Completed:
+        stdout = '{"fixture": "f", "files": {}}'
+
+    def _fake_run(argv, **kwargs):
+        captured["env"] = kwargs["env"]
+        return _Completed()
+
+    monkeypatch.setattr(manifest.subprocess, "run", _fake_run)
+    manifest.probe_fixtures(tmp_path, ["f"], worker_env={"PATH": "/bin"})
+    assert "MERIDIAN_BACKEND" not in captured["env"]
+
+
+def test_build_manifest_records_the_probe_backend_field(tmp_path, monkeypatch):
+    """New, additive field: what backend was explicitly forced onto the
+    probe, distinct from (and not derived from) the frozen ``worker_env``
+    field -- so a reader can see what the tools genuinely ran on."""
+
+    class _Completed:
+        stdout = '{"fixture": "f", "files": {}}'
+
+    monkeypatch.setattr(manifest.subprocess, "run", lambda argv, **kw: _Completed())
+    built = manifest.build_manifest(
+        label="v2.0-tf",
+        transport="inprocess",
+        fixture_root=tmp_path,
+        fixture_names=["f"],
+        worker_env={"MERIDIAN_BACKEND": None},
+        probe_backend="tensorflow",
+    )
+    assert built["probe_backend"] == "tensorflow"
+    # The frozen field must stay exactly what worker_env reported, unmodified
+    # by the probe_backend override.
+    assert built["worker_env"]["MERIDIAN_BACKEND"] is None
+
+
 def test_manifest_records_the_worker_env_not_the_capture_process_env(
     tmp_path, monkeypatch
 ):

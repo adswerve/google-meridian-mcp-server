@@ -198,6 +198,73 @@ def test_worker_env_reports_what_the_workers_actually_get(monkeypatch):
     assert "PATH" in env
 
 
+def test_probe_backend_defaults_to_tensorflow_when_unset(monkeypatch):
+    """Regression guard for the original defect: with no operator override,
+    the probe must be told an EXPLICIT backend ("tensorflow", matching the
+    real analysis/optimization workers' own default), never left to fall
+    through to whatever Meridian's library default happens to be."""
+    monkeypatch.delenv("MERIDIAN_BACKEND", raising=False)
+    assert cb.probe_backend() == "tensorflow"
+
+
+def test_probe_backend_honours_an_operator_override(monkeypatch):
+    """An operator who exports MERIDIAN_BACKEND=jax expects the probe (like
+    the real workers) to follow it, not to silently pin "tensorflow"."""
+    monkeypatch.setenv("MERIDIAN_BACKEND", "jax")
+    assert cb.probe_backend() == "jax"
+
+
+def test_probe_backend_is_independent_of_worker_env(monkeypatch):
+    """The class of bug this whole fix exists to close: probing must not be
+    left to derive its backend from ``worker_env()`` (which carries no
+    MERIDIAN_BACKEND override and is frozen -- see its docstring). Even when
+    ``worker_env()`` reports no backend at all, ``probe_backend()`` must
+    still resolve one explicitly."""
+    monkeypatch.delenv("MERIDIAN_BACKEND", raising=False)
+    inherited = cb.worker_env()
+    assert inherited.get("MERIDIAN_BACKEND") is None
+    assert cb.probe_backend() == "tensorflow"
+
+
+async def test_capture_writes_the_manifest_with_an_explicit_probe_backend(
+    tmp_path, monkeypatch
+):
+    """End-to-end guard: ``capture()`` must actually pass ``probe_backend()``'s
+    value through to ``build_manifest``, not just define the function and
+    never wire it up -- the exact way this bug could reappear silently."""
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    _patch_client(
+        monkeypatch,
+        _FakeCaptureClient(
+            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
+        ),
+    )
+    captured_kwargs = {}
+
+    def _fake_build_manifest(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {"stub": True}
+
+    monkeypatch.setattr(cb, "build_manifest", _fake_build_manifest)
+    monkeypatch.setattr(cb, "probe_backend", lambda: "tensorflow")
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+
+    assert rc == 0
+    assert captured_kwargs.get("probe_backend") == "tensorflow"
+
+
 def test_selected_cases_honours_tool_and_case_filters():
     cases = [
         ToolCase("get_model_fit", "default", {}, frozenset(), "service"),

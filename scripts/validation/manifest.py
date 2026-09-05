@@ -49,14 +49,34 @@ def package_versions() -> dict[str, str | None]:
 
 
 def probe_fixtures(
-    fixture_root: Path, names: list[str], *, worker_env: dict[str, str]
+    fixture_root: Path,
+    names: list[str],
+    *,
+    worker_env: dict[str, str],
+    backend_override: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Run ``fixture_probe`` in a child interpreter, once per fixture.
 
     ``worker_env`` is the environment the tools under test actually ran in
     (``BaseSubprocessExecutor.child_env()``), so the recorded backend and
     precision describe the measurement, not this process.
+
+    ``backend_override``, when given, replaces ``MERIDIAN_BACKEND`` in the
+    subprocess env the probe actually runs under -- it does NOT mutate
+    ``worker_env`` itself (that dict is still recorded verbatim by
+    ``build_manifest``'s ``worker_env`` field and must stay frozen; see its
+    docstring). This exists because ``worker_env`` -- ``child_env()`` off
+    this driver process -- carries no ``MERIDIAN_BACKEND`` at all unless an
+    operator happened to export one, while the real workers always get an
+    explicit one from ``server.py``'s or ``worker.py``'s own resolution.
+    Without this override the probe falls back to Meridian's OWN library
+    default (JAX as of Meridian 2.0), silently misreporting provenance for
+    every backend that isn't the library default -- exactly the bug
+    ``capture_baseline.probe_backend()`` exists to close.
     """
+    probe_env = dict(worker_env)
+    if backend_override is not None:
+        probe_env["MERIDIAN_BACKEND"] = backend_override
     probes: dict[str, dict[str, Any]] = {}
     for name in names:
         completed = subprocess.run(
@@ -69,7 +89,7 @@ def probe_fixtures(
             capture_output=True,
             text=True,
             check=True,
-            env=dict(worker_env),
+            env=probe_env,
         )
         # Meridian and TF write banners to stdout on import; the probe's JSON
         # is always the last line.
@@ -84,18 +104,41 @@ def build_manifest(
     fixture_root: Path,
     fixture_names: list[str],
     worker_env: dict[str, str],
+    probe_backend: str | None = None,
 ) -> dict[str, Any]:
     return {
         "label": label,
         "transport": transport,
         "python": platform.python_version(),
         "packages": package_versions(),
-        # From the WORKER environment. Reading these off this process would
-        # record what the capture driver happened to have, which is not what
-        # the tools ran on.
+        # From the WORKER environment, recorded VERBATIM and never derived or
+        # overridden here. This documents the environment this driver
+        # process happened to INHERIT (a snapshot of `child_env()` with no
+        # `env_base`), not what the real worker resolved MERIDIAN_BACKEND to
+        # -- it is deliberately frozen: these keys feed every snapshot's
+        # `capture_env` (see `capture_baseline._RECORDED_ENV_KEYS` /
+        # `capture_environment`), and changing what this reports would mark
+        # every existing snapshot in every existing label stale. The
+        # `v1.7-engine` label's 330 snapshots cannot be regenerated (Meridian
+        # 1.7 is no longer installed on this machine), so this field must
+        # never change value for a given inherited environment, correct or
+        # not. See `probe_backend` below for the corrected provenance.
         "worker_env": {key: worker_env.get(key) for key in _RECORDED_ENV_KEYS},
+        # NEW (does not feed capture_env): the backend explicitly forced onto
+        # the fixture PROBE, mirroring how the real analysis/optimization
+        # workers resolve MERIDIAN_BACKEND (server.py's env_base / worker.py's
+        # setdefault, both defaulting to "tensorflow"). This is what makes
+        # `fixtures.*.current_backend` below describe the actual measurement
+        # instead of Meridian's own library default (JAX, as of Meridian
+        # 2.0). `None` means no override was supplied -- e.g. an older
+        # manifest, or a caller that didn't pass one -- and the probe ran
+        # under `worker_env` unmodified, exactly as before this fix.
+        "probe_backend": probe_backend,
         "fixtures": probe_fixtures(
-            Path(fixture_root), list(fixture_names), worker_env=worker_env
+            Path(fixture_root),
+            list(fixture_names),
+            worker_env=worker_env,
+            backend_override=probe_backend,
         ),
     }
 

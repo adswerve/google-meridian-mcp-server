@@ -322,12 +322,70 @@ def worker_env() -> dict[str, str]:
     The manifest records the backend and precision the TOOLS ran on, not the
     ones this driver happens to have. ``child_env`` is the single place that
     decides both.
+
+    FROZEN, deliberately: this return value (specifically the
+    ``manifest._RECORDED_ENV_KEYS`` slice of it) feeds every snapshot's
+    ``capture_env`` via ``capture_environment`` below, which is what makes an
+    existing snapshot's on-disk envelope match or not match a fresh run's
+    environment. Built with NO ``env_base``, this reports whatever this
+    driver process happened to inherit -- e.g. no ``MERIDIAN_BACKEND`` at all
+    on a machine that never exported one -- which is why it must NOT be used
+    to decide what backend the fixture PROBE runs under (see
+    ``probe_backend`` below): changing this function's return value, or
+    ``manifest._RECORDED_ENV_KEYS``, would mark every existing snapshot in
+    every existing label stale, including ``v1.7-engine``'s 330 snapshots,
+    which cannot be regenerated (Meridian 1.7 is no longer installed on this
+    machine) and would be silently overwritten with Meridian 2.0 output if
+    anything ever forced their recapture.
     """
     from google_meridian_mcp_server.execution.base_subprocess import (
         BaseSubprocessExecutor,
     )
 
     return BaseSubprocessExecutor().child_env()
+
+
+def probe_backend() -> str:
+    """The backend the fixture PROBE must run under, so its reading of
+    ``meridian.backend.computation_backend()`` describes what the real
+    workers computed instead of Meridian's own library default (JAX, as of
+    Meridian 2.0 -- see ``meridian.backend.config._DEFAULT_BACKEND``).
+
+    NOT derived from ``worker_env()``: that function is frozen (see its own
+    docstring) and, on a machine that never exported ``MERIDIAN_BACKEND``,
+    reports no backend at all. This function instead mirrors the SAME
+    resolution the real analysis path uses, so a reader sees what the tools
+    genuinely ran on without touching anything that feeds ``capture_env``:
+
+    - ``server.py``'s lifespan builds
+      ``SyncSubprocessExecutor(env_base={"MERIDIAN_BACKEND":
+      os.getenv("MERIDIAN_BACKEND", "tensorflow"), ...})`` for the analysis
+      path.
+    - ``worker.py:main()`` falls back to the identical
+      ``os.environ.setdefault("MERIDIAN_BACKEND", "tensorflow")`` (the
+      "analysis" subcommand) / ``os.environ.get("MERIDIAN_BACKEND",
+      "tensorflow")`` (the optimization subcommand) if a worker is ever
+      launched without that override already set.
+
+    All three already hard-code the identical "tensorflow" default,
+    independently, in code this function does not touch: reading it here as
+    ``os.getenv("MERIDIAN_BACKEND", "tensorflow")`` reproduces that same
+    resolution (an operator's explicit ``MERIDIAN_BACKEND`` still wins, else
+    "tensorflow") rather than assuming a bare, unconditional literal -- it is
+    NOT importing a shared constant from ``src/`` on purpose: doing so would
+    require adding one to some file under
+    ``src/google_meridian_mcp_server/*.py``, and ANY edit there changes
+    ``src_tree_hash()`` (see below), which every existing snapshot's
+    ``capture_env`` also embeds -- editing src/ at all would mark every
+    existing snapshot stale, for the same irreplaceable-``v1.7-engine``
+    reason ``worker_env()`` must stay frozen.
+
+    Phase 4 removes the ``MERIDIAN_BACKEND`` env-var knob entirely and fixes
+    the backend as a module constant in ``src/`` instead. When that lands,
+    update ONLY this function -- to import that constant -- so the probe
+    keeps following whatever the code actually does, in both worlds.
+    """
+    return os.getenv("MERIDIAN_BACKEND", "tensorflow")
 
 
 def _tree_hash(root: Path, *, glob: str = "*") -> str:
@@ -912,6 +970,7 @@ async def capture(
         fixture_root=DEFAULT_OUT_ROOT,
         fixture_names=[v.key for v in specs],
         worker_env=worker_env(),
+        probe_backend=probe_backend(),
     )
     # Over HTTP the tools ran in a container we cannot inspect from here, so
     # the recorded worker_env and provenance describe THIS machine, not the
