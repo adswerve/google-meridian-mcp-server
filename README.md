@@ -117,10 +117,10 @@ gcloud projects delete <project_id>
 
 #### 1. Create a Python environment
 
-Meridian currently targets Python 3.12+.
+This project targets Python 3.13.
 
 ```bash
-python3.12 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 ```

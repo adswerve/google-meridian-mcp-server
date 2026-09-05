@@ -7,7 +7,7 @@ name = "google-meridian-mcp-server"
 version = "0.3.1"
 description = "FastMCP server exposing Google Meridian MMM analysis to agents"
 readme = "README.md"
-requires-python = ">=3.12,<3.15"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "fastmcp>=4,<5",
     "google-meridian[schema]==1.7.0",
@@ -37,7 +37,7 @@ pythonpath = ["."]
 markers = ["integration: exercises a real fitted Meridian model (slow; builds fixtures)"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 88
 include = ["pyproject.toml", "src/**/*.py", "tests/**/*.py", "scripts/**/*.py"]
 extend-exclude = [
