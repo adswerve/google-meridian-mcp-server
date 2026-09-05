@@ -25,7 +25,6 @@ docs/
 !skills/meridian-analyst/references/
 !skills/meridian-analyst/references/**
 .superpowers/
-uv.lock
 .vscode/
 models/
 .claude/settings.local.json
