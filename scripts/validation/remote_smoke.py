@@ -18,6 +18,8 @@ import sys
 
 from fastmcp import Client
 
+from scripts.validation.payloads import extract
+
 
 def normalize_mcp_url(base: str) -> str:
     """Return the streamable-http endpoint URL for a service base URL.
@@ -31,11 +33,6 @@ def normalize_mcp_url(base: str) -> str:
     if base.endswith("/mcp"):
         return base
     return base + "/mcp"
-
-
-def _data(result):
-    """Extract the structured payload from a FastMCP CallToolResult."""
-    return getattr(result, "data", result)
 
 
 async def _run(url: str, model_id: str | None, run_opt: bool, poll_timeout: int) -> int:
@@ -55,7 +52,7 @@ async def _run(url: str, model_id: str | None, run_opt: bool, poll_timeout: int)
                 print(f"FAIL: deployed server missing tool {required}")
                 return 1
 
-        models = _data(await client.call_tool("list_models", {}))
+        models = extract(await client.call_tool("list_models", {}))
         print(f"list_models -> {models}")
         if not models:
             print("FAIL: no models returned by deployed server")
@@ -64,7 +61,7 @@ async def _run(url: str, model_id: str | None, run_opt: bool, poll_timeout: int)
         resolved = model_id or (
             models[0]["model_id"] if isinstance(models[0], dict) else models[0]
         )
-        overview = _data(
+        overview = extract(
             await client.call_tool("get_model_overview", {"model_id": resolved})
         )
         if not overview or (isinstance(overview, dict) and overview.get("error")):
@@ -76,7 +73,7 @@ async def _run(url: str, model_id: str | None, run_opt: bool, poll_timeout: int)
             print("PASS: read-only smoke test")
             return 0
 
-        started = _data(
+        started = extract(
             await client.call_tool(
                 "run_optimization",
                 {
@@ -99,13 +96,13 @@ async def _run(url: str, model_id: str | None, run_opt: bool, poll_timeout: int)
         waited = 0
         interval = 10
         while waited < poll_timeout:
-            status = _data(
+            status = extract(
                 await client.call_tool("get_optimization_status", {"run_id": run_id})
             )
             state = status.get("status") if isinstance(status, dict) else None
             print(f"  [{waited}s] status={state}")
             if state == "completed":
-                result = _data(
+                result = extract(
                     await client.call_tool(
                         "get_optimization_result", {"run_id": run_id}
                     )
