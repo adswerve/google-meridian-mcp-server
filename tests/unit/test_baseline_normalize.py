@@ -152,6 +152,88 @@ def test_volatile_key_nested_inside_a_dict_of_dicts_is_normalized():
     }
 
 
+def test_embedded_run_id_in_a_message_string_is_replaced_wherever_it_appears():
+    """RunNotFoundError bakes run_id into a sentence
+    (persistence/optimization_run_registry.py:24) -- a key-name check can
+    never reach it there. This must be neutralized at any nesting depth."""
+    payload = {
+        "status_after_delete": {
+            "error_code": "optimization_run_not_found",
+            "message": "Optimization run 'geo-revenue-20260905T044640-80b9c7' "
+            "was not found.",
+            "details": {"run_id": "geo-revenue-20260905T044640-80b9c7"},
+        }
+    }
+    out = normalize(payload)
+    assert out["status_after_delete"]["message"] == (
+        "Optimization run 'geo-revenue-<run_id>' was not found."
+    )
+    assert out["status_after_delete"]["details"] == {"run_id": "<run_id>"}
+
+
+def test_two_messages_differing_only_by_run_id_normalize_identically():
+    a = normalize(
+        {"message": "Optimization run 'm-20260904T101500-a1b2c3' was not found."}
+    )
+    b = normalize(
+        {"message": "Optimization run 'm-20260905T230101-ffeedd' was not found."}
+    )
+    assert a == b == {"message": "Optimization run 'm-<run_id>' was not found."}
+
+
+def test_two_messages_differing_in_actual_wording_still_differ():
+    """The substring substitution must not mask an unrelated real change --
+    only the run-id-shaped span is touched, never the rest of the string."""
+    a = normalize(
+        {"message": "Optimization run 'm-20260904T101500-a1b2c3' was not found."}
+    )
+    b = normalize(
+        {
+            "message": "Optimization run 'm-20260904T101500-a1b2c3' has no "
+            "result yet (status=queued)."
+        }
+    )
+    assert a != b
+
+
+def test_result_not_ready_message_run_id_is_also_neutralized():
+    """The second known template (optimization_run_registry.py:33), same
+    treatment."""
+    a = normalize(
+        {
+            "message": "Optimization run 'm-20260904T101500-a1b2c3' has no "
+            "result yet (status=queued)."
+        }
+    )
+    b = normalize(
+        {
+            "message": "Optimization run 'm-20260905T230101-ffeedd' has no "
+            "result yet (status=queued)."
+        }
+    )
+    assert a == b
+
+
+def test_string_merely_resembling_the_pattern_but_not_a_run_id_is_still_scrubbed():
+    """The regex is anchored purely on SHAPE (8 digits, literal T, 6 digits,
+    hyphen, 6 lowercase hex), not on any surrounding context -- it cannot
+    tell a real run id from coincidental text of the identical shape, and
+    does not try to. Documented, deliberate behaviour: nothing this server
+    emits produces that 14-character shape except an actual run id (see the
+    module docstring), so treating any occurrence of it as volatile is safe
+    in practice, not merely permissive by accident."""
+    out = normalize({"note": "ref 20260904T101500-a1b2c3 unrelated"})
+    assert out == {"note": "ref <run_id> unrelated"}
+
+
+def test_iso8601_timestamps_are_not_mistaken_for_a_run_id():
+    """A real ISO 8601 string (dashes inside the date, colons inside the
+    time) never contains 8 consecutive digits followed by a bare `T`, so it
+    must pass through the new substring scrub untouched."""
+    out = normalize({"note": "seen at 2026-09-04T10:15:00+00:00"})
+    assert out == {"note": "seen at 2026-09-04T10:15:00+00:00"}
+
+
 def test_volatile_key_nested_inside_list_of_lists_is_normalized():
     """A run object can appear inside a list nested inside another list
     (e.g. a batch of optimization runs grouped by scenario)."""
