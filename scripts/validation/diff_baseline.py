@@ -11,14 +11,19 @@ Snapshot envelope: each snapshot file on disk is
 ``{"capture_env": ..., "known_racy_fields": [...]?, "payload": ...}``
 (see the module docstring of ``capture_baseline.py`` for the authoritative
 contract). Only ``payload`` is compared leaf-by-leaf below; ``capture_env``
-and ``known_racy_fields`` are metadata, never diffed as data.
+and ``known_racy_fields`` are metadata, never diffed as data. A file that is
+not a valid envelope (no top-level ``payload`` key -- a pre-Task-6
+bare-payload snapshot, or a corrupt file) is a loud error, never a silent
+empty payload: ``compare(None, None)`` would otherwise report a clean diff
+for two files that were never actually compared.
 
 ``known_racy_fields`` lists dot-separated OBJECT paths into ``payload`` (no
 dot-escaping, no list-index form) whose value may legitimately differ
 between labels because of an inherent race -- today, only
 ``lifecycle__cancel``'s ``status.status``. A difference at any such path is
 downgraded from FAIL to REVIEW, never silently dropped: it is still a
-change, just not a defect.
+change, just not a defect. A malformed declaration (not a list of strings)
+is a loud error too, not a silent no-op or a bare traceback.
 
 ``headline`` (``OptimizationRunState.headline``, built by
 ``execution/worker.py``'s ``_headline``) is
@@ -31,6 +36,11 @@ the same numbers are separately captured raw, under full tolerance, in
 compared structurally: the label and literal separators exactly, and each
 embedded number through the SAME tolerance as everything else -- never
 waived wholesale, and never added to ``normalize.VOLATILE_FIELDS``.
+
+NaN and infinity are handled explicitly in the numeric tolerance (see
+``_compare_numbers``): an unchanged NaN is not a finding, a value becoming or
+ceasing to be NaN is a structural FAIL (not float noise), and the same is
+true for infinity.
 """
 
 from __future__ import annotations
@@ -38,6 +48,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -90,6 +101,27 @@ def _leaf(pointer: str) -> str:
     return pointer.rsplit("/", 1)[-1]
 
 
+def _pointer_for(pointer: str, key: str) -> str:
+    """Append one object key to a JSON-pointer-style path.
+
+    The scheme used throughout this module is deliberately minimal (plain
+    ``/``-joined keys, no escaping -- matching ``known_racy_fields``'s own
+    dot-path contract). A key containing a literal ``/`` would corrupt every
+    pointer built beneath it: e.g. a key ``"a/count"`` one level down
+    produces the exact same trailing segment as the identity field
+    ``"count"`` to ``_leaf``, silently mis-classifying an ordinary field as
+    an identity. Rather than risk that, fail loudly and name the key.
+    """
+    if "/" in key:
+        raise ValueError(
+            f"key {key!r} under pointer {pointer or '/'} contains a literal "
+            "'/', which this module's dot-free pointer scheme cannot "
+            "represent without ambiguity. Extend the pointer contract "
+            "explicitly before diffing a payload with this key."
+        )
+    return f"{pointer}/{key}"
+
+
 def _classify_key_change(pointer: str, change: str, detail: str) -> Finding:
     entry = acknowledged.match(pointer, change)
     if entry is not None:
@@ -98,6 +130,36 @@ def _classify_key_change(pointer: str, change: str, detail: str) -> Finding:
 
 
 def _compare_numbers(a: float, b: float, pointer: str) -> list[Finding]:
+    # NaN and infinity break ordinary arithmetic comparison before the
+    # absolute floor or the sign-flip check below ever run: NaN compares
+    # unequal to everything, including itself, so an UNCHANGED NaN leaf
+    # would otherwise fall through to `relative = nan`, producing an
+    # unactionable "relative delta nan" REVIEW on a value that did not even
+    # change -- exactly the "hundreds of false findings nobody reads"
+    # failure mode this module exists to avoid. Handled explicitly, before
+    # any arithmetic:
+    #   - NaN vs NaN is the SAME value here (by construction, not IEEE
+    #     equality) -- no finding.
+    #   - a value becoming or ceasing to be NaN, in either direction, is a
+    #     structural break, not float noise -- FAIL.
+    #   - the same infinity (`inf == inf` and `-inf == -inf` in Python) is
+    #     unchanged -- no finding; `inf` vs a finite number, or `inf` vs
+    #     `-inf`, is FAIL.
+    nan_a, nan_b = math.isnan(a), math.isnan(b)
+    if nan_a or nan_b:
+        if nan_a and nan_b:
+            return []
+        return [
+            Finding(
+                "FAIL",
+                pointer,
+                f"value {'became' if nan_b else 'stopped being'} NaN: {a} -> {b}",
+            )
+        ]
+    if math.isinf(a) or math.isinf(b):
+        if a == b:
+            return []
+        return [Finding("FAIL", pointer, f"value changed at infinity: {a} -> {b}")]
     if a == b:
         return []
     scale = max(abs(a), abs(b))
@@ -183,15 +245,17 @@ def compare(a: Any, b: Any, pointer: str = "") -> list[Finding]:
         for key in sorted(set(a) - set(b)):
             findings.append(
                 _classify_key_change(
-                    f"{pointer}/{key}", "removed", f"key removed: {key!r}"
+                    _pointer_for(pointer, key), "removed", f"key removed: {key!r}"
                 )
             )
         for key in sorted(set(b) - set(a)):
             findings.append(
-                _classify_key_change(f"{pointer}/{key}", "added", f"key added: {key!r}")
+                _classify_key_change(
+                    _pointer_for(pointer, key), "added", f"key added: {key!r}"
+                )
             )
         for key in sorted(set(a) & set(b)):
-            findings.extend(compare(a[key], b[key], f"{pointer}/{key}"))
+            findings.extend(compare(a[key], b[key], _pointer_for(pointer, key)))
         return findings
 
     if isinstance(a, list) and isinstance(b, list):
@@ -279,7 +343,7 @@ def ci_findings(payload: Any, pointer: str = "") -> list[Finding]:
         for key, value in payload.items():
             if key in ("columns", "rows"):
                 continue
-            findings.extend(ci_findings(value, f"{pointer}/{key}"))
+            findings.extend(ci_findings(value, _pointer_for(pointer, key)))
     elif isinstance(payload, list):
         for index, item in enumerate(payload):
             findings.extend(ci_findings(item, f"{pointer}/{index}"))
@@ -297,6 +361,7 @@ def diff_case(
     a: dict,
     b: dict,
     pointer: str,
+    *,
     racy_fields: frozenset[str] | set[str] = frozenset(),
 ) -> list[Finding]:
     """All findings for one case: structural/numeric drift plus CI ordering on
@@ -305,7 +370,9 @@ def diff_case(
     ``racy_fields`` is metadata carried outside ``payload`` in the snapshot
     envelope (present only for ``lifecycle__cancel`` today) -- a change at
     one of these paths is an acknowledged race, not a defect, but it is
-    still surfaced as REVIEW rather than silently dropped.
+    still surfaced as REVIEW rather than silently dropped. Keyword-only so a
+    caller can never accidentally pass it positionally where ``pointer`` was
+    meant.
     """
     findings = compare(a, b, pointer) + ci_findings(b, pointer)
     racy_pointers = _racy_pointer_set(racy_fields)
@@ -364,13 +431,40 @@ def check_manifests(
 
 def _load_snapshot(path: Path) -> tuple[Any, dict, list[str]]:
     """Read one snapshot envelope and split it into (payload, capture_env,
-    known_racy_fields). The envelope is the on-disk contract written by
-    capture_baseline.py; only ``payload`` is ever compared as data."""
+    known_racy_fields).
+
+    The envelope is the on-disk contract written by ``capture_baseline.py``:
+    a dict with a mandatory ``payload`` key (``capture_baseline``'s own skip
+    logic requires the same key to treat a file as a valid snapshot). A bare
+    pre-Task-6 payload file -- or anything else that is not a valid envelope
+    -- has NO ``payload`` key, and must never be silently treated as an
+    absent/empty payload: ``compare(None, None)`` would then report a clean
+    diff for two files that were never actually compared, i.e. a silent
+    PASS on exactly the drift the harness exists to catch. Fail loudly,
+    naming the file, instead.
+    """
     envelope = json.loads(path.read_text())
+    if not isinstance(envelope, dict) or "payload" not in envelope:
+        raise SystemExit(
+            f"{path}: not a valid snapshot envelope (missing a top-level "
+            "'payload' key). This is either a pre-Task-6 bare-payload "
+            "snapshot or a corrupt file -- either way it must not be "
+            "silently diffed as an empty payload. Recapture it with "
+            "capture_baseline.py."
+        )
+    known_racy_fields = envelope.get("known_racy_fields", [])
+    if not isinstance(known_racy_fields, list) or not all(
+        isinstance(item, str) for item in known_racy_fields
+    ):
+        raise SystemExit(
+            f"{path}: 'known_racy_fields' must be a list of strings, got "
+            f"{known_racy_fields!r}. Fix the snapshot rather than silently "
+            "ignoring (or crashing on) a malformed declaration."
+        )
     return (
-        envelope.get("payload"),
+        envelope["payload"],
         envelope.get("capture_env", {}),
-        list(envelope.get("known_racy_fields", [])),
+        known_racy_fields,
     )
 
 
@@ -407,27 +501,117 @@ def _provenance_rows(label: str, manifest: dict) -> list[str]:
     return lines
 
 
-def _capture_env_note(
-    case: str, env_a: dict, env_b: dict, label_a: str, label_b: str
-) -> str | None:
-    """A one-line environment note for a case that has non-PASS findings, so
-    a reader can see which environment each side of a disagreement came
-    from. ``capture_env`` is per-snapshot provenance, never compared as
-    payload -- but surfacing it here (rather than diffing it) is what makes
-    it useful when two labels disagree."""
-    if not env_a and not env_b:
-        return None
-    fields = ("transport", "python", "fixture_hash", "src_hash")
-    diffs = [
-        f"{field}: `{env_a.get(field)}` vs `{env_b.get(field)}`"
-        for field in fields
-        if env_a.get(field) != env_b.get(field)
+_ENV_PROVENANCE_FIELDS = ("transport", "python", "fixture_hash", "src_hash")
+
+
+def _env_provenance_section(
+    label_a: str,
+    label_b: str,
+    findings_by_case: dict[str, list[Finding]],
+    case_envs: dict[str, tuple[dict, dict]],
+) -> list[str]:
+    """Per-case ``capture_env`` provenance for cases with findings, with any
+    field that differs THE SAME WAY across every such case hoisted to one
+    label-level line instead of being repeated once per case.
+
+    A field like ``src_hash`` is typically constant per label -- if it
+    differs between the two labels, it differs identically for every case
+    that has a finding, and repeating the identical line once per case (six
+    times in an early draft of this report) pushed the actual findings below
+    the fold without adding any information. Only a field that genuinely
+    VARIES from case to case is worth a per-case line.
+    """
+    cases_with_findings = [
+        case for case in sorted(findings_by_case) if findings_by_case[case]
     ]
-    if not diffs:
-        return None
-    return f"- `{case}` -- {label_a} vs {label_b} capture_env differs: " + "; ".join(
-        diffs
+    if not cases_with_findings:
+        return []
+
+    per_field_pairs: dict[str, set[tuple[Any, Any]]] = {
+        field: set() for field in _ENV_PROVENANCE_FIELDS
+    }
+    for case in cases_with_findings:
+        env_a, env_b = case_envs.get(case, ({}, {}))
+        for field in _ENV_PROVENANCE_FIELDS:
+            value_a, value_b = env_a.get(field), env_b.get(field)
+            if value_a != value_b:
+                per_field_pairs[field].add((value_a, value_b))
+
+    constant_fields = {
+        field: next(iter(pairs))
+        for field, pairs in per_field_pairs.items()
+        if len(pairs) == 1
+    }
+    varying_fields = [
+        field
+        for field in _ENV_PROVENANCE_FIELDS
+        if field not in constant_fields and per_field_pairs[field]
+    ]
+
+    lines: list[str] = []
+    if constant_fields:
+        hoisted = "; ".join(
+            f"{field}: `{value_a}` vs `{value_b}`"
+            for field, (value_a, value_b) in constant_fields.items()
+        )
+        lines.append(
+            f"- {label_a} vs {label_b} capture_env differs the same way for "
+            f"every case below: {hoisted}"
+        )
+
+    for case in cases_with_findings:
+        env_a, env_b = case_envs.get(case, ({}, {}))
+        diffs = [
+            f"{field}: `{env_a.get(field)}` vs `{env_b.get(field)}`"
+            for field in varying_fields
+            if env_a.get(field) != env_b.get(field)
+        ]
+        if diffs:
+            lines.append(f"- `{case}` -- " + "; ".join(diffs))
+
+    if not lines:
+        return []
+    return (
+        ["## Per-case environment provenance (for cases with findings)", ""]
+        + lines
+        + [""]
     )
+
+
+def _review_reason(detail: str) -> str:
+    """Categorize a REVIEW finding's reason for the report's Reason column.
+
+    Needed because "REVIEW" covers several unrelated situations (a numeric
+    drift over tolerance, a sign flip, a known racy field, broken CI
+    ordering) that a reader cannot tell apart from the verdict alone -- the
+    racy-field row for ``lifecycle__cancel`` is a STRING change
+    (``'canceled' -> 'completed'``), not a number, and filing it under a
+    heading that says "numeric" is actively misleading.
+    """
+    if "known racy field" in detail:
+        return "known racy field"
+    if "sign flip" in detail:
+        return "sign flip"
+    if "CI ordering broken" in detail:
+        return "ordering"
+    if "relative delta" in detail:
+        return "over tolerance"
+    return "other"
+
+
+def _verdict_line(counts: dict[str, int], missing_count: int, code: int) -> str:
+    parts = []
+    if counts["FAIL"]:
+        parts.append(f"{counts['FAIL']} FAIL")
+    if counts["REVIEW"]:
+        parts.append(f"{counts['REVIEW']} REVIEW")
+    if missing_count:
+        parts.append(f"{missing_count} case(s) present in only one label")
+    if counts["ACKNOWLEDGED"]:
+        parts.append(f"{counts['ACKNOWLEDGED']} ACKNOWLEDGED")
+    breakdown = ", ".join(parts) if parts else "nothing to report"
+    verdict = "FAIL" if code else "PASS"
+    return f"**Verdict: {verdict} -- exit code {code}** ({breakdown})"
 
 
 def render_report(
@@ -439,8 +623,35 @@ def render_report(
     missing: dict[str, list[str]],
     case_envs: dict[str, tuple[dict, dict]] | None = None,
 ) -> str:
+    all_findings = [f for findings in findings_by_case.values() for f in findings]
+    counts = {
+        verdict: sum(1 for f in all_findings if f.verdict == verdict)
+        for verdict in ("FAIL", "REVIEW", "ACKNOWLEDGED")
+    }
+    missing_count = len(missing.get("only_in_a", [])) + len(
+        missing.get("only_in_b", [])
+    )
+    # A case-set difference is exactly as blocking as a structural FAIL (see
+    # main()'s own exit-code rule) -- folded into the same count here so the
+    # Summary can never show "FAIL: 0" next to a nonzero exit code.
+    total_fail = counts["FAIL"] + missing_count
+    code = 1 if (total_fail or counts["REVIEW"]) else 0
+
     lines: list[str] = [
         f"# Drift report: `{label_a}` -> `{label_b}`",
+        "",
+        _verdict_line(counts, missing_count, code),
+        "",
+        "## Legend",
+        "",
+        "- **FAIL** and **REVIEW** both block (exit code 1): FAIL is a structural "
+        "break (added/removed/type-changed field, changed identity, or a case "
+        "missing from one label) with no ambiguity; REVIEW is a numeric or "
+        "ordering finding that needs a human to judge (over tolerance, sign "
+        "flip, known racy field, broken CI ordering) and MIGHT be legitimate.",
+        "- **ACKNOWLEDGED** does not block: pre-registered in `acknowledged.py` "
+        "with a mandatory reason (spec 7.4). Reported in its own section, "
+        "never folded into a clean PASS.",
         "",
         "## Environment",
         "",
@@ -462,6 +673,10 @@ def render_report(
             f"| worker {key} | {manifest_a.get('worker_env', {}).get(key)} "
             f"| {manifest_b.get('worker_env', {}).get(key)} |"
         )
+    lines.append(
+        f"| relative tolerance (REL_TOLERANCE) | {REL_TOLERANCE:.0e} | {REL_TOLERANCE:.0e} |"
+    )
+    lines.append(f"| absolute floor (ABS_FLOOR) | {ABS_FLOOR:.0e} | {ABS_FLOOR:.0e} |")
     lines += ["", "## Fixture provenance", ""]
     lines += _provenance_rows(label_a, manifest_a)
     lines += _provenance_rows(label_b, manifest_b)
@@ -474,45 +689,32 @@ def render_report(
             lines.append(f"- **FAIL** case present only in `{label_b}`: `{name}`")
         lines.append("")
 
-    all_findings = [f for findings in findings_by_case.values() for f in findings]
-    counts = {
-        verdict: sum(1 for f in all_findings if f.verdict == verdict)
-        for verdict in ("FAIL", "REVIEW", "ACKNOWLEDGED")
-    }
     lines += [
         "## Summary",
         "",
         f"- Cases compared: {len(findings_by_case)}",
-        f"- FAIL: {counts['FAIL']}",
+        f"- Case-set differences (case present in only one label): {missing_count}",
+        f"- FAIL (including case-set differences above): {total_fail}",
         f"- REVIEW: {counts['REVIEW']}",
         f"- ACKNOWLEDGED: {counts['ACKNOWLEDGED']}",
         "",
     ]
 
     if case_envs:
-        notes = [
-            note
-            for case in sorted(findings_by_case)
-            if findings_by_case[case]
-            for note in [
-                _capture_env_note(
-                    case, *case_envs.get(case, ({}, {})), label_a, label_b
-                )
-            ]
-            if note is not None
-        ]
-        if notes:
-            lines += [
-                "## Per-case environment provenance (for cases with findings)",
-                "",
-            ]
-            lines += notes
-            lines.append("")
+        lines += _env_provenance_section(label_a, label_b, findings_by_case, case_envs)
 
-    for verdict, heading in (
-        ("FAIL", "## FAIL - structural"),
-        ("REVIEW", "## REVIEW - numeric"),
-        ("ACKNOWLEDGED", "## ACKNOWLEDGED - pre-registered in acknowledged.py"),
+    for verdict, heading, columns in (
+        ("FAIL", "## FAIL - structural", ("Case", "Pointer", "Detail")),
+        (
+            "REVIEW",
+            "## REVIEW -- needs a human",
+            ("Case", "Pointer", "Reason", "Detail"),
+        ),
+        (
+            "ACKNOWLEDGED",
+            "## ACKNOWLEDGED - pre-registered in acknowledged.py",
+            ("Case", "Pointer", "Detail"),
+        ),
     ):
         lines += [heading, ""]
         rows = [
@@ -524,10 +726,20 @@ def render_report(
         if not rows:
             lines += ["_none_", ""]
             continue
-        lines += ["| Case | Pointer | Detail |", "| --- | --- | --- |"]
+        lines += [
+            "| " + " | ".join(columns) + " |",
+            "| " + " | ".join("---" for _ in columns) + " |",
+        ]
         for case, finding in rows:
             detail = finding.detail.replace("|", "\\|")
-            lines.append(f"| `{case}` | `{finding.pointer or '/'}` | {detail} |")
+            pointer = finding.pointer or "/"
+            if verdict == "REVIEW":
+                lines.append(
+                    f"| `{case}` | `{pointer}` | {_review_reason(finding.detail)} "
+                    f"| {detail} |"
+                )
+            else:
+                lines.append(f"| `{case}` | `{pointer}` | {detail} |")
         lines.append("")
     return "\n".join(lines)
 
@@ -563,7 +775,9 @@ def main(argv: list[str] | None = None) -> int:
         payload_a, env_a, racy_a = cases_a[name]
         payload_b, env_b, racy_b = cases_b[name]
         racy_fields = frozenset(racy_a) | frozenset(racy_b)
-        findings_by_case[name] = diff_case(payload_a, payload_b, "", racy_fields)
+        findings_by_case[name] = diff_case(
+            payload_a, payload_b, "", racy_fields=racy_fields
+        )
         case_envs[name] = (env_a, env_b)
 
     report = render_report(
