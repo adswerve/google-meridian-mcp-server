@@ -7,6 +7,7 @@ from typing import Any
 from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import OptimizationRun
 from google_meridian_mcp_server.execution.base_executor import BaseExecutor
+from google_meridian_mcp_server.execution.base_subprocess import MERIDIAN_BACKEND
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
 )
@@ -55,10 +56,13 @@ class CloudRunJobExecutor(BaseExecutor):
         from google.cloud import run_v2
 
         tier = run.compute_tier_resolved
-        backend = self._cfg.backend_for_tier(tier)
+        # child_env() cannot help here: the Cloud Run Job container does not
+        # inherit this process's environment, so the constants are injected as
+        # explicit container overrides.
         env = [
             run_v2.EnvVar(name="OPTIMIZATION_RUN_ID", value=run.run_id),
-            run_v2.EnvVar(name="MERIDIAN_BACKEND", value=backend),
+            run_v2.EnvVar(name="MERIDIAN_BACKEND", value=MERIDIAN_BACKEND),
+            run_v2.EnvVar(name="MERIDIAN_ENABLE_JAX_X64", value="true"),
         ]
         request = run_v2.RunJobRequest(
             name=self._job_name(tier),

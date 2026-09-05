@@ -127,9 +127,7 @@ def test_build_worker_catalog(tmp_path):
 def test_worker_happy_path_writes_result_and_completed(tmp_path):
     reg = LocalOptimizationRunRegistry(str(tmp_path))
     _seed_run(reg)
-    code = run_worker(
-        "m-1", registry=reg, catalog=_FakeCatalog(_FakeFacade()), backend="tensorflow"
-    )
+    code = run_worker("m-1", registry=reg, catalog=_FakeCatalog(_FakeFacade()))
     assert code == 0
     assert reg.get_state("m-1").status == RunStatus.COMPLETED
     assert reg.get_state("m-1").headline is not None
@@ -143,7 +141,6 @@ def test_worker_failure_writes_failed_state(tmp_path):
         "m-1",
         registry=reg,
         catalog=_FakeCatalog(_FakeFacade(boom=True)),
-        backend="tensorflow",
     )
     assert code == 1
     state = reg.get_state("m-1")
@@ -200,7 +197,6 @@ def test_worker_emits_heartbeats_during_optimize(tmp_path):
         record.run_id,
         registry=registry,
         catalog=_Catalog(),
-        backend="tensorflow",
         heartbeat_interval=0.2,
     )
     assert rc == 0
@@ -246,7 +242,6 @@ def test_worker_uses_execute_for_dispatch(tmp_path):
         record.run_id,
         registry=registry,
         catalog=FakeCatalogForDispatch(),
-        backend="tensorflow",
     )
     assert rc == 0
     assert "execute" in calls
@@ -321,7 +316,6 @@ def test_f8_heartbeat_join_waits_for_in_flight_write_before_terminal_state(tmp_p
         record.run_id,
         registry=registry,
         catalog=_Catalog(),
-        backend="tensorflow",
         heartbeat_interval=0.05,
     )
 

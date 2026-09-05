@@ -216,13 +216,21 @@ def test_probe_backend_honours_an_operator_override(monkeypatch):
 
 def test_probe_backend_is_independent_of_worker_env(monkeypatch):
     """The class of bug this whole fix exists to close: probing must not be
-    left to derive its backend from ``worker_env()`` (which carries no
-    MERIDIAN_BACKEND override and is frozen -- see its docstring). Even when
-    ``worker_env()`` reports no backend at all, ``probe_backend()`` must
-    still resolve one explicitly."""
+    left to derive its backend from ``worker_env()``.
+
+    Task 15 (Phase 4b) made ``base_subprocess.child_env()`` force
+    MERIDIAN_BACKEND=jax unconditionally (D2), so ``worker_env()`` -- which
+    is frozen and simply delegates to ``child_env()`` -- now reports "jax"
+    even with no ambient override. ``probe_backend()`` itself is untouched
+    here on purpose (it lives in scripts/, which is Task 16's job per the
+    module docstring) and still resolves its own OWN "tensorflow" fallback
+    via ``os.getenv``. The two now genuinely disagree, which is the
+    strongest possible demonstration that probe_backend() does not read
+    from worker_env()'s dict -- and it flags probe_backend() as stale until
+    Task 16 updates it to import the real module constant."""
     monkeypatch.delenv("MERIDIAN_BACKEND", raising=False)
     inherited = cb.worker_env()
-    assert inherited.get("MERIDIAN_BACKEND") is None
+    assert inherited.get("MERIDIAN_BACKEND") == "jax"
     assert cb.probe_backend() == "tensorflow"
 
 

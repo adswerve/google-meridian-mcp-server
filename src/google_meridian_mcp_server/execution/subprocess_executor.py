@@ -27,7 +27,6 @@ class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
         *,
         max_parallel: int,
         heartbeat_stale_seconds: int,
-        backend: str,
         log_root: str | Path = DEFAULT_LOG_ROOT,
         python_executable: str | None = None,
     ) -> None:
@@ -42,9 +41,8 @@ class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
             if python_executable
             else None
         )
-        BaseSubprocessExecutor.__init__(
-            self, worker_argv_prefix=prefix, env_base={"MERIDIAN_BACKEND": backend}
-        )
+        # child_env() supplies MERIDIAN_BACKEND and MERIDIAN_ENABLE_JAX_X64.
+        BaseSubprocessExecutor.__init__(self, worker_argv_prefix=prefix)
         self._log_root = Path(log_root)
 
     def _launch(self, run: OptimizationRun) -> Any:

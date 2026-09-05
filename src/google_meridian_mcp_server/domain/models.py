@@ -59,9 +59,6 @@ class RuntimeConfig(BaseModel):
     optimization_max_parallel: int = 2
     optimization_size_thresholds: tuple[int, int] = (10_000_000, 100_000_000)
     optimization_heartbeat_stale_seconds: int = 60
-    optimization_backend_local: str = "tensorflow"
-    optimization_backend_cloud_cpu: str = "jax"
-    optimization_backend_cloud_gpu: str = "jax"
     cloud_run_project: str | None = None
     cloud_run_region: str | None = None
     cloud_run_job_cpu: str | None = None
@@ -175,13 +172,6 @@ class RuntimeConfig(BaseModel):
     @property
     def resolved_registry_backend(self) -> str:
         return self.registry_backend or self.persistence_backend
-
-    def backend_for_tier(self, tier: str) -> str:
-        return {
-            ComputeTier.LOCAL.value: self.optimization_backend_local,
-            ComputeTier.CLOUD_CPU.value: self.optimization_backend_cloud_cpu,
-            ComputeTier.CLOUD_GPU.value: self.optimization_backend_cloud_gpu,
-        }[tier]
 
     def cloud_run_job_for_tier(self, tier: str) -> str | None:
         return {

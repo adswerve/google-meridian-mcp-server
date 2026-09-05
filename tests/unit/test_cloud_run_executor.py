@@ -97,7 +97,13 @@ def test_launch_calls_run_job_with_env_overrides():
     req = jobs.calls[0]
     assert "opt-cpu" in req.name  # cpu job selected by tier
     env_names = {e.name for e in req.overrides.container_overrides[0].env}
-    assert {"OPTIMIZATION_RUN_ID", "MERIDIAN_BACKEND"} <= env_names
+    assert {
+        "OPTIMIZATION_RUN_ID",
+        "MERIDIAN_BACKEND",
+        "MERIDIAN_ENABLE_JAX_X64",
+    } <= env_names
+    env_by_name = {e.name: e.value for e in req.overrides.container_overrides[0].env}
+    assert env_by_name["MERIDIAN_BACKEND"] == "jax"
 
 
 def test_is_alive_reflects_execution_completion():

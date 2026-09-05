@@ -12,11 +12,13 @@ def _local_kwargs(**over):
     return base
 
 
-def test_backend_for_tier_defaults():
+def test_the_backend_knob_is_gone():
+    """D2: JAX everywhere; the knob is removed entirely rather than defaulted."""
     cfg = RuntimeConfig(**_local_kwargs())
-    assert cfg.backend_for_tier("local") == "tensorflow"
-    assert cfg.backend_for_tier("cloud_cpu") == "jax"
-    assert cfg.backend_for_tier("cloud_gpu") == "jax"
+    assert not hasattr(cfg, "backend_for_tier")
+    assert not hasattr(cfg, "optimization_backend_local")
+    assert not hasattr(cfg, "optimization_backend_cloud_cpu")
+    assert not hasattr(cfg, "optimization_backend_cloud_gpu")
 
 
 def test_cloud_tier_requires_gcs_registry_and_cloud_run_fields():

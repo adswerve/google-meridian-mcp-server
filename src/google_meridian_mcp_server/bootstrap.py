@@ -60,7 +60,6 @@ def build_executor(
             registry,
             max_parallel=cfg.optimization_max_parallel,
             heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
-            backend=cfg.optimization_backend_local,
         )
     from google_meridian_mcp_server.execution.cloud_run_executor import (
         CloudRunJobExecutor,

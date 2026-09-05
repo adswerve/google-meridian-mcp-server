@@ -16,6 +16,7 @@ from google_meridian_mcp_server.domain.optimization import (
     RunPhase,
     RunStatus,
 )
+from google_meridian_mcp_server.execution.base_subprocess import MERIDIAN_BACKEND
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.persistence.cache import (
     DiscoveryCache,
@@ -173,11 +174,10 @@ def run_worker(
     *,
     registry: OptimizationRunRegistry,
     catalog: Any,
-    backend: str,
     heartbeat_interval: float = 8.0,
 ) -> int:
-    # NOTE: `backend` is applied via MERIDIAN_BACKEND before the meridian import
-    # in main(); kept in the signature for provenance/symmetry.
+    # The backend is no longer a parameter: main() pins MERIDIAN_BACKEND to the
+    # module constant before any meridian import (D2).
     record = registry.get_record(run_id)
     started = _now()
     registry.write_state(
@@ -281,7 +281,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv
     if argv[1:2] == ["analysis"]:
         _start_parent_death_guard()
-        os.environ.setdefault("MERIDIAN_BACKEND", "tensorflow")  # not self-referential
+        os.environ["MERIDIAN_BACKEND"] = MERIDIAN_BACKEND  # before any meridian import
+        os.environ.setdefault("MERIDIAN_ENABLE_JAX_X64", "true")
         from google_meridian_mcp_server.config import load_config
 
         return run_analysis(
@@ -290,10 +291,9 @@ def main(argv: list[str] | None = None) -> int:
 
     _start_parent_death_guard()
     run_id = os.environ["OPTIMIZATION_RUN_ID"]
-    backend = os.environ.get("MERIDIAN_BACKEND", "tensorflow")
-    os.environ["MERIDIAN_BACKEND"] = (
-        backend  # set before importing meridian (catalog does)
-    )
+    # Set before importing meridian (build_worker_catalog does).
+    os.environ["MERIDIAN_BACKEND"] = MERIDIAN_BACKEND
+    os.environ.setdefault("MERIDIAN_ENABLE_JAX_X64", "true")
 
     from google_meridian_mcp_server.bootstrap import build_registry
     from google_meridian_mcp_server.config import load_config
@@ -303,7 +303,6 @@ def main(argv: list[str] | None = None) -> int:
         run_id,
         registry=build_registry(cfg),
         catalog=build_worker_catalog(cfg),
-        backend=backend,
     )
 
 

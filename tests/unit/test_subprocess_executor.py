@@ -283,13 +283,14 @@ def test_subprocess_executor_builds_worker_command(tmp_path, monkeypatch):
         reg,
         max_parallel=2,
         heartbeat_stale_seconds=60,
-        backend="jax",
         log_root=tmp_path / "logs",
     )
     reg.create(_run("a"))
     ex.submit(_run("a"))
     assert "google_meridian_mcp_server.execution.worker" in captured["cmd"]
     assert captured["env"]["OPTIMIZATION_RUN_ID"] == "a"
+    # MERIDIAN_BACKEND comes from the module constant in base_subprocess.py,
+    # not a per-executor parameter.
     assert captured["env"]["MERIDIAN_BACKEND"] == "jax"
 
 
@@ -310,7 +311,6 @@ def test_launch_redirects_and_new_session(monkeypatch, tmp_path):
         reg,
         max_parallel=1,
         heartbeat_stale_seconds=60,
-        backend="tensorflow",
         log_root=tmp_path,
     )
     ex._launch(_run("r1"))
@@ -338,9 +338,7 @@ def test_reconcile_orphans_fails_running_and_queued_unconditionally(tmp_path):
     reg.create(_run("queued-run"))
     reg.write_state(OptimizationRunState(run_id="queued-run", status=RunStatus.QUEUED))
 
-    ex = AsyncSubprocessExecutor(
-        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="tensorflow"
-    )
+    ex = AsyncSubprocessExecutor(reg, max_parallel=2, heartbeat_stale_seconds=60)
     ex.reconcile_orphans()
 
     for run_id in ("running-run", "queued-run"):
@@ -356,9 +354,7 @@ def test_reconcile_orphans_does_not_touch_terminal_runs(tmp_path):
     reg.create(_run("done-run"))
     reg.write_state(OptimizationRunState(run_id="done-run", status=RunStatus.COMPLETED))
 
-    ex = AsyncSubprocessExecutor(
-        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="tensorflow"
-    )
+    ex = AsyncSubprocessExecutor(reg, max_parallel=2, heartbeat_stale_seconds=60)
     ex.reconcile_orphans()
 
     assert reg.get_state("done-run").status == RunStatus.COMPLETED
@@ -410,9 +406,7 @@ def test_terminate_reaps_child_after_kill(monkeypatch, tmp_path):
     """F9: _terminate reaps the child after SIGKILL so it doesn't linger as
     a zombie."""
     reg = LocalOptimizationRunRegistry(str(tmp_path))
-    ex = AsyncSubprocessExecutor(
-        reg, max_parallel=1, heartbeat_stale_seconds=60, backend="tensorflow"
-    )
+    ex = AsyncSubprocessExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
     monkeypatch.setattr(ex, "kill_group", lambda pid: None)
 
     waited = {}
@@ -432,9 +426,7 @@ def test_terminate_suppresses_wait_exceptions(monkeypatch, tmp_path):
     """F9 regression: a wait() failure (e.g. TimeoutExpired) must not escape
     _terminate -- it's best-effort zombie reaping, not a hard requirement."""
     reg = LocalOptimizationRunRegistry(str(tmp_path))
-    ex = AsyncSubprocessExecutor(
-        reg, max_parallel=1, heartbeat_stale_seconds=60, backend="tensorflow"
-    )
+    ex = AsyncSubprocessExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
     monkeypatch.setattr(ex, "kill_group", lambda pid: None)
 
     class _Handle:

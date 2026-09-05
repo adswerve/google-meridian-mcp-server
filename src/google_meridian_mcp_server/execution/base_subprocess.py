@@ -10,6 +10,10 @@ from typing import IO
 
 WORKER_MODULE = "google_meridian_mcp_server.execution.worker"
 DEFAULT_WORKER_ARGV_PREFIX = [sys.executable, "-m", WORKER_MODULE]
+# D2: JAX is the only supported backend. Set EXPLICITLY as a module constant
+# rather than relying on Meridian's own default -- that default has already
+# flipped once (TensorFlow -> JAX in 2.0.0) and could flip again.
+MERIDIAN_BACKEND = "jax"
 # Applied with setdefault: these carry OPERATOR intent, so an operator-set
 # value wins.
 _HYGIENE_DEFAULTS = {
@@ -23,6 +27,9 @@ _HYGIENE_DEFAULTS = {
 # env_base and extra, so explicit executor configuration still wins.
 _HYGIENE_OVERRIDES = {
     "TF_CPP_MIN_LOG_LEVEL": "3",
+    "MERIDIAN_BACKEND": MERIDIAN_BACKEND,
+    # D3: 64-bit precision is pinned, never inherited from a library default.
+    "MERIDIAN_ENABLE_JAX_X64": "true",
 }
 
 

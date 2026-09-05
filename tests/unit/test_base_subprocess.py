@@ -75,3 +75,18 @@ def test_kill_group_reaps_session_leader():
     BaseSubprocessExecutor.kill_group(p.pid)
     p.wait(timeout=5)
     assert p.returncode is not None
+
+
+def test_child_env_forces_jax_and_x64_regardless_of_ambient_environment(monkeypatch):
+    """D2/D3: JAX everywhere, x64 explicitly on. Relying on an upstream default
+    that has already flipped once (TensorFlow -> JAX in Meridian 2.0) would be
+    careless, and MERIDIAN_ENABLE_JAX_X64 must be pinned rather than inherited
+    from a library default."""
+    from google_meridian_mcp_server.execution.base_subprocess import MERIDIAN_BACKEND
+
+    monkeypatch.setenv("MERIDIAN_BACKEND", "tensorflow")
+    monkeypatch.delenv("MERIDIAN_ENABLE_JAX_X64", raising=False)
+    env = BaseSubprocessExecutor().child_env()
+    assert MERIDIAN_BACKEND == "jax"
+    assert env["MERIDIAN_BACKEND"] == "jax"
+    assert env["MERIDIAN_ENABLE_JAX_X64"] == "true"

@@ -52,7 +52,6 @@ async def real_runner():
             max_response_bytes=64 * 1024 * 1024,
             workdir_root=tmp_root / "workdirs",
             env_base={
-                "MERIDIAN_BACKEND": "tensorflow",
                 "PERSISTENCE_BACKEND": "local",
                 "LOCAL_MODELS_ROOT": "models/_validation",
                 "MODEL_CACHE_ROOT": str(tmp_root / "model_cache"),

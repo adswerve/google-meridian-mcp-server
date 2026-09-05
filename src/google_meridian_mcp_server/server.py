@@ -76,7 +76,6 @@ async def _lifespan(server: FastMCP):
         max_response_bytes=cfg.analysis_max_response_bytes,
         workdir_root=cfg.analysis_workdir_root,
         env_base={
-            "MERIDIAN_BACKEND": os.getenv("MERIDIAN_BACKEND", "tensorflow"),
             "PERSISTENCE_BACKEND": cfg.persistence_backend,
             **(
                 {"LOCAL_MODELS_ROOT": cfg.local_models_root}
