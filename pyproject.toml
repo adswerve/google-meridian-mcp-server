@@ -9,7 +9,7 @@ description = "FastMCP server exposing Google Meridian MMM analysis to agents"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
-    "fastmcp>=3.4.3,<4",
+    "fastmcp>=4,<5",
     "google-meridian[schema]==1.7.0",
     "google-cloud-storage>=3.12,<4",
     "google-cloud-run>=0.16.1,<1",
