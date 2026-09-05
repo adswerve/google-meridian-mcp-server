@@ -13,7 +13,7 @@
       "."
     ],
     "dependencies": [
-      "google-meridian[schema]==1.7.0"
+      "google-meridian[schema,geox]>=2.0,<3"
     ]
   },
   "deployment": {

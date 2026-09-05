@@ -10,10 +10,19 @@ from typing import IO
 
 WORKER_MODULE = "google_meridian_mcp_server.execution.worker"
 DEFAULT_WORKER_ARGV_PREFIX = [sys.executable, "-m", WORKER_MODULE]
+# Applied with setdefault: these carry OPERATOR intent, so an operator-set
+# value wins.
 _HYGIENE_DEFAULTS = {
-    "TF_CPP_MIN_LOG_LEVEL": "3",
     "TF_NUM_INTRAOP_THREADS": "2",
     "TF_NUM_INTEROP_THREADS": "2",
+}
+# Applied unconditionally. os.environ stopped being a proxy for operator
+# intent the moment a library began writing to it: jax/__init__.py line 17
+# runs os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '1') at import time, and
+# jax is a CORE dependency of Meridian 2.0. Both tables are applied BEFORE
+# env_base and extra, so explicit executor configuration still wins.
+_HYGIENE_OVERRIDES = {
+    "TF_CPP_MIN_LOG_LEVEL": "3",
 }
 
 
@@ -31,6 +40,7 @@ class BaseSubprocessExecutor:
         env = dict(os.environ)
         for k, v in _HYGIENE_DEFAULTS.items():
             env.setdefault(k, v)  # never clobber operator-set values
+        env.update(_HYGIENE_OVERRIDES)  # library-set values are not operator intent
         env.update(self._env_base)
         # Captured HERE, in the parent, at spawn time -- before fork+exec and
         # therefore before the child's own import chain (0.5-2s) can run. The
