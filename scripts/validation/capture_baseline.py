@@ -24,6 +24,21 @@ without one is known-incomplete.
 Expected wall-clock: 27 real optimizer subprocess runs per label (13 for
 national-revenue, 14 for geo-revenue) plus ~250 analysis calls across the
 eight fixtures. Tens of minutes per label, six labels.
+
+Snapshot marker contract, for the (separate) diff tool: some case payloads
+carry a top-level ``known_racy_fields`` key -- a list of dot-separated
+object-key paths (e.g. ``"status.status"``) into that SAME snapshot, naming
+fields whose value may legitimately differ between labels because of an
+inherent race (see ``lifecycle__cancel``). The diff tool MUST (1) classify a
+change at any listed path as REVIEW rather than FAIL, and (2) EXCLUDE the
+``known_racy_fields`` key itself from the payload comparison -- otherwise a
+later change to the marker list (one more racy field added or removed) would
+misread as a payload diff on a key that was never data. Path syntax is
+deliberately minimal: only dot-separated object-key paths are supported.
+There is no escaping for a key that itself contains a literal dot, and no
+syntax for indexing through a list (e.g. a racy field inside a ``runs[]``
+entry) -- neither is needed by any case today. A future case that needs
+either must extend this contract explicitly; do not assume it works.
 """
 
 from __future__ import annotations
@@ -36,6 +51,7 @@ import os
 import platform
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -109,17 +125,41 @@ def is_valid_snapshot(path: Path) -> bool:
     return True
 
 
-def sweep_stale_tmp_files(label_dir: Path) -> None:
-    """Remove ``*.tmp`` orphans left by a killed ``write_snapshot`` (MINOR 8).
+# MINOR New-4: 5 minutes is far longer than any single write_snapshot call
+# takes today (a case payload is at most a few MB of JSON; writing and
+# renaming it is a sub-second operation), so a .tmp file older than this
+# cannot be a live in-flight write from a concurrently running capture --
+# only a killed process could leave one this old. That keeps the sweep safe
+# for the module's own documented "re-run one case" workflow, where a second
+# `capture()` call can legitimately be writing into the SAME label directory
+# while this one starts up.
+_STALE_TMP_AGE_SECONDS = 300.0
 
-    Safe to call unconditionally: a live capture never leaves a ``.tmp`` file
-    on disk between calls to ``write_snapshot`` (it is renamed away
-    immediately via ``os.replace``), so anything found here is stale.
+
+def sweep_stale_tmp_files(
+    label_dir: Path, *, max_age_seconds: float = _STALE_TMP_AGE_SECONDS
+) -> None:
+    """Remove genuinely stale ``*.tmp`` orphans left by a killed
+    ``write_snapshot`` (MINOR 8).
+
+    NOT a blanket sweep of every ``.tmp`` under the label: two ``capture()``
+    calls can legitimately share a label directory at the same time (e.g. one
+    finishing a full run while another re-captures a single ``--cases`` case
+    started via the module's own documented resume workflow), and an
+    unconditional ``rglob`` sweep would delete the other's in-flight ``.tmp``
+    out from under it, making its ``os.replace`` raise ``FileNotFoundError``.
+    Only files older than ``max_age_seconds`` are removed.
     """
     if not label_dir.exists():
         return
+    now = time.time()
     for tmp_path in label_dir.rglob("*.tmp"):
-        tmp_path.unlink(missing_ok=True)
+        try:
+            age = now - tmp_path.stat().st_mtime
+        except OSError:
+            continue  # raced with another process removing/renaming it
+        if age >= max_age_seconds:
+            tmp_path.unlink(missing_ok=True)
 
 
 def write_snapshot(path: Path, payload: Any) -> None:
@@ -205,31 +245,94 @@ def _describe_env_diff(previous: dict[str, Any], current: dict[str, Any]) -> lis
     return diffs
 
 
-def check_capture_environment(
-    label_dir: Path, current: dict[str, Any], *, force: bool
-) -> str | None:
-    """Refuse to resume a label under a different environment (IMPORTANT 3).
+def _read_capture_environment(path: Path) -> dict[str, Any] | None:
+    """Like ``is_valid_snapshot``, applied to the env sidecar (MINOR New-2):
+    ``None`` means "unreadable/corrupt", not "matches nothing in particular"
+    -- callers must treat that as an unverifiable environment, not a match.
+    """
+    try:
+        text = path.read_text()
+        if not text.strip():
+            return None
+        data = json.loads(text)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
-    Returns an error message (naming what changed) if ``label_dir`` already
-    has a recorded environment that disagrees with ``current`` and ``force``
-    was not passed. Returns ``None`` when there is nothing to compare yet
-    (fresh label), the environment matches, or ``--force`` overrides it.
+
+_FULL_RECAPTURE_HOWTO = (
+    "Re-run with --force and NO --tools/--cases/--variants to fully "
+    "recapture this label under the new environment (this rewrites the "
+    "sidecar), or choose a fresh --label."
+)
+
+
+def check_capture_environment(
+    label_dir: Path, current: dict[str, Any], *, force: bool, has_selector: bool
+) -> str | None:
+    """Refuse to resume a label under a different (or unverifiable)
+    environment than it was captured under (IMPORTANT 3, MINOR New-2).
+
+    ``has_selector`` must be True whenever this run is narrowed by
+    ``--tools``/``--cases``/``--variants`` -- i.e. it is NOT a full-label
+    recapture. Three situations, per IMPORTANT New-1:
+
+      1. No ``--force``: always refuse on a real mismatch or an unreadable
+         sidecar.
+      2. ``--force`` WITH a selector: still refuse. A selective recapture
+         under a different environment would leave two environments mixed
+         into one label -- exactly the failure this guard exists to
+         prevent -- so ``--force`` does not override it. Only a full,
+         unfiltered ``--force`` may.
+      3. ``--force`` with NO selector: a legitimate whole-label recapture.
+         The label truly becomes the new environment: return ``None`` (the
+         caller rewrites the sidecar on the first snapshot actually
+         written).
+
+    Returns ``None`` when there is nothing to refuse: a fresh label (no
+    sidecar yet), a sidecar whose recorded environment matches ``current``,
+    or situation 3 above.
     """
     path = label_dir / _ENV_SIDECAR_NAME
     if not path.exists():
         return None
-    previous = json.loads(path.read_text())
+    previous = _read_capture_environment(path)
+    if previous is None:
+        if force and not has_selector:
+            return None
+        if force:
+            return (
+                f"capture environment sidecar for label {label_dir.name!r} is "
+                f"corrupt or unreadable ({path}), so its environment cannot be "
+                "verified -- and --force was passed WITH a selector "
+                "(--tools/--cases/--variants), which only recaptures specific "
+                "cases and cannot safely override an unverifiable environment. "
+                f"{_FULL_RECAPTURE_HOWTO}"
+            )
+        return (
+            f"capture environment sidecar for label {label_dir.name!r} is corrupt "
+            f"or unreadable ({path}), so its environment cannot be verified. "
+            f"Refusing to resume into an unknown-environment label. "
+            f"{_FULL_RECAPTURE_HOWTO}"
+        )
     if previous == current:
+        return None
+    if force and not has_selector:
         return None
     diffs = "; ".join(_describe_env_diff(previous, current))
     if force:
-        return None
+        return (
+            f"capture environment changed for label {label_dir.name!r} since it "
+            f"was first captured: {diffs}. --force was passed WITH a selector "
+            "(--tools/--cases/--variants), which only recaptures specific cases "
+            "-- doing that under a different environment would leave two "
+            f"environments mixed into one label. {_FULL_RECAPTURE_HOWTO}"
+        )
     return (
         f"capture environment changed for label {label_dir.name!r} since it was "
         f"first captured: {diffs}. Refusing to resume into a mixed-environment "
-        "label -- that would silently break the one-variable-per-diff "
-        "guarantee. Re-run with --force to recapture this label under the new "
-        "environment, or choose a fresh --label."
+        f"label -- that would silently break the one-variable-per-diff "
+        f"guarantee. {_FULL_RECAPTURE_HOWTO}"
     )
 
 
@@ -419,8 +522,27 @@ async def run_lifecycle_case(
         # side of the race won. Poll to a TERMINAL state (bounded, same
         # machinery as everywhere else) so we snapshot a settled outcome
         # rather than an arbitrary intermediate one.
-        status = await _poll(client, run_id, timeout=poll_timeout)
-        deleted = await call_tool(client, "delete_optimization", {"run_id": run_id})
+        #
+        # MINOR New-3: the reap must happen regardless of whether that poll
+        # succeeds -- otherwise a run that never reaches a terminal state
+        # fails the case AND leaks the run (delete_optimization used to sit
+        # after _poll unconditionally succeeding). Same non-masking pattern
+        # as MINOR 7's run_optimization_case: capture the primary outcome or
+        # error first, always attempt the reap afterwards, only log its
+        # failure, and let the primary result/error win.
+        status = None
+        primary_error: CaptureFailure | None = None
+        try:
+            status = await _poll(client, run_id, timeout=poll_timeout)
+        except CaptureFailure as exc:
+            primary_error = exc
+        try:
+            deleted = await call_tool(client, "delete_optimization", {"run_id": run_id})
+        except CaptureFailure as reap_exc:
+            print(f"  WARN: failed to reap run {run_id} after cancel: {reap_exc}")
+            deleted = None
+        if primary_error is not None:
+            raise primary_error
         return {
             "submit": submit,
             "canceled": canceled,
@@ -531,6 +653,11 @@ async def capture(
     if not specs:
         raise SystemExit("no variants requested")
 
+    # IMPORTANT New-1: --tools/--cases/--variants all narrow this run to less
+    # than the whole label; whether one of them was used determines what
+    # --force is allowed to override (see check_capture_environment).
+    has_selector = bool(tools or cases_filter or variants_selected)
+
     label_dir = Path(out_root) / label
     sweep_stale_tmp_files(label_dir)  # MINOR 8: clear orphans from a killed run
 
@@ -538,7 +665,9 @@ async def capture(
     # environment than it was started with -- checked BEFORE touching any
     # case, using the worker environment the tools will actually run under.
     current_env = capture_environment(transport, worker_env())
-    env_conflict = check_capture_environment(label_dir, current_env, force=force)
+    env_conflict = check_capture_environment(
+        label_dir, current_env, force=force, has_selector=has_selector
+    )
     if env_conflict:
         print(env_conflict)
         return 1

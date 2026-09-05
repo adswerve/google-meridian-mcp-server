@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 import types
 
 import pytest
@@ -376,8 +377,20 @@ async def test_lifecycle_cancel_polls_to_terminal_and_flags_the_racy_field(monke
 # ---------------------------------------------------------------------------
 
 
-def test_default_poll_timeout_matches_todays_effective_ceiling():
-    assert cb._DEFAULT_POLL_TIMEOUT == 120.0
+def test_cli_poll_timeout_defaults_to_the_module_constant_and_reaches_poll():
+    """Replaces a bare constant echo (asserted nothing behavioural; only
+    failed pre-fix because the symbol was renamed). Asserts the actual CLI
+    wiring: --poll-timeout's default resolves from the same constant _poll
+    itself defaults to, so changing one without the other would be caught."""
+    args = cb._parse_args(["--label", "x"])
+    assert args.poll_timeout == cb._DEFAULT_POLL_TIMEOUT
+
+    import inspect
+
+    assert (
+        inspect.signature(cb._poll).parameters["timeout"].default
+        == cb._DEFAULT_POLL_TIMEOUT
+    )
 
 
 async def test_poll_respects_a_custom_timeout(monkeypatch):
@@ -396,17 +409,30 @@ async def test_poll_respects_a_custom_timeout(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_sweep_stale_tmp_files_removes_orphans(tmp_path):
+def test_sweep_stale_tmp_files_removes_only_old_orphans(tmp_path):
+    """MINOR New-4: an unconditional sweep would delete a SECOND capture()'s
+    in-flight .tmp when both write into the same label directory (the
+    module's own documented "re-run one case" resume workflow), making its
+    os.replace raise FileNotFoundError. Only files older than the staleness
+    threshold may be removed."""
     label_dir = tmp_path / "L"
     (label_dir / "v1").mkdir(parents=True)
-    stale = label_dir / "v1" / "get_model_fit__default.json.tmp"
+
+    stale = label_dir / "v1" / "old__default.json.tmp"
     stale.write_text("{}")
+    old_time = time.time() - cb._STALE_TMP_AGE_SECONDS - 10
+    os.utime(stale, (old_time, old_time))
+
+    live = label_dir / "v1" / "in_flight__default.json.tmp"
+    live.write_text("{}")  # e.g. another capture() writing right now
+
     kept = label_dir / "v1" / "get_model_fit__default.json"
     kept.write_text("{}")
 
     cb.sweep_stale_tmp_files(label_dir)
 
     assert not stale.exists()
+    assert live.exists()
     assert kept.exists()
 
 
@@ -431,6 +457,8 @@ async def test_capture_recaptures_a_corrupt_or_empty_snapshot_instead_of_skippin
     path.write_text("")  # truncated to zero bytes, as in the empirical repro
     stray_tmp = path.parent / "leftover.tmp"
     stray_tmp.write_text("junk")
+    old_time = time.time() - cb._STALE_TMP_AGE_SECONDS - 10
+    os.utime(stray_tmp, (old_time, old_time))  # old enough for the sweep (MINOR New-4)
 
     rc = await cb.capture(
         label="L",
@@ -544,7 +572,9 @@ async def test_capture_refuses_to_resume_a_label_after_the_environment_changed(
     assert rc2 == 1
     assert not cb.case_path(tmp_path, "L", "v1", case2).exists()
 
-    # --force overrides the refusal.
+    # IMPORTANT New-1: --force alone does NOT override a mismatch when this
+    # run is narrowed by a selector (here, variants_selected=True) -- see the
+    # dedicated three-branch test below for the full rule.
     rc3 = await cb.capture(
         label="L",
         transport="inprocess",
@@ -557,8 +587,8 @@ async def test_capture_refuses_to_resume_a_label_after_the_environment_changed(
         out_root=tmp_path,
         variants_selected=True,
     )
-    assert rc3 == 0
-    assert cb.case_path(tmp_path, "L", "v1", case2).exists()
+    assert rc3 == 1
+    assert not cb.case_path(tmp_path, "L", "v1", case2).exists()
 
 
 async def test_capture_counts_failures_and_exits_nonzero(tmp_path, monkeypatch):
@@ -586,3 +616,229 @@ async def test_capture_counts_failures_and_exits_nonzero(tmp_path, monkeypatch):
     assert rc == 1
     assert not cb.case_path(tmp_path, "L", "v1", CASE).exists()
     assert not (tmp_path / "L" / "manifest.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT New-1 -- --force must not launder a mixed-environment label
+# through a selector; only a full, unfiltered --force may recapture it.
+# ---------------------------------------------------------------------------
+
+
+async def test_force_environment_override_requires_no_selector(tmp_path, monkeypatch):
+    """Reproduces the reviewer's finding: force=True + cases_filter under a
+    changed backend used to return rc 0 and rewrite the sidecar while an
+    existing snapshot stayed captured under the OLD backend -- permanently
+    laundering a mixed-environment label. Covers all three situations from
+    the fix: force+selector (still refused), force+no selector (legitimate
+    full recapture), and plain no-force (still refused afterwards, i.e. the
+    full recapture did not leave the guard permanently open)."""
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    _patch_client(
+        monkeypatch,
+        _FakeCaptureClient(
+            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
+        ),
+    )
+    # A full (no-selector) run reaches the real manifest-building code, which
+    # needs real fixtures on disk; stub it out since this test is only about
+    # the environment guard, not manifest content.
+    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
+    monkeypatch.setattr(
+        cb, "write_manifest", lambda label_dir, manifest: label_dir / "manifest.json"
+    )
+
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "tensorflow"})
+    rc0 = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc0 == 0
+    sidecar = tmp_path / "L" / cb._ENV_SIDECAR_NAME
+    original_env = json.loads(sidecar.read_text())
+
+    case2 = ToolCase("get_channel_summary", "cpik", {}, frozenset(), "service")
+    _patch_matrix(monkeypatch, ["v1"], [case2])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+
+    # (1) --force WITH a selector (--cases): must still refuse, not launder.
+    rc_selector = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=["cpik"],
+        compute_tier=None,
+        force=True,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc_selector == 1
+    assert not cb.case_path(tmp_path, "L", "v1", case2).exists()
+    assert json.loads(sidecar.read_text()) == original_env  # NOT laundered
+
+    # (2) --force with NO selector at all: a legitimate whole-label recapture.
+    rc_full = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=True,
+        out_root=tmp_path,
+        variants_selected=False,
+    )
+    assert rc_full == 0
+    assert cb.case_path(tmp_path, "L", "v1", case2).exists()
+    new_env = json.loads(sidecar.read_text())
+    assert new_env != original_env
+    assert new_env["worker_env"]["MERIDIAN_BACKEND"] == "jax"
+
+    # (3) No --force at all, under yet another environment: still refused --
+    # the full recapture in (2) did not leave this guard permanently open.
+    case3 = ToolCase("get_channel_summary", "marginal_roi", {}, frozenset(), "service")
+    _patch_matrix(monkeypatch, ["v1"], [case3])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "tensorflow"})
+    rc_no_force = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc_no_force == 1
+    assert not cb.case_path(tmp_path, "L", "v1", case3).exists()
+
+
+# ---------------------------------------------------------------------------
+# MINOR New-2 -- a corrupt sidecar must refuse cleanly, not crash.
+# ---------------------------------------------------------------------------
+
+
+async def test_capture_refuses_on_a_corrupt_sidecar_instead_of_crashing(
+    tmp_path, monkeypatch
+):
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    _patch_client(
+        monkeypatch,
+        _FakeCaptureClient(
+            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
+        ),
+    )
+    label_dir = tmp_path / "L"
+    label_dir.mkdir(parents=True)
+    (label_dir / cb._ENV_SIDECAR_NAME).write_text("{oops")
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+    assert rc == 1
+    assert not cb.case_path(tmp_path, "L", "v1", CASE).exists()
+
+
+async def test_force_with_no_selector_recovers_from_a_corrupt_sidecar(
+    tmp_path, monkeypatch
+):
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    _patch_client(
+        monkeypatch,
+        _FakeCaptureClient(
+            {"get_model_overview": _OVERVIEW_OK, "get_channel_summary": {"ok": True}}
+        ),
+    )
+    monkeypatch.setattr(cb, "build_manifest", lambda **kwargs: {"stub": True})
+    monkeypatch.setattr(
+        cb, "write_manifest", lambda label_dir, manifest: label_dir / "manifest.json"
+    )
+    label_dir = tmp_path / "L"
+    label_dir.mkdir(parents=True)
+    (label_dir / cb._ENV_SIDECAR_NAME).write_text("{oops")
+
+    rc = await cb.capture(
+        label="L",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=True,
+        out_root=tmp_path,
+        variants_selected=False,
+    )
+    assert rc == 0
+    assert cb.case_path(tmp_path, "L", "v1", CASE).exists()
+    json.loads((label_dir / cb._ENV_SIDECAR_NAME).read_text())  # valid again
+
+
+# ---------------------------------------------------------------------------
+# MINOR New-3 -- the cancel branch must reap unconditionally, even when the
+# post-cancel poll never reaches a terminal state.
+# ---------------------------------------------------------------------------
+
+
+async def test_lifecycle_cancel_reaps_even_when_the_poll_times_out(monkeypatch):
+    monkeypatch.setattr(cb.asyncio, "sleep", _no_sleep)
+    deleted_run_ids = []
+
+    class _Client:
+        async def call_tool(self, name, args):
+            if name == "run_optimization":
+                return _Result({"run_id": "r1"})
+            if name == "cancel_optimization":
+                return _Result({"run_id": "r1", "status": "canceled"})
+            if name == "get_optimization_status":
+                return _Result({"run_id": "r1", "status": "running"})  # never terminal
+            if name == "delete_optimization":
+                deleted_run_ids.append(args["run_id"])
+                return _Result({"run_id": "r1", "deleted": True})
+            raise AssertionError(name)
+
+    with pytest.raises(cb.CaptureFailure, match="did not reach a terminal status"):
+        await cb.run_lifecycle_case(
+            _Client(), "m", "cancel", compute_tier=None, poll_timeout=0.5
+        )
+
+    assert deleted_run_ids == ["r1"]  # reaped despite the poll timeout
+
+
+async def test_lifecycle_cancel_reap_failure_does_not_mask_the_terminal_status():
+    class _Client:
+        async def call_tool(self, name, args):
+            if name == "run_optimization":
+                return _Result({"run_id": "r1"})
+            if name == "cancel_optimization":
+                return _Result({"run_id": "r1", "status": "canceled"})
+            if name == "get_optimization_status":
+                return _Result({"run_id": "r1", "status": "completed"})
+            if name == "delete_optimization":
+                raise TimeoutError("reap blew up")
+            raise AssertionError(name)
+
+    out = await cb.run_lifecycle_case(_Client(), "m", "cancel", compute_tier=None)
+    assert out["status"]["status"] == "completed"
+    assert out["deleted"] is None
