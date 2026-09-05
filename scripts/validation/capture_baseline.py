@@ -31,7 +31,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
+import platform
 import sys
 import tempfile
 from pathlib import Path
@@ -39,7 +41,12 @@ from typing import Any
 
 from scripts.generate_validation_models import DEFAULT_OUT_ROOT
 from scripts.validation import matrix
-from scripts.validation.manifest import build_manifest, write_manifest
+from scripts.validation.manifest import (
+    _RECORDED_ENV_KEYS,
+    build_manifest,
+    package_versions,
+    write_manifest,
+)
 from scripts.validation.matrix import ToolCase
 from scripts.validation.normalize import normalize
 from scripts.validation.payloads import extract
@@ -47,9 +54,25 @@ from scripts.validation.remote_smoke import normalize_mcp_url
 
 BASELINE_ROOT = DEFAULT_OUT_ROOT / "_baseline"
 
-_POLL_ATTEMPTS = 240  # ~120s; real Meridian optimize takes seconds on fixtures
 _POLL_INTERVAL = 0.5
+_DEFAULT_POLL_TIMEOUT = 120.0  # was hard-coded as 240 attempts * 0.5s
 _TERMINAL = {"completed", "failed", "canceled"}
+
+# Sidecar recording the environment a label was FIRST captured under (spec
+# finding IMPORTANT 3). Deliberately separate from manifest.json: the
+# manifest is written last and only for a complete label, while this must be
+# written on the very first snapshot so a later resume under a different
+# MERIDIAN_BACKEND/package set can be refused instead of silently mixing two
+# environments into one "label".
+_ENV_SIDECAR_NAME = "capture_env.json"
+
+# IMPORTANT 5: after cancel_optimization the snapshotted get_optimization_status
+# can legitimately land on either "canceled" or "completed" depending on which
+# side won the race. This key, alongside the snapshot, tells the (separate)
+# diff tool which dotted paths inside THIS snapshot are known-racy so it can
+# classify a change there as REVIEW instead of FAIL, without hiding the value
+# and without adding it to normalize.VOLATILE_FIELDS.
+KNOWN_RACY_FIELDS_KEY = "known_racy_fields"
 
 
 class CaptureFailure(Exception):
@@ -63,6 +86,40 @@ class CaptureFailure(Exception):
 
 def case_path(root: Path, label: str, variant_key: str, case: ToolCase) -> Path:
     return Path(root) / label / variant_key / f"{case.tool}__{case.name}.json"
+
+
+def is_valid_snapshot(path: Path) -> bool:
+    """A file is only a legitimate skip if it is a non-empty, parseable JSON
+    snapshot (spec finding CRITICAL 1).
+
+    ``path.exists()`` alone is not enough: a truncated/killed write (or a
+    zero-byte file from any other cause) previously read as "already
+    captured", the label read as complete, and the diff tool hit a JSON
+    decode error against data that was never really there.
+    """
+    if not path.exists():
+        return False
+    try:
+        text = path.read_text()
+        if not text.strip():
+            return False
+        json.loads(text)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def sweep_stale_tmp_files(label_dir: Path) -> None:
+    """Remove ``*.tmp`` orphans left by a killed ``write_snapshot`` (MINOR 8).
+
+    Safe to call unconditionally: a live capture never leaves a ``.tmp`` file
+    on disk between calls to ``write_snapshot`` (it is renamed away
+    immediately via ``os.replace``), so anything found here is stale.
+    """
+    if not label_dir.exists():
+        return
+    for tmp_path in label_dir.rglob("*.tmp"):
+        tmp_path.unlink(missing_ok=True)
 
 
 def write_snapshot(path: Path, payload: Any) -> None:
@@ -119,6 +176,69 @@ def worker_env() -> dict[str, str]:
     return BaseSubprocessExecutor().child_env()
 
 
+def capture_environment(
+    transport: str, worker_environment: dict[str, str]
+) -> dict[str, Any]:
+    """The environment-identifying material for IMPORTANT 3's sidecar.
+
+    Deliberately the SAME material ``manifest.build_manifest`` already
+    records (package versions + the recorded worker-env keys), reusing
+    ``manifest``'s own helpers rather than inventing a parallel notion of
+    "environment". Excludes ``manifest.probe_fixtures``: that is per-fixture
+    provenance, not per-label environment, and re-running it on every
+    ``capture()`` call (including single-case reruns) would be needlessly
+    expensive.
+    """
+    return {
+        "transport": transport,
+        "python": platform.python_version(),
+        "packages": package_versions(),
+        "worker_env": {key: worker_environment.get(key) for key in _RECORDED_ENV_KEYS},
+    }
+
+
+def _describe_env_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    diffs = []
+    for key in sorted(set(previous) | set(current)):
+        if previous.get(key) != current.get(key):
+            diffs.append(f"{key}: {previous.get(key)!r} -> {current.get(key)!r}")
+    return diffs
+
+
+def check_capture_environment(
+    label_dir: Path, current: dict[str, Any], *, force: bool
+) -> str | None:
+    """Refuse to resume a label under a different environment (IMPORTANT 3).
+
+    Returns an error message (naming what changed) if ``label_dir`` already
+    has a recorded environment that disagrees with ``current`` and ``force``
+    was not passed. Returns ``None`` when there is nothing to compare yet
+    (fresh label), the environment matches, or ``--force`` overrides it.
+    """
+    path = label_dir / _ENV_SIDECAR_NAME
+    if not path.exists():
+        return None
+    previous = json.loads(path.read_text())
+    if previous == current:
+        return None
+    diffs = "; ".join(_describe_env_diff(previous, current))
+    if force:
+        return None
+    return (
+        f"capture environment changed for label {label_dir.name!r} since it was "
+        f"first captured: {diffs}. Refusing to resume into a mixed-environment "
+        "label -- that would silently break the one-variable-per-diff "
+        "guarantee. Re-run with --force to recapture this label under the new "
+        "environment, or choose a fresh --label."
+    )
+
+
+def record_capture_environment(label_dir: Path, current: dict[str, Any]) -> None:
+    path = label_dir / _ENV_SIDECAR_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(current, indent=2, sort_keys=True))
+
+
 def selected_cases(
     cases: list[ToolCase], *, tools: list[str] | None, cases_filter: list[str] | None
 ) -> list[ToolCase]:
@@ -167,33 +287,62 @@ def _submit_args(args: dict, compute_tier: str | None) -> dict:
     return submit
 
 
-async def _poll(client, run_id: str) -> dict:
+async def _poll(client, run_id: str, *, timeout: float = _DEFAULT_POLL_TIMEOUT) -> dict:
+    attempts = max(1, math.ceil(timeout / _POLL_INTERVAL))
     status: dict = {}
-    for _ in range(_POLL_ATTEMPTS):
+    for _ in range(attempts):
         status = await call_tool(client, "get_optimization_status", {"run_id": run_id})
         if isinstance(status, dict) and status.get("status") in _TERMINAL:
             return status
         await asyncio.sleep(_POLL_INTERVAL)
-    raise CaptureFailure(f"run {run_id} did not reach a terminal status in time")
+    raise CaptureFailure(
+        f"run {run_id} did not reach a terminal status within {timeout}s"
+    )
 
 
 async def run_optimization_case(
-    client, tool: str, args: dict, *, compute_tier: str | None
+    client,
+    tool: str,
+    args: dict,
+    *,
+    compute_tier: str | None,
+    poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
 ) -> dict:
-    """Submit -> poll -> read result, snapshotted as one composite payload."""
+    """Submit -> poll -> read result, snapshotted as one composite payload.
+
+    MINOR 7: the reap (``delete_optimization``) is always attempted, but its
+    failure must never mask a successful outcome, nor replace the original
+    error when the primary path ALSO failed -- both of those would misattribute
+    the real cause. So the primary outcome/error is captured first, the reap
+    is attempted unconditionally afterwards and only logged on failure, and
+    whatever the primary path produced (return value or raised error) wins.
+    """
     submit = await call_tool(client, tool, _submit_args(args, compute_tier))
     run_id = submit.get("run_id") if isinstance(submit, dict) else None
     if not run_id:
         # A typed rejection at submit time is a legitimate result.
         return {"submit": submit, "status": None, "result": None}
+
+    outcome: dict | None = None
+    primary_error: CaptureFailure | None = None
     try:
-        status = await _poll(client, run_id)
+        status = await _poll(client, run_id, timeout=poll_timeout)
         result = await call_tool(client, "get_optimization_result", {"run_id": run_id})
-        return {"submit": submit, "status": status, "result": result}
-    finally:
-        # Always reap: the run's manifest/state/result files and its
-        # fingerprint pointer would otherwise leak into the next case.
+        outcome = {"submit": submit, "status": status, "result": result}
+    except CaptureFailure as exc:
+        primary_error = exc
+
+    # Always reap: the run's manifest/state/result files and its fingerprint
+    # pointer would otherwise leak into the next case.
+    try:
         await call_tool(client, "delete_optimization", {"run_id": run_id})
+    except CaptureFailure as reap_exc:
+        print(f"  WARN: failed to reap run {run_id} after capture: {reap_exc}")
+
+    if primary_error is not None:
+        raise primary_error
+    assert outcome is not None
+    return outcome
 
 
 _LIFECYCLE_CONFIG = {
@@ -206,8 +355,43 @@ _CANCEL_CONFIG = {
 }
 
 
+def _scoped_listing(listing: Any, run_id: str) -> Any:
+    """IMPORTANT 4: snapshot the ``list_optimizations`` envelope, not a raw
+    ``count``, scoped to the run THIS case created.
+
+    Locally the registry is a fresh tempdir (one run -> count 1); against a
+    shared Cloud Run registry ``count`` is however many unrelated runs live
+    there, which is a permanent false FAIL in the cloud-vs-local comparison.
+    Collapsing to an int also hides any change to the envelope's own shape.
+
+    Chosen representation: keep the envelope's own top-level keys (so a
+    shape change -- a renamed/added/removed key -- is still visible), but
+    restrict ``runs`` to entries whose ``run_id`` matches this case's run and
+    recompute ``count`` from that filtered list. That is invariant to
+    unrelated runs sharing the registry while still catching a change to
+    this run's own listed entry (label/config_summary/status/headline) or to
+    the envelope shape itself.
+    """
+    if not isinstance(listing, dict):
+        return listing
+    runs = listing.get("runs")
+    if not isinstance(runs, list):
+        return listing
+    matched = [r for r in runs if isinstance(r, dict) and r.get("run_id") == run_id]
+    scoped = dict(listing)
+    scoped["runs"] = matched
+    if "count" in scoped:
+        scoped["count"] = len(matched)
+    return scoped
+
+
 async def run_lifecycle_case(
-    client, model_id: str, name: str, *, compute_tier: str | None
+    client,
+    model_id: str,
+    name: str,
+    *,
+    compute_tier: str | None,
+    poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
 ) -> dict:
     """The five lifecycle tools, as two scenarios.
 
@@ -229,13 +413,23 @@ async def run_lifecycle_case(
         if not run_id:
             return {"submit": submit}
         canceled = await call_tool(client, "cancel_optimization", {"run_id": run_id})
-        status = await call_tool(client, "get_optimization_status", {"run_id": run_id})
+        # IMPORTANT 5: service.cancel() returns "canceled" unconditionally,
+        # but the run itself may still be mid-flight -- an immediate status
+        # read can catch queued/running/canceled/completed depending on which
+        # side of the race won. Poll to a TERMINAL state (bounded, same
+        # machinery as everywhere else) so we snapshot a settled outcome
+        # rather than an arbitrary intermediate one.
+        status = await _poll(client, run_id, timeout=poll_timeout)
         deleted = await call_tool(client, "delete_optimization", {"run_id": run_id})
         return {
             "submit": submit,
             "canceled": canceled,
             "status": status,
             "deleted": deleted,
+            # A genuine cancel-vs-complete race can still resolve either way
+            # even after polling to a terminal state. Flag the exact field so
+            # the diff tool downgrades a change there to REVIEW, not FAIL.
+            KNOWN_RACY_FIELDS_KEY: ["status.status"],
         }
 
     submit = await call_tool(
@@ -246,7 +440,7 @@ async def run_lifecycle_case(
     run_id = submit.get("run_id") if isinstance(submit, dict) else None
     if not run_id:
         return {"submit": submit}
-    status = await _poll(client, run_id)
+    status = await _poll(client, run_id, timeout=poll_timeout)
     result = await call_tool(client, "get_optimization_result", {"run_id": run_id})
     # No force_rerun: this submit MUST be served from the fingerprint index.
     reuse_args = {"model_id": model_id, "config": _LIFECYCLE_CONFIG}
@@ -261,20 +455,35 @@ async def run_lifecycle_case(
         "status": status,
         "result": result,
         "reused": reused,
-        "listing_count": listing.get("count") if isinstance(listing, dict) else listing,
+        "listing": _scoped_listing(listing, run_id),
         "deleted": deleted,
         "status_after_delete": gone,
     }
 
 
-async def execute_case(client, variant, case: ToolCase, *, compute_tier: str | None):
+async def execute_case(
+    client,
+    variant,
+    case: ToolCase,
+    *,
+    compute_tier: str | None,
+    poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
+):
     if case.tool == "lifecycle":
         return await run_lifecycle_case(
-            client, variant.key, case.name, compute_tier=compute_tier
+            client,
+            variant.key,
+            case.name,
+            compute_tier=compute_tier,
+            poll_timeout=poll_timeout,
         )
     if case.tool in ("run_optimization", "run_future_optimization"):
         return await run_optimization_case(
-            client, case.tool, case.args, compute_tier=compute_tier
+            client,
+            case.tool,
+            case.args,
+            compute_tier=compute_tier,
+            poll_timeout=poll_timeout,
         )
     return await call_tool(client, case.tool, case.args)
 
@@ -302,13 +511,42 @@ async def capture(
     compute_tier: str | None,
     force: bool,
     out_root: Path,
+    variants_selected: bool = False,
+    poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
 ) -> int:
-    specs = [v for v in matrix.fixture_specs() if v.key in variant_keys]
+    """``variants_selected`` must be True whenever ``variant_keys`` came from
+    an explicit ``--variants`` (as opposed to defaulting to every known
+    fixture) -- see CRITICAL 2."""
+    known_specs = matrix.fixture_specs()
+    known_keys = {v.key for v in known_specs}
+    unknown = [key for key in variant_keys if key not in known_keys]
+    if unknown:
+        # CRITICAL 2(b): a typo must fail loudly, naming it -- not silently
+        # narrow the run to whatever DID match.
+        raise SystemExit(
+            f"unknown variant(s) requested: {unknown}. Known variants: "
+            f"{sorted(known_keys)}"
+        )
+    specs = [v for v in known_specs if v.key in variant_keys]
     if not specs:
-        raise SystemExit(f"no known fixtures in {variant_keys}")
+        raise SystemExit("no variants requested")
+
+    label_dir = Path(out_root) / label
+    sweep_stale_tmp_files(label_dir)  # MINOR 8: clear orphans from a killed run
+
+    # IMPORTANT 3: refuse to resume this label under a different capture
+    # environment than it was started with -- checked BEFORE touching any
+    # case, using the worker environment the tools will actually run under.
+    current_env = capture_environment(transport, worker_env())
+    env_conflict = check_capture_environment(label_dir, current_env, force=force)
+    if env_conflict:
+        print(env_conflict)
+        return 1
+    env_recorded = False
 
     written: list[str] = []
     skipped: list[str] = []
+    recaptured: list[str] = []
     failures: list[str] = []
 
     async with build_client(transport, url) as client:
@@ -330,12 +568,25 @@ async def capture(
                 all_cases, tools=tools, cases_filter=cases_filter
             ):
                 path = case_path(out_root, label, variant.key, case)
-                if path.exists() and not force:
-                    skipped.append(str(path))
-                    continue
+                if not force:
+                    if is_valid_snapshot(path):
+                        skipped.append(str(path))
+                        continue
+                    if path.exists():
+                        # CRITICAL 1: corrupt/empty is not a valid skip --
+                        # re-capture it instead of trusting a truncated file.
+                        recaptured.append(str(path))
+                        print(
+                            f"  RECAPTURE (corrupt/empty snapshot) "
+                            f"{variant.key}/{case.tool}__{case.name}"
+                        )
                 try:
                     payload = await execute_case(
-                        client, variant, case, compute_tier=compute_tier
+                        client,
+                        variant,
+                        case,
+                        compute_tier=compute_tier,
+                        poll_timeout=poll_timeout,
                     )
                 except CaptureFailure as exc:
                     # NOT written to disk: an existing file would make the
@@ -343,11 +594,17 @@ async def capture(
                     failures.append(f"{variant.key}/{case.tool}__{case.name}: {exc}")
                     print(f"  FAIL {variant.key}/{case.tool}__{case.name}: {exc}")
                     continue
+                if not env_recorded:
+                    record_capture_environment(label_dir, current_env)
+                    env_recorded = True
                 write_snapshot(path, payload)
                 written.append(str(path))
                 print(f"  captured {variant.key}/{case.tool}__{case.name}")
 
-    print(f"\n{len(written)} captured, {len(skipped)} skipped, {len(failures)} failed")
+    print(
+        f"\n{len(written)} captured, {len(skipped)} skipped, "
+        f"{len(recaptured)} recaptured, {len(failures)} failed"
+    )
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
@@ -357,10 +614,10 @@ async def capture(
         )
         return 1
 
-    if tools or cases_filter:
+    if tools or cases_filter or variants_selected:
         print(
             "NOTE: a selector was used, so manifest.json was NOT written. "
-            "Re-run without --tools/--cases to finish this label."
+            "Re-run without --tools/--cases/--variants to finish this label."
         )
         return 0
 
@@ -375,7 +632,7 @@ async def capture(
     # the recorded worker_env and provenance describe THIS machine, not the
     # measurement. Say so, rather than letting a reader assume otherwise.
     manifest["worker_env_authoritative"] = transport == "inprocess"
-    manifest_path = write_manifest(Path(out_root) / label, manifest)
+    manifest_path = write_manifest(label_dir, manifest)
     print(f"manifest -> {manifest_path}")
     return 0
 
@@ -403,6 +660,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--force", action="store_true", help="Re-capture existing cases"
+    )
+    parser.add_argument(
+        "--poll-timeout",
+        type=float,
+        default=_DEFAULT_POLL_TIMEOUT,
+        help=(
+            "Seconds to poll get_optimization_status for a terminal state "
+            f"before failing the case (default {_DEFAULT_POLL_TIMEOUT:.0f}s, "
+            "today's effective ceiling). Cloud Run Job scheduling plus GPU "
+            "allocation routinely exceeds that -- raise this for "
+            "--transport http --compute-tier cloud_gpu."
+        ),
     )
     parser.add_argument("--out-root", default=str(BASELINE_ROOT))
     return parser.parse_args(argv)
@@ -433,6 +702,8 @@ def main(argv: list[str] | None = None) -> int:
             compute_tier=args.compute_tier,
             force=args.force,
             out_root=Path(args.out_root),
+            variants_selected=args.variants is not None,
+            poll_timeout=args.poll_timeout,
         )
     )
 
