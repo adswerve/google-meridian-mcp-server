@@ -59457,3 +59457,142 @@
 ## ACKNOWLEDGED - pre-registered in acknowledged.py
 
 _none_
+
+## Triage
+
+### FAIL decomposition (4209 total)
+
+| Category | Count | Verdict |
+| --- | --- | --- |
+| `get_contribution` (`by_time_date_window`, `contribution_metrics`, `contribution_metrics_by_time`) | 4108 | Benign -- value-sorted list reordering |
+| `run_optimization` (`/result/spend_delta/N/channel`) | 41 | Benign -- value-sorted list reordering |
+| `run_future_optimization` (`/result/spend_delta/N/channel`) | 45 | Benign -- value-sorted list reordering |
+| `lifecycle` (`/result/spend_delta/N/channel`, reuses `run_optimization`) | 8 | Benign -- value-sorted list reordering |
+| `list_models` (`list length 8 -> 7`) | 7 | Expected -- `.pkl` removal, `national-revenue-pkl` no longer discovered |
+| **Total** | **4209** | matches report verdict exactly (4108+41+45+8+7) |
+
+**`get_contribution` (4108).** Verified directly against the fixtures under
+`/tmp/d3/`: `national-revenue/get_contribution__contribution_metrics.json`
+rows are strictly descending by `incremental_outcome` in both labels (e.g.
+`v2.0-jax-sup`: `baseline` 1228.47 -> `ch_0` 234.831 -> `rf_ch_1` 99.1363 ->
+... -> `non_media_0` -78.2609; `v2.0-refit`: `baseline` 458.819 -> `rf_ch_0`
+413.991 -> `ch_1` 322.397 -> ...). `row_count` is 9 in both, and the row
+*set* is identical -- only rank order moved because the refit posterior
+changed each channel's incremental_outcome magnitude. The differ compares
+list positions with no notion of a value-sorted list, so every reordered
+row reports as a structural FAIL on `/rows/N/1` (the channel-name cell).
+This is expected behaviour under resampling, confirmed for `by_time` too.
+
+**`run_optimization` / `run_future_optimization` / `lifecycle` (94
+combined).** All 94 of these FAILs land on exactly one pointer shape:
+`/result/spend_delta/N/channel` -- confirmed by grepping every FAIL row for
+these three tools and normalizing the numeric index (94/94 match). This is
+the same phenomenon as `get_contribution`: `OptimizerFacade._spend_delta`
+(`src/google_meridian_mcp_server/meridian/optimizer_facade.py:519-534`)
+sorts channels by spend delta (negative ascending, then positive
+descending), not by channel identity. Verified directly against three
+sampled fixtures (`geo-revenue/run_optimization__date_window.json`,
+`geo-revenue/run_future_optimization__cost_multipliers.json`,
+`geo-revenue/lifecycle__status_result_reuse_delete.json`): in every case
+the channel *set* is identical between labels, both orderings independently
+satisfy the sort invariant (negatives ascending then non-negatives
+descending), and only the ranking changed because the refit posterior moved
+the deltas. `lifecycle` FAILs are the same finding surfacing through a
+`run_optimization` call embedded in a lifecycle scenario, not a separate
+bug. **None of the 94 is a genuine structural break** -- no case-set
+difference, no type change, no missing case.
+
+**`list_models` (7).** `list length 8 -> 7` on every geo/national variant
+that still exists. This is `.pkl` support removal working as designed --
+see `reports/drift/07-refit-notes.md` ("Seven fixtures were refitted, not
+eight... `national-revenue-pkl` variant" removed after commit `c7c4f0d`
+proved Meridian 2.0/JAX cannot run inference on a TF-pickled model). Expected
+and correct, not a regression.
+
+**Cross-reference to `07-refit-notes.md`, §2.2 (channel coordinate
+reordering).** That report explicitly checked for and did **not observe**
+coordinate-order changes: `geo-kpi-only__get_channel_data.json`, a
+2185-row ordered array taken directly from tensor/coordinate order (not a
+value-sorted output), diffed byte-identical in position and value against
+the refit fixture. That rules out the concerning failure mode this task was
+watching for -- the reordering seen in `get_contribution` /
+`run_optimization` / `run_future_optimization` / `lifecycle` above is
+value-sort reordering in this server's own facade code (by design, to show
+"biggest mover first"), entirely independent of and consistent with
+"channel coordinate order unchanged" from §2.2. **No structural break was
+found among the 4209 FAILs.**
+
+### Tolerance calibration
+
+Extracted per Task 20 Step 5 (`grep -o "relative delta ..." | awk`), over
+all 54962 REVIEWs (52688 numeric "over tolerance" + 2274 "sign flip",
+which together account for the total exactly):
+
+```
+n=52688 min=1.010e-03 p01=1.382e-02 p10=1.542e-01 p25=4.000e-01
+        p50=6.291e-01 p75=9.060e-01 p90=9.697e-01 p95=9.800e-01
+        p99=9.995e-01 max=1.000e+00
+```
+
+`min` sits just above `REL_TOLERANCE` (1e-3) by construction -- everything
+below it already passed silently. The distribution has **no pileup near the
+current threshold**: p01 is already 13.8x the tolerance, and the median
+relative delta is 0.629 -- i.e. half of all flagged values differ by more
+than 63% of their own magnitude between an original-seed fit and a
+refit. These are not small values inflating a ratio: sampled `over
+tolerance` rows for `get_adstock_decay` show genuine curve-shape changes at
+substantive magnitudes (e.g. `0.886065 -> 0.499055`, `0.616398 ->
+0.0634727`), and sampled `sign flip` rows for `get_model_fit` show large
+residual reversals (`-123.024 -> 0.710635`, `45.5411 -> -35.3828`) -- the
+opposite of the diff #2 near-zero-noise pattern.
+
+To rule out contamination from the sort-order FAILs above (comparing
+`/rows/N/2` for a channel at position N in one label against a *different*
+channel at the same position in the other), the same percentiles were
+recomputed excluding `get_contribution` / `run_optimization` /
+`run_future_optimization` / `lifecycle` entirely -- i.e. only tools with
+stable row order (`get_reach_frequency`, `get_model_fit`,
+`get_adstock_decay`, `get_response_curves`, `get_spend_scenario`,
+`get_channel_summary`, 30812 REVIEWs):
+
+```
+n=29560 min=1.010e-03 p10=1.004e-01 p25=3.218e-01 p50=5.652e-01
+        p75=8.671e-01 p90=9.694e-01 p95=9.863e-01 p99=9.999e-01 max=1.0
+```
+
+Materially the same shape (p50=0.565, p90=0.969). The huge REVIEW volume is
+**not** an artifact of row misalignment -- it is a real property of a
+10-draw, 1-chain fixture posterior: individual leaf values (decay curves,
+reach-frequency curves, model-fit residuals, response curves) genuinely
+swing by 50-100% of their own scale when refit from a different seed.
+
+**Recommendation: keep `REL_TOLERANCE = 1e-3` and `ABS_FLOOR = 1e-9`
+unchanged.** The brief's decision rule ("if p90 >= 1e-3, raise to the next
+round value above p90") does not apply as written here, because p90 is
+0.97 -- raising the tolerance to cover it would mean setting
+`REL_TOLERANCE` to roughly 1.0, which does not calibrate anything; it
+disables the numeric check almost entirely. Concretely: even a 10x
+loosening to `1e-2` would silence only 367 of 52688 numeric REVIEWs
+(0.7%, consistent with p01=1.382e-02) -- 99.3% of the report is exactly as
+noisy as today. A 100x loosening to `1e-1` silences 3508 of 52688 (6.7%),
+leaving 93.3% flagged (consistent with p10 = 0.100-0.154 depending on
+subset). No
+tolerance value in a defensible range materially reduces what a human has
+to read; the only value that would is one so loose it stops catching real
+regressions on the axes that matter (diff #1: 330/330 clean at 1e-3; diff
+#2: FAIL 0, 7 REVIEWs, at 1e-3 -- both already comfortably within the
+current tolerance, so there is no evidence 1e-3 is "too tight" for
+deterministic-path comparisons). This diff's noise is a property of an
+undersampled posterior (10 draws, 1 chain), not of the tolerance -- no
+global float tolerance can distinguish "expected resampling variance" from
+"a real regression" at this sample size, which is exactly why every one of
+these findings is triaged in writing above rather than filtered away.
+Per the explicit constraint on this task, tolerance is not tuned to make
+this report look green. **No change made to `scripts/validation/diff_baseline.py`;
+diffs #1 and #2 do not need to be rerun.**
+
+### Verdict
+
+FAIL 4209 / REVIEW 54962, both fully accounted for and triaged above.
+**No structural regression.** The `--allow-fixture-change` exit-1 result is
+expected and correct for this diff.

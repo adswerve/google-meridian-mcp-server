@@ -61,6 +61,16 @@ def test_run_future_cost_multiplier_shifts_away(national_revenue_facade):
     # Use a media channel, not RF: RF channels can sit at their spend-constraint
     # floor, so a *cost increase* can't move them lower and the test would pass
     # trivially even if the cost path were broken.
+    #
+    # NOTE: the media channel itself can *also* land on its floor under a
+    # refit posterior (e.g. the global spend-constraint pct pins it at
+    # 0.7x its non-optimized spend), which makes allocation identity an
+    # unreliable proxy for "the multiplier had an effect" -- assertion (a)
+    # used to compare the full optimized allocation and is fragile to
+    # exactly this. We instead assert on the summary economics
+    # (optimized_efficiency / optimized_incremental_outcome), which must
+    # move if the multiplier is applied at all, regardless of whether any
+    # channel's spend is floor-pinned.
     channel = facade.get_data_inputs()["media"][0]
     base = facade.run_future(_future_cfg(facade))
     # A large multiplier makes the effect unambiguous.
@@ -70,15 +80,24 @@ def test_run_future_cost_multiplier_shifts_away(national_revenue_facade):
         rows = {r["channel"]: r["spend"] for r in res["channel_tables"]["optimized"]}
         return rows[ch]
 
-    def opt_allocation(res):
-        return {r["channel"]: r["spend"] for r in res["channel_tables"]["optimized"]}
-
-    # (a) The full optimized allocation must differ from baseline. This is the
-    # teeth of the test: if the cost multiplier were ignored, `bumped` would be
-    # identical to `base` and this assertion would catch it.
-    assert opt_allocation(bumped) != opt_allocation(base), (
-        "cost multiplier had no effect on the optimized allocation — the "
-        "future cost assumption is being ignored"
+    # (a) The optimized summary economics must differ from baseline. This is
+    # the teeth of the test: a 100x cost multiplier on one channel changes
+    # what it costs to buy the same incremental outcome, so
+    # optimized_efficiency and optimized_incremental_outcome cannot be
+    # unchanged even when the optimizer keeps every channel's spend pinned
+    # at its floor (e.g. under a tight global spend constraint). If the
+    # cost multiplier were ignored, both would be identical to baseline and
+    # this assertion would catch it.
+    base_summary = base["summary"]
+    bumped_summary = bumped["summary"]
+    assert (
+        bumped_summary["optimized_efficiency"] != base_summary["optimized_efficiency"]
+        or bumped_summary["optimized_incremental_outcome"]
+        != base_summary["optimized_incremental_outcome"]
+    ), (
+        "cost multiplier had no effect on optimized_efficiency or "
+        "optimized_incremental_outcome — the future cost assumption is "
+        "being ignored"
     )
 
     # (b) Making one channel 100x more expensive should not increase its own
