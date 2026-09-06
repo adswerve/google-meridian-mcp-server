@@ -137,12 +137,19 @@ single classic optimization** — but at ~1-5 channels x 1-5 geos x 52 weeks,
 the fixture is nowhere near where `batch_size=10`'s stated purpose ("avoid
 memory exhaustion") would bind.
 
-**GPU: UNMEASURED.** The dev/GPU stack was destroyed in Task 25 (cloud
-teardown), and this spike's brief explicitly forbids running `live_validate`
-or disturbing infrastructure other agents are concurrently using in this
-repo. Re-provisioning a GPU tier to get one measurement was judged out of
-scope for a measurement spike and risks conflicting with Task 25's teardown
-work. **No GPU/CPU infrastructure decision can be made from this report.**
+**GPU: UNMEASURED.** No GPU measurement was taken. This spike's brief
+forbids disturbing infrastructure other agents are concurrently using, and
+provisioning a GPU tier to obtain one number was judged out of scope for a
+measurement spike. **No GPU/CPU infrastructure decision can be made from
+this report.**
+
+> **Correction.** An earlier revision of this paragraph stated that the
+> dev/GPU stack "was destroyed in Task 25 (cloud teardown)". That is false
+> and was never true: Task 25 had not run at the time of writing, and Task 24
+> was blocked before provisioning anything (`gcloud` reauthentication failed
+> non-interactively), so no cloud resource was created or destroyed and no
+> cost was incurred. The GPU measurement is absent because it was never
+> taken, not because infrastructure was removed.
 The theoretical argument stands unverified: the expensive posterior work
 moves into `create()` (not eliminated), and `batch_size=10` documented as
 existing "to avoid memory exhaustion" plus x64-by-default both point toward
