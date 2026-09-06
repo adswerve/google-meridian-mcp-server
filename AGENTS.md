@@ -55,9 +55,16 @@ and persistence helpers so agents can inspect models and request structured outp
 - `OPTIMIZATION_DEFAULT_TIER` — `auto` (heuristic) or a fixed tier name; default `auto`.
 - `OPTIMIZATION_MAX_PARALLEL` — maximum concurrent optimization workers per server process; default `2`.
 - `OPTIMIZATION_SIZE_THRESHOLDS` — two comma-separated integers (`small,large`) for the `auto` tier heuristic; default `10000000,100000000`.
-- `OPTIMIZATION_BACKEND_LOCAL` — JAX backend for local workers (`tensorflow` or `jax`); default `tensorflow`.
-- `OPTIMIZATION_BACKEND_CLOUD_CPU` — JAX backend for cloud CPU workers; default `jax`.
-- `OPTIMIZATION_BACKEND_CLOUD_GPU` — JAX backend for cloud GPU workers; default `jax`.
+- Meridian runs on **JAX with 64-bit precision, everywhere**. `MERIDIAN_BACKEND` is a
+  module constant in `execution/base_subprocess.py`, not a setting;
+  `MERIDIAN_ENABLE_JAX_X64` is pinned to `true` there, in all three Dockerfiles, and
+  in the Terraform service and job env. The `OPTIMIZATION_BACKEND_*` settings and
+  `RuntimeConfig.backend_for_tier` were removed in the Meridian 2.0 upgrade.
+- `OPTIMIZATION_DEFAULT_TIER` validates at startup that a named tier is allowed; it
+  does **not** influence routing. `resolve_tier` honours the per-call `compute_tier`
+  tool argument and returns it directly when it is not `auto`; `auto` derives a tier
+  from problem size. Requesting `cloud_gpu` therefore requires passing
+  `compute_tier="cloud_gpu"` on the call.
 - `OPTIMIZATION_HEARTBEAT_STALE_SECONDS` — seconds without a heartbeat before a running worker is reconciled as crashed; default `60`.
 - `CLOUD_RUN_PROJECT` — GCP project for Cloud Run Jobs; required when any cloud tier is allowed.
 - `CLOUD_RUN_REGION` — region for Cloud Run Jobs; required when any cloud tier is allowed.
@@ -121,6 +128,45 @@ geo, revenue vs KPI) plus adversarial error-path checks, exiting non-zero on any
   optimizes correctly under another.
 - Showcase ↔ tool parity is tracked in `docs/meridian-mcp-showcase-parity.md`.
 
+## Behavioural Baseline Harness
+
+`scripts/validation/capture_baseline.py` snapshots every tool case under a
+label; `scripts/validation/diff_baseline.py` classifies two labels against
+each other into a Markdown report. Built for the Meridian 2.0 upgrade and
+kept: it is the cheapest way to prove a dependency bump changed nothing.
+
+- **Capture:** `uv run python -m scripts.validation.capture_baseline --label <L>`
+  (`--transport http --url ...` for a deployed server; `--compute-tier` to
+  force a Cloud Run tier; `--tools`/`--cases` to re-run a subset; `--force` to
+  overwrite). Snapshots land in gitignored
+  `models/_validation/_baseline/<label>/<variant>/<tool>__<case>.json` with
+  `manifest.json` written LAST — a label directory without one is incomplete.
+  Budget ~27 real optimizer subprocess runs per label.
+- **Isolation:** in-process captures use a fresh `OPTIMIZATION_RUNS_ROOT`,
+  `RESULT_CACHE_ENABLED=false` and `force_rerun=true`. Without this the
+  fingerprint short-circuit serves a later capture from an earlier one and the
+  diff reports a spurious clean result on exactly the runs being measured.
+  Over HTTP only `force_rerun` crosses the wire.
+- **Failures are fatal, not snapshots.** A raised tool call aborts the case and
+  the run exits non-zero; only tool-level error envelopes are snapshotted.
+- **Fixtures:** enumerated as DIRECTORIES (`matrix.fixture_specs()`). This used
+  to append a synthesized `national-revenue-pkl` entry so the loader's pickle
+  branch stayed inside every diff; since `.pkl` support was fully removed
+  (`reports/pkl-format-removed.md`), that fixture is no longer produced and
+  `fixture_specs()` now simply mirrors `VARIANTS`.
+- **Diff:** `uv run python -m scripts.validation.diff_baseline <a> <b> --report out.md`.
+  Manifests are compared before data; differing fixture fingerprints abort
+  unless `--allow-fixture-change`. Verdicts: FAIL (structural, including any
+  change to the identity integers `row_count`, `size_score`, `count`,
+  `geo_count`, `total_channels`), REVIEW (numeric, above a relative tolerance
+  with an absolute floor applied first), ACKNOWLEDGED (pre-registered in
+  `acknowledged.py`, with a mandatory reason), PASS. Non-zero exit on FAIL or
+  REVIEW.
+- **Cases:** `scripts/validation/matrix.py::TOOL_CASES`, gated by
+  `variant_capabilities` (`revenue` / `rf` / `geo` / `optimize`) and resolved
+  against each variant's real overview.
+- Committed drift reports live in `reports/drift/`.
+
 ## Module Map
 - **domain/models.py** — enums, `RuntimeConfig`, `ModelCatalogEntry`.
 - **domain/filters.py** — MCP filter schema; normalizes channels/geos; defines output-type literals.
@@ -138,17 +184,25 @@ geo, revenue vs KPI) plus adversarial error-path checks, exiting non-zero on any
 - **services/analysis_service.py** — filter normalization; dispatch; result-cache integration; model-overview shaping.
 - **transport/tools.py** — registers FastMCP tools; converts domain errors to standard error payload.
 - **server.py** — lifespan startup; provider selection; `create_server()`, `mcp`, `run_server()`.
-- **domain/optimization.py** — enums (`RunStatus`, `RunPhase`, `ComputeTier`, `OutcomeMode`); `BaseOptimizationConfig` splits into `OptimizationConfig` (`kind="historical"`, `start_date`/`end_date`) and `FutureOptimizationConfig` (`kind="future"`, `future: FutureBlock`); `FutureBlock` (`start_date`, `horizon>0`, `reference`, `cost_multipliers>0`, `revenue_per_kpi_multiplier>0`, `planned_allocation>0`); `Reference` union (`trailing`/`same_period_last_year`/`full_history_average`). `AnyOptimizationConfig` uses a **callable** `Discriminator` defaulting a missing `kind`→`historical` so legacy run JSON (no `kind`) still deserializes — a plain `Field(discriminator="kind")` raises `union_tag_not_found`. `OptimizationRun`/`State`/`Summary`; `config_fingerprint`; `to_optimize_kwargs` (reads `start_date`/`end_date` via `getattr` → works for both kinds).
+- **domain/optimization.py** — enums (`RunStatus`, `RunPhase`, `ComputeTier`, `OutcomeMode`); `BaseOptimizationConfig` splits into `OptimizationConfig` (`kind="historical"`, `start_date`/`end_date`) and `FutureOptimizationConfig` (`kind="future"`, `future: FutureBlock`); `FutureBlock` (`start_date`, `horizon>0`, `reference`, `cost_multipliers>0`, `revenue_per_kpi_multiplier>0`, `planned_allocation>0`); `Reference` union (`trailing`/`same_period_last_year`/`full_history_average`). `AnyOptimizationConfig` uses a **callable** `Discriminator` defaulting a missing `kind`→`historical` so legacy run JSON (no `kind`) still deserializes — a plain `Field(discriminator="kind")` raises `union_tag_not_found`. `OptimizationRun`/`State`/`Summary`; `config_fingerprint` (takes `meridian_version` as a third keyword parameter — the service layer supplies it, since `domain/` may not import `importlib.metadata`); `OptimizationRun` has no `backend` field; `to_optimize_kwargs` (reads `start_date`/`end_date` via `getattr` → works for both kinds).
 - **persistence/optimization_run_registry.py** — `OptimizationRunRegistry` ABC; `LocalOptimizationRunRegistry` (3-file layout per run: manifest, state, result; fingerprint index for reuse); `GcsOptimizationRunRegistry` (same 3-file + fingerprint layout on GCS; generation-guarded state writes via `write_state(*, expected_generation)` + `get_state_generation`); `RunNotFoundError`, `ResultNotReadyError`.
 - **execution/routing.py** — `model_size_features`, `size_score`, `resolve_tier`; maps problem size to cheapest allowed compute tier; reads `OPTIMIZATION_SIZE_THRESHOLDS` and `OPTIMIZATION_ALLOWED_TIERS`.
 - **execution/base_executor.py** — `BaseExecutor` ABC; concurrency gate (max-parallel semaphore), launch lifecycle, crash reconciliation via stale-heartbeat detection; `_fail_if_unfinished` no-ops on a deleted run (`RunNotFoundError` guard) so deleting a just-completed (unreaped) run can't break a later submit.
 - **execution/subprocess_executor.py** — `SubprocessExecutor` (local tier); spawns a worker subprocess per run; passes run_id and config via env; crash/orphan reconciliation of runs left non-terminal by a server restart runs at startup.
-- **execution/cloud_run_executor.py** — `CloudRunJobExecutor` (cloud tiers); launches worker as a Cloud Run Job execution (CPU or NVIDIA L4 GPU); selects per-tier JAX backend (`OPTIMIZATION_BACKEND_CLOUD_CPU`/`_GPU`); worker heartbeat thread + stale-heartbeat detection is the cloud crash signal; startup orphan reconcile handles runs left in-flight across server restarts.
+- **execution/cloud_run_executor.py** — `CloudRunJobExecutor` (cloud tiers); launches worker as a Cloud Run Job execution (CPU or NVIDIA L4 GPU); injects `MERIDIAN_BACKEND=jax` and `MERIDIAN_ENABLE_JAX_X64=true` as container overrides (the Job container does not inherit the server's environment); worker heartbeat thread + stale-heartbeat detection is the cloud crash signal; startup orphan reconcile handles runs left in-flight across server restarts.
+- **execution/base_subprocess.py** — Meridian-free launch mechanics. Owns the
+  `MERIDIAN_BACKEND = "jax"` constant. `child_env` applies `_HYGIENE_DEFAULTS`
+  with `setdefault` (operator intent wins) and `_HYGIENE_OVERRIDES`
+  unconditionally (`TF_CPP_MIN_LOG_LEVEL`, `MERIDIAN_BACKEND`,
+  `MERIDIAN_ENABLE_JAX_X64`) — because `os.environ` stopped being a proxy for
+  operator intent once `jax/__init__.py` began writing `TF_CPP_MIN_LOG_LEVEL`
+  to it at import time. Both apply before `env_base` and `extra`, so explicit
+  executor configuration still wins.
 - **execution/worker.py** — `run_worker`; loads the model, calls `OptimizerFacade.execute` (dispatches historical vs future by `config.kind`), writes result/state to registry; one function, no server imports.
 - **meridian/optimizer_facade.py** — `OptimizerFacade` (extends `MeridianInterrogator`); wraps Meridian `BudgetOptimizer`; shapes `OptimizationResults` into the result dict (`summary`, `channel_tables`, `allocation`, `spend_delta`, `outcome_mode`, `response_curves`, future-only `assumptions`). `execute(config)` dispatches by `kind` to `run`/`run_future`, both via the shared `_run(config, build_kwargs, *, enrich_curves)` core. `run_future`/`_future_kwargs` build a `DataTensors` via Meridian `create_optimization_tensors` from a carried-forward reference window (`_seed_cpmu`/`_seed_cprf`/`_seed_spend_flighting`/`_carried_allocation`); `validate_future` runs pure submit-time guards. **Future runs pass `enrich_curves=False` → no `response_curves`** (Meridian's `get_response_curves` ignores `new_data.media`, so curves would silently reflect historical flighting). `_seed_*` skip excluded channels and raise on a zero media/impression denominator (dark channel) for the rest, instead of emitting NaN; the non-excluded check also runs earlier, at submit-time `validate_future`, for a fast fail. `_future_kwargs` stashes a private `_assumptions` dict (`budget`, `budget_source`, `reference_mode`, `excluded_channels`) that `_run` forwards into `build_result`'s top-level `assumptions` key — omitted for historical runs — so an auto-derived budget can never silently mislead.
 - **meridian/future_data.py** — pure carry-forward helpers (NumPy + stdlib only, **no Meridian import**): `infer_cadence_days`, `future_time_labels`, `reference_indices` (cadence-aware `same_period_last_year`), `validate_channel_keys`, `normalize_planned_allocation`, `apply_cost_multipliers`, `resolve_budget` (fixed-budget default = seeded future-window total, **not** full history).
 - **deploy/** — `Dockerfile.worker` (CPU), `Dockerfile.worker.gpu` (GPU; adds `jax[cuda12]` self-contained CUDA wheels — Cloud Run L4 provides the driver); images are built automatically by `terraform apply` via Cloud Build. Infrastructure provisioning is via `deploy/terraform/` (Terraform module).
-- **services/optimization_service.py** — `OptimizationService`; `run_optimization` + `run_future_optimization` share a `_submit` core (fingerprint reuse → routing → executor launch); `run_future_optimization` first runs `facade.validate_future` (pure guards → `invalid_optimization_config` envelope on bad input, before any worker launch); status/result reads, list, delete.
+- **services/optimization_service.py** — `OptimizationService`; `run_optimization` + `run_future_optimization` share a `_submit` core (fingerprint reuse → routing → executor launch); `run_future_optimization` first runs `facade.validate_future` (pure guards → `invalid_optimization_config` envelope on bad input, before any worker launch); status/result reads, list, delete. Both envelopes return `meridian_version` (via `importlib.metadata`, not `backend`).
 - **bootstrap.py** — `build_model_catalog` (provider + caches → `ModelCatalog`) and `build_registry` (backend selection → `OptimizationRunRegistry`); shared by server lifespan and worker.
 
 ## Current Tool Surface
@@ -174,9 +228,9 @@ geo, revenue vs KPI) plus adversarial error-path checks, exiting non-zero on any
 ### Optimization module
 Historical (`run_optimization`) + future (`run_future_optimization`) budget optimization over one
 shared async backend: registry, subprocess/Cloud Run workers, polling, tiers, result shaping. Cloud
-path (GCS registry with generation-guarded writes, `CloudRunJobExecutor`, per-tier JAX backend,
-`cancel_optimization`) verified end-to-end on `example-dev-project` (CPU tier). Specs/plans under
-`docs/superpowers/`.
+path (GCS registry with generation-guarded writes, `CloudRunJobExecutor`, the fixed JAX
+backend injected as a container override, `cancel_optimization`) verified end-to-end on
+`example-dev-project` (CPU tier). Specs/plans under `docs/superpowers/`.
 
 **Future optimization** answers "how should I split next quarter's budget?". Meridian does **not**
 forecast — the posterior is frozen on training data; it optimizes under user-supplied assumptions.
@@ -188,6 +242,38 @@ present (national = size 1); the fixed-budget default is the seeded reference-wi
 full-history total. All three assumption knobs were empirically verified to move the optimized
 allocation; `validate_future` must never reject a config the worker path would accept.
 `future.excluded_channels` is the only real exclusion path (spend→0, reallocated, total unchanged); a `0/0` constraint only freezes, it does not exclude.
+
+### Accepted follow-ups (recorded, not fixed)
+
+- **Orphaned fingerprint pointers.** `delete_optimization` correctly removes a
+  run's `index/by_fingerprint/` pointer (both registries read
+  `record.config_fingerprint` off the manifest), but there is **no retention,
+  TTL, pruning or expiry mechanism** anywhere in the registry or service —
+  grepping `retention|ttl|expire|prune|cleanup` across them returns zero hits.
+  Pointers for superseded runs accumulate indefinitely: one small file per
+  superseded run. Accepted; a pruning mechanism is out of scope.
+  `ResultCache` is in-memory and per-service-instance, so no cross-version
+  issue arises there.
+- **`future_optimization_qa.py` scenarios are not in the matrix.** Its eleven
+  `scenario_h1..h5` / `scenario_f1..f6` coroutines are already extracted and
+  dispatched through a uniform `_run_scenario(report, label, coro)` helper, so
+  folding them into `scripts/validation/matrix.py` is a cheap and genuinely
+  worthwhile follow-up — it was left alone during the Meridian 2.0 upgrade
+  only because a major upgrade is the wrong time to rewrite the thing
+  verifying the upgrade.
+- **`uv.lock` does not reach the container images.** All three Dockerfiles run
+  `pip install "."` from `pyproject.toml`, so the exact-pinned
+  `tfp-nightly==0.26.0.dev20260130` is still re-resolved at image build time.
+  The tracked lock pins developer and CI environments only.
+- **Undeclared coupling: baseline snapshots live under `LOCAL_MODELS_ROOT`.**
+  `capture_baseline` writes to `models/_validation/_baseline/`, which *is*
+  `LOCAL_MODELS_ROOT` during validation. This is safe today only because
+  `persistence/local_provider.py:40` filters on `_SUPPORTED_EXTENSIONS`,
+  which derives from `domain.models.ModelFormat` and currently contains only
+  `.binpb` (`.pkl` support was removed in the Meridian 2.0 upgrade — see
+  `reports/pkl-format-removed.md`), while snapshots are `.json`. A future
+  `ModelFormat` addition would need to keep excluding the harness's own
+  snapshot extension, or its output could start appearing in `list_models`.
 
 ## Model Overview Expectations
 The overview tool should tell an agent:
@@ -227,9 +313,9 @@ The overview tool should tell an agent:
   (`apply_saturation`/`get_data`); `get_carryover` remains unused.
 
 ## Current Test Coverage
-- **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache; optimization domain/registry/routing/executor/cloud-executor/facade/service/worker; future config + `future_data` carry-forward helpers.
+- **unit/** — config/persistence, catalog/loader, interrogator, analysis_service, analyzer_facade, transport_tools, server, model_catalog_service, result_cache; optimization domain/registry/routing/executor/cloud-executor/facade/service/worker; future config + `future_data` carry-forward helpers; baseline harness (payload extractor, volatile-field normalization, manifest and fixture probe, case matrix, capture layout and failure accounting, diff classification).
 - **integration/** — provider filesystem behavior and cache interaction; `test_optimizer_facade_future.py` runs `run_future` against a real tiny fitted model (marked `integration`) and asserts a cost multiplier actually moves the allocation.
-- **contract/** — supported enums and public tool-surface expectations; `test_meridian_modelfit_contract.py` guards Meridian's private `ModelFit._transform_data_to_dataframe` signature plus the long-frame schema constants (`type`/`mean`/`ci_lo`/`ci_hi`/`expected`/`baseline`/`actual`) that `get_model_fit` depends on; `test_optimization_tools.py` guards tool registration + `readOnlyHint` for all 7 optimization tools and the `run_future_optimization` envelope. Final local QA gate: `scripts/qa/future_optimization_qa.py` (both tools, 10 scenarios, local tier).
+- **contract/** — supported enums and public tool-surface expectations; `test_meridian_modelfit_contract.py` guards Meridian's private `ModelFit._transform_data_to_dataframe` signature plus the long-frame schema constants (`type`/`mean`/`ci_lo`/`ci_hi`/`expected`/`baseline`/`actual`) that `get_model_fit` depends on; `test_optimization_tools.py` guards tool registration + `readOnlyHint` for all 7 optimization tools and the `run_future_optimization` envelope; `test_meridian_install_guard.py` guards that the installed `meridian` distribution is not the `references/` clone and satisfies the pin. Final local QA gate: `scripts/qa/future_optimization_qa.py` (both tools, 10 scenarios, local tier).
 
 ## Editing Guidance
 - Reuse `MeridianInterrogator` for shared model metadata and data extraction.

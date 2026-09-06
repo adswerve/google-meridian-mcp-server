@@ -351,7 +351,8 @@ Injected fresh per execution by the MCP server's `CloudRunJobExecutor`:
 | Variable | Description |
 |----------|-------------|
 | `OPTIMIZATION_RUN_ID` | UUID of the run to execute |
-| `MERIDIAN_BACKEND` | JAX backend for the run |
+| `MERIDIAN_BACKEND` | Always `jax`; injected from the module constant in `execution/base_subprocess.py` |
+| `MERIDIAN_ENABLE_JAX_X64` | Always `true`; 64-bit precision, pinned rather than inherited |
 
 ### Optimization tiers & concepts
 
@@ -359,13 +360,21 @@ The optimization tools submit and track long-running Meridian `BudgetOptimizer` 
 
 **Tiers**
 
-| Tier | Backend | Use |
+| Tier | Runs on | Use |
 |------|---------|-----|
 | `local` | Subprocess (default) | Local development; no GCP required. |
 | `cloud_cpu` | Cloud Run Job (CPU) | Production runs; requires `REGISTRY_BACKEND=gcs`. |
 | `cloud_gpu` | Cloud Run Job (NVIDIA L4) | Large or fast runs; requires `enable_gpu_job = true` and L4 quota. |
 
-The `auto` default tier selects the cheapest allowed tier based on problem size (`OPTIMIZATION_SIZE_THRESHOLDS`).
+Every tier runs Meridian on the **JAX** backend with 64-bit precision. There is
+no per-tier engine choice: `OPTIMIZATION_BACKEND_LOCAL` /
+`OPTIMIZATION_BACKEND_CLOUD_CPU` / `OPTIMIZATION_BACKEND_CLOUD_GPU` were
+removed in the Meridian 2.0 upgrade.
+
+To reach a specific tier, pass `compute_tier` on the tool call.
+`OPTIMIZATION_DEFAULT_TIER` only validates at startup that a named tier is
+allowed; it does not influence routing. With `auto`, the tier is derived from
+problem size, so a small model always lands on the cheapest allowed tier.
 
 **Which tier does `auto` pick?**
 
