@@ -26,7 +26,7 @@ result.
 | --- | --- | --- |
 | Rank/compare channels by ROI, CPIK, or marginal efficiency | `get_channel_summary` | one metric per channel; pick the `output_type` that matches the metric asked |
 | How much outcome each channel drove (share / over time) | `get_contribution` | per-channel incremental contribution, total or by time |
-| Base vs. incremental — what media caused vs. what would happen anyway | `get_contribution` **+** baseline | media = incremental contribution; baseline = `get_channel_summary` baseline view |
+| Base vs. incremental — what media caused vs. what would happen anyway | `get_contribution` | one call returns both: each channel's incremental contribution plus a `baseline` row for everything else |
 | Carryover / how long an effect lasts after exposure | `get_adstock_decay` | decay curve (and shape parameter) per channel |
 | Saturation / diminishing returns / "what if we spend more or less" | `get_response_curves` | outcome across a *range* of spend per channel |
 | Reach & frequency, optimal frequency | `get_reach_frequency` | ROI across frequency levels + optimal frequency (**RF models only**; on a KPI-only model this `roi` is KPI units per spend, not revenue) |
@@ -49,16 +49,18 @@ contribution *magnitude* here; reach for `get_contribution` when the question is
 specifically about contribution *share* or its trend over time. To explain *why* a
 channel ranks where it does, pair this with the response curve.
 
-**`get_contribution` + baseline — base vs. incremental.** Contribution is the
-**incremental** outcome each media channel drove — the lift media caused, at its
+**`get_contribution` — base vs. incremental in one call.** Contribution is the
+**incremental** outcome each channel drove — the lift media caused, at its
 historical spend. The aggregate view gives each channel's share; the by-time view
-gives the trend. The **baseline** (what would have happened with no paid media:
-organic demand, seasonality, price) is not a channel here — read it from
-`get_channel_summary`'s baseline summary view. So "base vs. incremental" is two
-reads: media contribution (this tool) against baseline (channel summary). Note
-contribution is a **single point at historical spend** — it cannot tell you what
-happens if you spend more; that is the response curve's job (glossary: "contribution
-vs. response curve").
+gives the trend. By default the result already includes a **`baseline`** row
+alongside the channels — what would have happened with no paid media: organic
+demand, seasonality, price — so a single call covers both halves of "base vs.
+incremental." Only reach for `get_channel_summary`'s baseline summary view when
+you need the baseline's own **credible interval** (mean/median/ci_lo/ci_hi); the
+contribution view gives a point share, not a range. Note contribution is a
+**single point at historical spend** — it cannot tell you what happens if you
+spend more; that is the response curve's job (glossary: "contribution vs.
+response curve").
 
 **`get_adstock_decay` — carryover.** Shows how fast a channel's effect fades after
 exposure: a slow decay means today's spend keeps paying out for several periods (a
