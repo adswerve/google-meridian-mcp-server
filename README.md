@@ -163,10 +163,14 @@ models/
 ├── geo-revenue/
 │   └── model.binpb
 └── experiment-a/
-    └── model.pkl
+    └── model.binpb
 ```
 
 The catalog will expose those examples as model IDs like `geo-revenue` and `experiment-a`.
+
+Models must be Meridian's proto format (`.binpb`). Pickle (`.pkl`) checkpoints are not
+supported -- see [reports/pkl-format-removed.md](reports/pkl-format-removed.md). Re-export
+a pickle model to `.binpb` and load that instead.
 
 ### Run the server
 
