@@ -28,7 +28,6 @@ class ComputeTier(str, Enum):
 
 class ModelFormat(str, Enum):
     BINPB = "binpb"
-    PKL = "pkl"
 
 
 class ModelStatus(str, Enum):

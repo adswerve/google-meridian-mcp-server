@@ -93,17 +93,10 @@ def adversarial_cases(variant) -> list[AdversarialCase]:
 # Phase 7 tier sweep.
 # ---------------------------------------------------------------------------
 
-# generate_validation_models.py declares seven VariantSpecs and then creates an
-# EIGHTH fixture as a side effect (:109-115) with no spec of its own. Iterating
-# VARIANTS therefore skips it -- and it is the only fixture that exercises the
-# loader's pickle branch, which is the entire reason it exists.
-PKL_FIXTURE = "national-revenue-pkl"
-
 # Optimization is expensive and its behaviour does not vary by KPI/revenue
 # shape in ways the other variants would expose, so -- exactly as
 # live_validate already does -- only these two variants carry optimization
-# cases. The pickle fixture is a byte-duplicate posterior of national-revenue;
-# optimizing it again would buy nothing.
+# cases.
 OPTIMIZATION_VARIANTS = frozenset({"national-revenue", "geo-revenue"})
 
 FAR_FUTURE = "2099-01-01"
@@ -121,16 +114,15 @@ class ToolCase:
 def fixture_specs():
     """Every fixture DIRECTORY, not every VariantSpec.
 
-    The pickle fixture is a serialization of the fitted `national-revenue`
-    model, so it has the same capabilities; it is excluded from optimization
-    only because running the same posterior through the optimizer twice adds
-    no coverage.
+    Historically this appended a synthesized `VariantSpec` for a
+    `national-revenue-pkl` pickle fixture that `generate_validation_models.py`
+    built as a side effect; pickle (.pkl) models are no longer supported by
+    this server (see reports/pkl-format-removed.md), so that fixture is no
+    longer produced and this now simply mirrors `VARIANTS`.
     """
-    from scripts.generate_validation_models import VARIANTS, VariantSpec
+    from scripts.generate_validation_models import VARIANTS
 
-    specs = list(VARIANTS)
-    specs.append(VariantSpec(PKL_FIXTURE, "revenue", 1, True))
-    return specs
+    return list(VARIANTS)
 
 
 def variant_capabilities(variant) -> frozenset[str]:

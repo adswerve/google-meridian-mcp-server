@@ -95,8 +95,9 @@ geo, revenue vs KPI) plus adversarial error-path checks, exiting non-zero on any
 - **Generator** `scripts/generate_validation_models.py` builds 7 variants: the
   2×3 `national|geo` × `revenue | kpi+revenue_per_kpi | kpi-only` matrix (all with
   reach & frequency), plus `geo-revenue-media-only` (no RF, for the no-RF error
-  path) and a `.pkl` copy of `national-revenue` (loader pickle branch). Model id ==
-  fixture directory name.
+  path). Model id == fixture directory name. `.pkl` models are no longer
+  supported (see `reports/pkl-format-removed.md`), so no `.pkl` fixture is
+  produced any more.
 - **Suite layout** (`scripts/validation/`): `matrix.py` (declarative expected-valid vs
   expected-error per variant), `runner.py` (client driver + `assert_columnar`/`assert_error`),
   `live_validate.py` (entrypoint), `fixtures.py::ensure_fixture_model` (reusable loader).
@@ -128,7 +129,7 @@ geo, revenue vs KPI) plus adversarial error-path checks, exiting non-zero on any
 - **persistence/local_provider.py** — walks local directory; emits `ModelCatalogEntry` from filesystem metadata.
 - **persistence/gcs_provider.py** — GCS client; converts blob names to stable ids; downloads to local cache.
 - **persistence/cache.py** — `DiscoveryCache`, `MaterializationCache`, `ResultCache` (TTL-keyed in-memory).
-- **meridian/loader.py** — auto-detects `.binpb` vs `.pkl`; loads through Meridian serde APIs.
+- **meridian/loader.py** — loads `.binpb` models through Meridian serde APIs. `.pkl` is unsupported and rejected with `UnsupportedModelFormatError` (see `reports/pkl-format-removed.md`).
 - **meridian/catalog.py** — bridges entries to loaded Meridian objects; memoizes models and facades.
 - **meridian/dataset_mapper.py** — converts xarray datasets to JSON-safe row dicts; merges on shared dims. `filter_records` slices rows by date/geo/channel (reused by training-data, channel-data — NOT model-fit anymore); `extract_channel_data` builds the per-channel long table. `_df_to_records` maps NaN → JSON `null` (numeric cells need `astype(object)` first).
 - **meridian/interrogator.py** — model metadata extraction; builds `get_model_overview` payload. `geo_names()` returns the model's geo coord values (used by the service to validate `get_model_fit` geo filters).

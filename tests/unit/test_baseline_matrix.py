@@ -19,27 +19,15 @@ OVERVIEW = {
 }
 
 
-def test_fixture_specs_includes_the_pickle_fixture_that_has_no_variantspec():
-    """generate_validation_models.py defines 7 VariantSpecs; the 8th fixture is
-    a side effect at :109-115. Iterating VARIANTS would leave the loader's
-    pickle branch -- the whole reason that fixture exists -- out of every diff."""
+def test_fixture_specs_mirrors_variants_now_that_pkl_is_unsupported():
+    """generate_validation_models.py used to create an 8th fixture as a side
+    effect -- a `national-revenue-pkl` pickle model exercising the loader's
+    pickle branch. Pickle (.pkl) models are no longer supported by this
+    server (see reports/pkl-format-removed.md), so that fixture is gone and
+    `fixture_specs()` is just every declared `VariantSpec`."""
     keys = [spec.key for spec in matrix.fixture_specs()]
-    assert len(keys) == len(VARIANTS) + 1
-    assert matrix.PKL_FIXTURE in keys
-    assert set(keys) >= {spec.key for spec in VARIANTS}
-
-
-def test_the_pickle_fixture_mirrors_national_revenue_capabilities():
-    spec = next(s for s in matrix.fixture_specs() if s.key == matrix.PKL_FIXTURE)
-    assert spec.factory_has_revenue() is True
-    assert spec.n_geos == 1
-    assert spec.with_rf is True
-
-
-def test_the_pickle_fixture_does_not_run_optimization_cases():
-    """It is a duplicate posterior; optimizing it twice buys nothing."""
-    spec = next(s for s in matrix.fixture_specs() if s.key == matrix.PKL_FIXTURE)
-    assert "optimize" not in matrix.variant_capabilities(spec)
+    assert keys == [spec.key for spec in VARIANTS]
+    assert "national-revenue-pkl" not in keys
 
 
 def test_capabilities_of_a_geo_revenue_rf_variant():

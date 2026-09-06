@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_MODEL_SUFFIXES = (".binpb", ".pkl")
+_MODEL_SUFFIXES = (".binpb",)
 _CHUNK = 1 << 20
 
 
@@ -49,7 +49,8 @@ def file_fingerprint(path: Path) -> str:
 def _read_provenance(model_path: Path) -> dict[str, Any]:
     """Trained vs current backend and precision.
 
-    ``.pkl`` fixtures carry no proto, so only the current side is reported.
+    Only ``.binpb`` fixtures carry a proto; anything else reports only the
+    current side (see ``_NO_PROVENANCE`` below).
     """
     from meridian import backend
 

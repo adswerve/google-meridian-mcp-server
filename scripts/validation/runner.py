@@ -537,17 +537,4 @@ async def run_matrix(client) -> Report:
     except AssertionError as exc:
         report.fail(label, str(exc))
 
-    # Loader smoke: the .pkl fixture must load through the pickle branch.
-    label = "GLOBAL/loader-pkl/national-revenue-pkl"
-    try:
-        overview = await call(
-            client, "get_model_overview", {"model_id": "national-revenue-pkl"}
-        )
-        assert "available_tool_options" in overview, (
-            f"{label}: pkl model failed to load"
-        )
-        report.ok(label)
-    except AssertionError as exc:
-        report.fail(label, str(exc))
-
     return report

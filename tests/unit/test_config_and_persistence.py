@@ -148,7 +148,7 @@ class TestOptimizationConfig:
 class TestPersistenceHelpers:
     def test_build_model_id_strips_suffix_and_nested_model_name(self):
         assert build_model_id("geo-revenue/model.binpb") == "geo-revenue"
-        assert build_model_id(Path("retail/model.pkl")) == "retail"
+        assert build_model_id(Path("retail/model.binpb")) == "retail"
         assert build_model_id(PurePosixPath("nested/demo.binpb")) == "nested/demo"
 
     def test_build_display_name_humanizes_delimiters(self):
@@ -259,6 +259,9 @@ class TestGcsModelProvider:
     def test_discover_skips_unsupported_blob_extensions(
         self, monkeypatch: pytest.MonkeyPatch
     ):
+        """.pkl is now unsupported (Meridian 2.0 dropped pickle models), so a
+        `.pkl` blob is skipped exactly like `notes.txt` -- neither is a
+        recognized `ModelFormat` extension any more."""
         blobs = [
             _FakeBlob("models/root/geo/model.binpb", etag="a"),
             _FakeBlob("models/root/notes.txt", etag="b"),
@@ -272,9 +275,9 @@ class TestGcsModelProvider:
 
         entries = provider.discover()
 
-        assert [entry.model_id for entry in entries] == ["geo", "demo"]
+        assert [entry.model_id for entry in entries] == ["geo"]
         assert entries[0].source_path == "gs://bucket/models/root/geo/model.binpb"
-        assert entries[1].model_format == "pkl"
+        assert entries[0].model_format == "binpb"
 
     def test_materialize_returns_existing_cached_file_when_etag_matches_sidecar(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
