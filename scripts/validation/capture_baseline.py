@@ -757,7 +757,23 @@ def build_client(transport: str, url: str | None):
     if transport == "http":
         if not url:
             raise SystemExit("--transport http requires --url")
-        return Client(normalize_mcp_url(url))
+        endpoint = normalize_mcp_url(url)
+        # Task 24: example-dev-project's domain-restricted-sharing org policy refused
+        # the allUsers invoker binding, so the deployed service requires an
+        # identity token (`gcloud auth print-identity-token`) even though
+        # allow_unauthenticated=true in Terraform. MCP_AUTH_TOKEN carries it
+        # here rather than adding a CLI flag that would leak into shell
+        # history; unset (the local/inprocess-adjacent case) is unaffected.
+        token = os.environ.get("MCP_AUTH_TOKEN")
+        if token:
+            from fastmcp.client.transports import StreamableHttpTransport
+
+            return Client(
+                StreamableHttpTransport(
+                    endpoint, headers={"Authorization": f"Bearer {token}"}
+                )
+            )
+        return Client(endpoint)
     from google_meridian_mcp_server.server import mcp
 
     return Client(mcp)
