@@ -5,6 +5,9 @@ locals {
     GCS_BUCKET              = var.gcs_bucket
     GCS_MODELS_PREFIX       = var.gcs_models_prefix
     OPTIMIZATION_GCS_PREFIX = var.optimization_gcs_prefix
+    # Production precision is PINNED, never inherited from a library default.
+    # Applied to both the CPU and GPU jobs via the dynamic env blocks below.
+    MERIDIAN_ENABLE_JAX_X64 = "true"
   }
 }
 

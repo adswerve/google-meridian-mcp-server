@@ -44,6 +44,18 @@ resource "google_cloud_run_v2_service" "server" {
         name  = "MCP_HOST"
         value = "0.0.0.0"
       }
+      env {
+        name  = "MERIDIAN_ENABLE_JAX_X64"
+        value = "true"
+      }
+      # Baseline capture isolation (spec 8): the harness sets
+      # RESULT_CACHE_ENABLED=false in the CLIENT process, which a deployed
+      # server never sees. Without this, cloud analysis captures would be
+      # served from a warm cache and diffed against cold local ones.
+      env {
+        name  = "RESULT_CACHE_ENABLED"
+        value = "false"
+      }
       # Genuine inputs
       env {
         name  = "GCS_BUCKET"
