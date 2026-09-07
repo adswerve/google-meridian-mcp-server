@@ -203,3 +203,51 @@ _none_
 | `national-revenue/run_optimization__target_roas.json` | `/status/meridian_version` | key added: 'meridian_version' -- Spec 6.3: replaces `backend` as agent-visible provenance. It was already written to the run manifest and returned by nothing, so removing `backend` alone would have been a net LOSS of provenance. |
 | `national-revenue/run_optimization__target_roas.json` | `/submit/backend` | key removed: 'backend' -- Spec 6.2/6.3: the backend knob is removed in Phase 4. JAX is the only supported backend, so a per-run `backend` field carries no information. |
 | `national-revenue/run_optimization__target_roas.json` | `/submit/meridian_version` | key added: 'meridian_version' -- Spec 6.3: replaces `backend` as agent-visible provenance. It was already written to the run manifest and returned by nothing, so removing `backend` alone would have been a net LOSS of provenance. |
+
+---
+
+## Measured drift distribution (added after the final whole-branch review)
+
+Measured directly, ignoring the tolerance, for the same reason set out in
+report 01:
+
+```
+files compared            : 293
+payload-identical         : 114  (38.9%)
+numeric leaves compared   : 80013
+numeric leaves DIFFERING  : 19633
+non-numeric differences   :     1
+relative delta   p50=3.790e-06   p90=1.282e-05   p99=7.310e-05   max=1.000e+00
+leaves exceeding 1e-05    :  2613
+leaves exceeding 1e-04    :   133
+leaves exceeding 1e-03    :     7
+```
+
+The 7 leaves above tolerance are exactly the 7 REVIEWs this report already
+lists, and `max=1.000e+00` is the near-zero case among them
+(`-6.1281e-07 -> -1.38084e-15`): 100% in relative terms only because the
+denominator vanishes, and absolutely negligible.
+
+Switching from TensorFlow/float32 to JAX/float64 moves far more than the
+version bump did — 24.5% of numeric leaves versus 5.1% — which is what a
+precision change should do. The movement is nonetheless tiny: median 3.8e-6,
+p99 7.3e-5.
+
+**The single non-numeric difference is `headline`**, at
+`/listing/runs/0/headline`:
+
+```
+A: ROAS 0.737703 -> 1.95429 at budget 1471.0
+B: ROAS 0.737704 -> 1.95429 at budget 1471.0
+```
+
+One digit in the last significant figure, ~1.4e-6 relative. This is precisely
+the defect the design anticipated: `headline` bakes three computed floats into
+an opaque string, so a naive comparison would fail it as a string change and
+bypass the numeric tolerance entirely. `diff_baseline` compares it
+structurally — label and separators exactly, embedded numbers through the same
+tolerance as every other float — which is why it produces no finding. Without
+that handling this would have been a false FAIL on every optimization status
+case.
+
+**Zero unexplained differences.**

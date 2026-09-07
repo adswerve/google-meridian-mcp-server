@@ -68,3 +68,39 @@ _none_
 ## ACKNOWLEDGED - pre-registered in acknowledged.py
 
 _none_
+
+---
+
+## Measured drift distribution (added after the final whole-branch review)
+
+The final review made a fair methodological point: `REL_TOLERANCE = 1e-3` sits
+well above the payloads' own quantization (`optimizer_facade` rounds to 6
+significant figures, ~5e-7 relative), so a clean PASS establishes "no leaf
+moved more than 0.1%", **not** "nothing changed". Rather than argue the point,
+the drift was measured directly, ignoring the tolerance entirely:
+
+```
+files compared            : 330
+payload-identical         : 300  (90.9%)
+numeric leaves compared   : 16452
+numeric leaves DIFFERING  :   838
+non-numeric differences   :     0
+relative delta   p50=1.807e-06   p90=6.171e-06   p99=9.941e-06   max=1.267e-04
+leaves exceeding 1e-05    :     8
+leaves exceeding 1e-04    :     3
+leaves exceeding 1e-03    :     0
+```
+
+**What this supports.** Upgrading Meridian 1.7 -> 2.0 on the TensorFlow
+backend produced **no structural change at all** (zero non-numeric
+differences across 16,452 numeric leaves), left **91% of payloads
+byte-identical**, and where numbers moved they moved by at most **1.27e-4
+(0.013%)** with a median of 1.8e-6.
+
+**What it does not support.** The earlier phrasing "byte-identical output
+across all 330 tool cases" was too strong and is corrected here: 300 of 330
+were byte-identical; the remaining 30 differ only in low-order float digits.
+
+The tolerance was not concealing anything meaningful — the maximum observed
+drift is an order of magnitude below the 1e-3 threshold. That is now measured
+rather than assumed, which is the stronger claim.
