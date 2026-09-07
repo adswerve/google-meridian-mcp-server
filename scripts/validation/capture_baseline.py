@@ -15,6 +15,9 @@ Usage:
       --tools run_optimization run_future_optimization lifecycle
   uv run python -m scripts.validation.capture_baseline --label v2.0-tf \
       --tools get_model_fit --cases geo_filter          # re-run one case
+  uv run python -m scripts.validation.capture_baseline --label <existing-label> \
+      --allow-stale-recapture   # required once the recorded env is stale;
+                                # see CRITICAL C1 below -- refused otherwise
 
 Snapshots land in the gitignored tree
 ``models/_validation/_baseline/<label>/<variant>/<tool>__<case>.json``,
@@ -66,6 +69,35 @@ exactly the snapshots affected, which the once-at-the-end manifest cannot
 see. Before executing anything, ``capture()`` prints a one-line pre-flight
 summary (Minor 4: current/stale/missing/will-execute counts) so that cost
 is visible before it is incurred, without gating or prompting on it.
+
+CRITICAL C1 (whole-branch review): a label whose EXISTING snapshots have
+gone stale because the environment moved on (the exact situation
+``v1.7-engine`` is in today: its 330 snapshots record ``google-meridian
+1.7.0`` and this machine now runs ``2.0.0``, so every one of them reads as
+``stale_env``) is a fundamentally different situation from a label that
+merely has missing or corrupt cases. Recapturing a stale-env snapshot does
+not "catch it up" -- it PERMANENTLY DESTROYS the only record of how the OLD
+environment behaved, and for a label like ``v1.7-engine`` that record
+cannot be regenerated (the old Meridian version is no longer installed).
+Before Fix wave 6 this recapture happened unconditionally and silently: no
+prompt, and ``--force`` was not even required, because a stale-env snapshot
+was already treated as "not a valid skip" on the plain default path.
+
+``--force`` keeps its plain, orthogonal meaning from Fix wave 4 (recapture
+regardless of validity/currency -- including snapshots that are already
+CURRENT); it is a "redo everything" instrument, not an acknowledgement that
+irreplaceable old-environment evidence is about to be overwritten, and a
+label can accumulate stale-env snapshots with nobody ever having typed
+``--force`` at all. So the stale-env guard is a SEPARATE flag,
+``--allow-stale-recapture``, and it gates BOTH the default path and
+``--force``: recapturing any ``stale_env`` snapshot requires this flag
+regardless of ``--force``. If a plan contains one or more ``stale_env``
+snapshots and this flag is absent, ``capture()`` refuses the entire run
+before touching anything -- naming the label, the count of stale-env
+snapshots, and which recorded packages differ from what this run would
+capture -- and returns 1. A ``corrupt`` snapshot (empty/malformed/no
+``payload``) is not gated: there is no valid old-environment data in it to
+lose, so it is recaptured exactly as before.
 """
 
 from __future__ import annotations
@@ -220,6 +252,54 @@ def _snapshot_status(path: Path, current_env: dict[str, Any]) -> str:
     if envelope.get("capture_env") == current_env:
         return "current"
     return "stale_env"
+
+
+def _package_diff(
+    old_packages: dict[str, Any], new_packages: dict[str, Any]
+) -> dict[str, tuple[Any, Any]]:
+    """Which package versions differ between an existing snapshot's
+    ``capture_env["packages"]`` and what this run would record -- the detail
+    the CRITICAL C1 refusal message names so an operator can tell "the
+    environment genuinely moved on" from "I nearly destroyed something for
+    no reason". Keyed on the union of both sides so an added/removed package
+    shows up too, not just a changed version string.
+    """
+    diffs: dict[str, tuple[Any, Any]] = {}
+    for key in sorted(set(old_packages) | set(new_packages)):
+        old_value = old_packages.get(key)
+        new_value = new_packages.get(key)
+        if old_value != new_value:
+            diffs[key] = (old_value, new_value)
+    return diffs
+
+
+def describe_stale_env(old_env: dict[str, Any], new_env: dict[str, Any]) -> str:
+    """Human-readable summary of why one snapshot's ``capture_env`` is
+    stale, for the CRITICAL C1 refusal message. Leads with package
+    differences (the ``v1.7-engine`` scenario this guard exists for --
+    ``google-meridian``/``jax`` version drift) and falls back to naming any
+    other differing field so the message stays honest when packages did NOT
+    change (e.g. only ``src_hash`` moved because ``src/`` was edited).
+    """
+    parts: list[str] = []
+    pkg_diffs = _package_diff(
+        old_env.get("packages") or {}, new_env.get("packages") or {}
+    )
+    if pkg_diffs:
+        rendered = ", ".join(
+            f"{name} {old!r} -> {new!r}" for name, (old, new) in pkg_diffs.items()
+        )
+        parts.append(f"packages differ: {rendered}")
+    for key in ("python", "transport", "fixture_hash", "src_hash", "worker_env"):
+        if old_env.get(key) != new_env.get(key):
+            parts.append(
+                f"{key} changed ({old_env.get(key)!r} -> {new_env.get(key)!r})"
+            )
+    return (
+        "; ".join(parts)
+        if parts
+        else "environment changed (no field-level detail available)"
+    )
 
 
 # MINOR New-4: 5 minutes is far longer than any single write_snapshot call
@@ -792,6 +872,7 @@ async def capture(
     out_root: Path,
     variants_selected: bool = False,
     poll_timeout: float = _DEFAULT_POLL_TIMEOUT,
+    allow_stale_recapture: bool = False,
 ) -> int:
     """``variants_selected`` must be True whenever ``variant_keys`` came from
     an explicit ``--variants`` (as opposed to defaulting to every known
@@ -871,18 +952,32 @@ async def capture(
 
         # MINOR 4: visibility before cost, no gate/prompt -- the same
         # command is used against Cloud Run, where execution is not free.
-        n_current = n_stale = n_missing = 0
+        #
+        # CRITICAL C1: 'stale_env' and 'corrupt' are counted separately here
+        # (both still roll up into the printed "stale" total, unchanged from
+        # Fix wave 4/5) because only 'stale_env' overwrites data that
+        # recorded a DIFFERENT, possibly irreplaceable environment. A
+        # 'corrupt' file has no valid payload to lose, so it stays ungated.
+        n_current = n_missing = n_stale_env = n_corrupt = 0
+        stale_env_examples: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for _variant, variant_cases, variant_env in plan:
             for case in variant_cases:
-                status = _snapshot_status(
-                    case_path(out_root, label, _variant.key, case), variant_env
-                )
+                path = case_path(out_root, label, _variant.key, case)
+                status = _snapshot_status(path, variant_env)
                 if status == "current":
                     n_current += 1
                 elif status == "missing":
                     n_missing += 1
+                elif status == "corrupt":
+                    n_corrupt += 1
                 else:
-                    n_stale += 1
+                    n_stale_env += 1
+                    envelope = read_snapshot(path)
+                    if envelope is not None:
+                        stale_env_examples.append(
+                            (envelope.get("capture_env") or {}, variant_env)
+                        )
+        n_stale = n_stale_env + n_corrupt
         n_will_execute = (
             (n_current + n_stale + n_missing) if force else (n_stale + n_missing)
         )
@@ -891,6 +986,31 @@ async def capture(
             f"-> {n_will_execute} case(s) will be executed"
             + (" (--force: every case, regardless of currency)" if force else "")
         )
+
+        # CRITICAL C1: stale-environment recapture requires explicit opt-in,
+        # independent of --force (see the module docstring and
+        # describe_stale_env). Refuse the ENTIRE run before executing
+        # anything -- naming the label, how many snapshots are stale, and
+        # what changed -- rather than silently overwriting the only record
+        # of the old environment's behaviour.
+        if n_stale_env and not allow_stale_recapture:
+            diffs = "; ".join(
+                dict.fromkeys(
+                    describe_stale_env(old_env, new_env)
+                    for old_env, new_env in stale_env_examples
+                )
+            )
+            print(
+                f"REFUSED: label {label!r} has {n_stale_env} snapshot(s) whose "
+                "recorded environment no longer matches this run. Recapturing "
+                "them would permanently overwrite the only record of how the "
+                "OLD environment behaved.\n"
+                f"What changed: {diffs}\n"
+                "Re-run with --allow-stale-recapture once you have confirmed "
+                "this is intentional -- --force alone does not bypass this "
+                "guard, and this guard does not require --force either."
+            )
+            return 1
 
         # Phase 2: execute.
         for variant, variant_cases, variant_env in plan:
@@ -1009,6 +1129,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--force", action="store_true", help="Re-capture existing cases"
     )
     parser.add_argument(
+        "--allow-stale-recapture",
+        action="store_true",
+        help=(
+            "CRITICAL C1: required to recapture any snapshot whose recorded "
+            "environment no longer matches this run (e.g. a package version "
+            "changed since the label was captured). Independent of --force: "
+            "--force alone does not bypass this guard. Without it, a run "
+            "that would touch a stale-environment snapshot refuses entirely "
+            "before executing anything, naming the label and what changed."
+        ),
+    )
+    parser.add_argument(
         "--poll-timeout",
         type=float,
         default=_DEFAULT_POLL_TIMEOUT,
@@ -1051,6 +1183,7 @@ def main(argv: list[str] | None = None) -> int:
             out_root=Path(args.out_root),
             variants_selected=args.variants is not None,
             poll_timeout=args.poll_timeout,
+            allow_stale_recapture=args.allow_stale_recapture,
         )
     )
 

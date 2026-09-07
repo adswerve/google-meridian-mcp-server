@@ -1016,6 +1016,7 @@ async def test_capture_recaptures_only_the_case_whose_snapshot_environment_is_st
         force=False,
         out_root=tmp_path,
         variants_selected=True,
+        allow_stale_recapture=True,  # CRITICAL C1: required now that a_path is stale_env
     )
 
     assert rc == 0
@@ -1026,6 +1027,233 @@ async def test_capture_recaptures_only_the_case_whose_snapshot_environment_is_st
         "output_type": "cpik",
         "current": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL C1 (whole-branch review): recapturing a stale-environment snapshot
+# permanently destroys the only record of how the OLD environment behaved
+# (the v1.7-engine scenario: 330 snapshots recording google-meridian 1.7.0,
+# unregenerable now that 1.7 is no longer installed). This must require an
+# explicit, distinct opt-in -- --force is NOT enough, because --force's own
+# meaning ("recapture regardless of validity/currency") predates this guard
+# and a label can go stale with nobody ever typing --force at all.
+# ---------------------------------------------------------------------------
+
+
+def _stale_env_with_package_diff(fixture_root_variant: str = "v1") -> dict:
+    """A hand-crafted capture_env whose ``packages`` disagrees with reality
+    -- exactly the shape the real v1.7-engine snapshots have today (recorded
+    google-meridian 1.7.0 / jax null against whatever this test machine
+    actually has installed), so the guard's package-diff message has
+    something real to report."""
+    return {
+        "transport": "inprocess",
+        "python": cb.platform.python_version(),
+        "packages": {"google-meridian": "1.7.0", "jax": None},
+        "worker_env": {"MERIDIAN_BACKEND": "jax"},
+        "fixture_hash": cb.fixture_content_hash(
+            cb.DEFAULT_OUT_ROOT / fixture_root_variant
+        ),
+        "src_hash": cb.src_tree_hash(),
+    }
+
+
+async def test_capture_refuses_stale_env_recapture_without_explicit_opt_in(
+    tmp_path, monkeypatch, capsys
+):
+    """The guard, directly: a stale-environment snapshot is left completely
+    untouched and the run exits nonzero unless --allow-stale-recapture was
+    given. The refusal message must name the label, the stale count, and
+    which packages differ -- an operator staring at this output must be able
+    to tell "I meant to do this" from "I nearly destroyed something"."""
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    path = cb.case_path(tmp_path, "v1.7-engine", "v1", CASE)
+    cb.write_snapshot(
+        path,
+        {"value": "irreplaceable"},
+        capture_env=_stale_env_with_package_diff(),
+    )
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            raise AssertionError("the guard must refuse BEFORE any case tool is called")
+
+    _patch_client(monkeypatch, _Client())
+
+    rc = await cb.capture(
+        label="v1.7-engine",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+
+    assert rc == 1
+    # Nothing was touched: the on-disk snapshot is byte-for-byte the original.
+    assert json.loads(path.read_text())["payload"] == {"value": "irreplaceable"}
+    out = capsys.readouterr().out
+    assert "REFUSED" in out
+    assert "'v1.7-engine'" in out  # names the label
+    assert "1 snapshot(s)" in out  # says how many are stale
+    assert "google-meridian" in out and "1.7.0" in out  # says what changed
+    assert "--allow-stale-recapture" in out
+
+
+async def test_capture_force_alone_does_not_bypass_the_stale_env_guard(
+    tmp_path, monkeypatch, capsys
+):
+    """--force means "redo everything, valid or not" (Fix wave 4) -- it is
+    NOT an acknowledgement that irreplaceable old-environment evidence is
+    about to be overwritten. The guard fires exactly the same whether
+    --force was passed or not."""
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    path = cb.case_path(tmp_path, "v1.7-engine", "v1", CASE)
+    cb.write_snapshot(
+        path,
+        {"value": "irreplaceable"},
+        capture_env=_stale_env_with_package_diff(),
+    )
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            raise AssertionError("the guard must refuse BEFORE any case tool is called")
+
+    _patch_client(monkeypatch, _Client())
+
+    rc = await cb.capture(
+        label="v1.7-engine",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=True,  # <-- --force alone, no --allow-stale-recapture
+        out_root=tmp_path,
+        variants_selected=True,
+    )
+
+    assert rc == 1
+    assert json.loads(path.read_text())["payload"] == {"value": "irreplaceable"}
+    assert "REFUSED" in capsys.readouterr().out
+
+
+async def test_capture_allow_stale_recapture_permits_the_guarded_recapture(
+    tmp_path, monkeypatch
+):
+    """The explicit opt-in, given, lets the run through -- proving the
+    refusal above is a real gate and not a permanent block."""
+    _patch_matrix(monkeypatch, ["v1"], [CASE])
+    monkeypatch.setattr(cb, "worker_env", lambda: {"MERIDIAN_BACKEND": "jax"})
+    path = cb.case_path(tmp_path, "v1.7-engine", "v1", CASE)
+    cb.write_snapshot(
+        path,
+        {"value": "old"},
+        capture_env=_stale_env_with_package_diff(),
+    )
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def call_tool(self, name, args):
+            if name == "get_model_overview":
+                return _Result(_OVERVIEW_OK)
+            return _Result({"value": "new"})
+
+    _patch_client(monkeypatch, _Client())
+
+    rc = await cb.capture(
+        label="v1.7-engine",
+        transport="inprocess",
+        url=None,
+        variant_keys=["v1"],
+        tools=None,
+        cases_filter=None,
+        compute_tier=None,
+        force=False,
+        out_root=tmp_path,
+        variants_selected=True,
+        allow_stale_recapture=True,
+    )
+
+    assert rc == 0
+    assert json.loads(path.read_text())["payload"] == {"value": "new"}
+
+
+def test_describe_stale_env_names_the_differing_packages():
+    old_env = {
+        "transport": "inprocess",
+        "python": "3.13.13",
+        "packages": {"google-meridian": "1.7.0", "jax": None},
+        "worker_env": {"MERIDIAN_BACKEND": "jax"},
+        "fixture_hash": "h1",
+        "src_hash": "s1",
+    }
+    new_env = {
+        **old_env,
+        "packages": {"google-meridian": "2.0.0", "jax": "0.11.1"},
+    }
+    description = cb.describe_stale_env(old_env, new_env)
+    assert "packages differ" in description
+    assert "google-meridian" in description
+    assert "'1.7.0'" in description and "'2.0.0'" in description
+    assert "jax" in description
+    assert "None" in description and "'0.11.1'" in description
+
+
+def test_describe_stale_env_falls_back_when_packages_match():
+    """A rebuilt fixture or an edited src/ can make a snapshot stale_env
+    with IDENTICAL packages -- the message must not claim packages differ
+    when they didn't."""
+    old_env = {
+        "transport": "inprocess",
+        "python": "3.13.13",
+        "packages": {"google-meridian": "2.0.0"},
+        "worker_env": {"MERIDIAN_BACKEND": "jax"},
+        "fixture_hash": "h1",
+        "src_hash": "s1",
+    }
+    new_env = {**old_env, "fixture_hash": "h2"}
+    description = cb.describe_stale_env(old_env, new_env)
+    assert "packages differ" not in description
+    assert "fixture_hash changed" in description
+
+
+def test_cli_parses_allow_stale_recapture_flag_default_false():
+    args = cb._parse_args(["--label", "L"])
+    assert args.allow_stale_recapture is False
+
+
+def test_cli_parses_allow_stale_recapture_flag_when_given():
+    args = cb._parse_args(["--label", "L", "--allow-stale-recapture"])
+    assert args.allow_stale_recapture is True
 
 
 async def test_capture_failure_in_one_case_does_not_disturb_an_unrelated_snapshot(
@@ -1243,6 +1471,7 @@ async def test_capture_recaptures_when_the_fixture_content_changes(
         force=False,
         out_root=label_root,
         variants_selected=True,
+        allow_stale_recapture=True,  # CRITICAL C1: rebuilt fixture -> stale_env
     )
     assert rc1 == 0
     assert calls == ["get_channel_summary"]  # genuinely recaptured, not skipped
