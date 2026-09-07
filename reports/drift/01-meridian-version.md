@@ -24,8 +24,11 @@
 | worker MERIDIAN_BACKEND | None | None |
 | worker MERIDIAN_ENABLE_JAX_X64 | None | None |
 | worker TF_CPP_MIN_LOG_LEVEL | 3 | 3 |
+| probe backend (`probe_backend`) | None | tensorflow |
 | relative tolerance (REL_TOLERANCE) | 1e-03 | 1e-03 |
 | absolute floor (ABS_FLOOR) | 1e-09 | 1e-09 |
+
+> `worker MERIDIAN_BACKEND`/`worker MERIDIAN_ENABLE_JAX_X64` above are recorded verbatim from the environment this capture DRIVER process happened to inherit -- frozen by design (`manifest.build_manifest`'s docstring) so existing snapshots never go stale, and may not reflect what the tools actually ran on (`None` above is normal, not a bug). `probe backend` is the CORRECTED value instead: the backend the fixture probe was explicitly forced to run under, mirroring how the real analysis/optimization workers resolve it -- this is what the Fixture provenance section's `current_backend` below actually measures. `None` there means an older manifest predating this field, not that no backend was used.
 
 ## Fixture provenance
 
@@ -41,13 +44,13 @@
 
 **v2.0-tf**
 
-- `geo-kpi-only`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current JAX/FLOAT64 -- backend mismatch: True, precision mismatch: True
-- `geo-kpi-rpk`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current JAX/FLOAT64 -- backend mismatch: True, precision mismatch: True
-- `geo-revenue`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current JAX/FLOAT64 -- backend mismatch: True, precision mismatch: True
-- `geo-revenue-media-only`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current JAX/FLOAT64 -- backend mismatch: True, precision mismatch: True
-- `national-kpi-only`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current JAX/FLOAT64 -- backend mismatch: True, precision mismatch: True
-- `national-kpi-rpk`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current JAX/FLOAT64 -- backend mismatch: True, precision mismatch: True
-- `national-revenue`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current JAX/FLOAT64 -- backend mismatch: True, precision mismatch: True
+- `geo-kpi-only`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current TENSORFLOW/FLOAT32 -- backend mismatch: False, precision mismatch: False
+- `geo-kpi-rpk`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current TENSORFLOW/FLOAT32 -- backend mismatch: False, precision mismatch: False
+- `geo-revenue`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current TENSORFLOW/FLOAT32 -- backend mismatch: False, precision mismatch: False
+- `geo-revenue-media-only`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current TENSORFLOW/FLOAT32 -- backend mismatch: False, precision mismatch: False
+- `national-kpi-only`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current TENSORFLOW/FLOAT32 -- backend mismatch: False, precision mismatch: False
+- `national-kpi-rpk`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current TENSORFLOW/FLOAT32 -- backend mismatch: False, precision mismatch: False
+- `national-revenue`: trained TENSORFLOW/FLOAT32 (v1.7.0) vs current TENSORFLOW/FLOAT32 -- backend mismatch: False, precision mismatch: False
 
 ## Summary
 

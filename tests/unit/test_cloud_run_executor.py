@@ -104,6 +104,7 @@ def test_launch_calls_run_job_with_env_overrides():
     } <= env_names
     env_by_name = {e.name: e.value for e in req.overrides.container_overrides[0].env}
     assert env_by_name["MERIDIAN_BACKEND"] == "jax"
+    assert env_by_name["MERIDIAN_ENABLE_JAX_X64"] == "true"
 
 
 def test_is_alive_reflects_execution_completion():

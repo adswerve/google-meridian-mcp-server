@@ -37,6 +37,15 @@
 | relative tolerance (REL_TOLERANCE) | 1e-03 | 1e-03 |
 | absolute floor (ABS_FLOOR) | 1e-09 | 1e-09 |
 
+> **Environment note (added after the final whole-branch review).** This
+> report predates the `probe backend` row (see `01-meridian-version.md`) and
+> cannot be re-rendered to add it -- the `-sup` label copies it was captured
+> from no longer exist. `worker MERIDIAN_BACKEND` above is the *inherited*
+> ambient environment (frozen by design; `None` is normal, not a bug), not
+> necessarily what the tools ran under. The Fixture provenance section
+> immediately below reflects the backend the probe actually ran under, which
+> is what this report's payloads measure.
+
 ## Fixture provenance
 
 **v2.0-tf-sup**
@@ -250,4 +259,10 @@ tolerance as every other float — which is why it produces no finding. Without
 that handling this would have been a false FAIL on every optimization status
 case.
 
-**Zero unexplained differences.**
+**Zero unexplained differences.** This rests on the 7 named REVIEWs above
+(the only leaves exceeding the 1e-3 tolerance) plus the measured
+distribution for the rest: the other 126 of the 133 leaves above 1e-4 are
+not individually enumerated, only characterised distributionally (p50/p90/p99
+above) as sub-tolerance precision-change movement consistent with the
+TensorFlow/float32 -> JAX/float64 switch, the same basis as the "zero
+unexplained" claim in report 01.

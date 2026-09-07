@@ -27,6 +27,15 @@
 | relative tolerance (REL_TOLERANCE) | 1e-03 | 1e-03 |
 | absolute floor (ABS_FLOOR) | 1e-09 | 1e-09 |
 
+> **Environment note (added after the final whole-branch review).** This
+> report predates the `probe backend` row (see `01-meridian-version.md`) and
+> cannot be re-rendered to add it -- the `/tmp/d3` scratch copies it was
+> captured from no longer exist. `worker MERIDIAN_BACKEND` above is the
+> *inherited* ambient environment (frozen by design), not necessarily what
+> the tools ran under; here it happens to agree with the Fixture provenance
+> section immediately below, which reflects the backend the probe actually
+> ran under and is what this report's payloads measure.
+
 ## Fixture provenance
 
 **v2.0-jax-sup**

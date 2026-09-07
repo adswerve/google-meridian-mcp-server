@@ -13,6 +13,7 @@ from google_meridian_mcp_server.domain.optimization import (
     OptimizationRun,
     RunStatus,
 )
+from google_meridian_mcp_server.execution.base_subprocess import MERIDIAN_BACKEND
 from google_meridian_mcp_server.execution.worker import (
     _expected_parent_pid,
     _is_orphaned,
@@ -381,6 +382,7 @@ def test_main_optimization_path_forces_x64_even_if_ambient_env_says_false(
 
     assert rc == 0
     assert os.environ["MERIDIAN_ENABLE_JAX_X64"] == "true"
+    assert os.environ["MERIDIAN_BACKEND"] == MERIDIAN_BACKEND
 
 
 def test_main_analysis_path_forces_x64_even_if_ambient_env_says_false(monkeypatch):
@@ -395,3 +397,4 @@ def test_main_analysis_path_forces_x64_even_if_ambient_env_says_false(monkeypatc
 
     assert rc == 0
     assert os.environ["MERIDIAN_ENABLE_JAX_X64"] == "true"
+    assert os.environ["MERIDIAN_BACKEND"] == MERIDIAN_BACKEND
