@@ -281,9 +281,7 @@ def signed_error(classic: dict, weekly: dict) -> dict[str, Any]:
     return {
         "per_channel_spend_delta": per_channel,
         "worst_abs_channel_delta": max(abs(v) for v in per_channel.values()),
-        "worst_rel_channel_delta": max(
-            abs(wa[c] - ca[c]) / ca[c] for c in ca if ca[c]
-        ),
+        "worst_rel_channel_delta": max(abs(wa[c] - ca[c]) / ca[c] for c in ca if ca[c]),
         "total_outcome_classic": ct,
         "total_outcome_weekly": wt,
         "total_outcome_signed_delta": wt - ct,
@@ -311,17 +309,31 @@ def run_all(model_id: str, steps: list[float], bounds: list[list[float]]) -> dic
         ["--mode", "reuse", "--model-id", model_id, "--multiplier-step", reference_step]
     )
     record["combine"] = _child(
-        ["--mode", "combine", "--model-id", model_id, "--multiplier-step", reference_step]
+        [
+            "--mode",
+            "combine",
+            "--model-id",
+            model_id,
+            "--multiplier-step",
+            reference_step,
+        ]
     )
     for decrease, increase, variation in bounds:
         record["bounds_sweep"].append(
             _child(
                 [
-                    "--mode", "weekly", "--model-id", model_id,
-                    "--multiplier-step", reference_step,
-                    "--bounds-decrease", str(decrease),
-                    "--bounds-increase", str(increase),
-                    "--bounds-variation", str(variation),
+                    "--mode",
+                    "weekly",
+                    "--model-id",
+                    model_id,
+                    "--multiplier-step",
+                    reference_step,
+                    "--bounds-decrease",
+                    str(decrease),
+                    "--bounds-increase",
+                    str(increase),
+                    "--bounds-variation",
+                    str(variation),
                 ]
             )
         )
@@ -332,7 +344,9 @@ def run_all(model_id: str, steps: list[float], bounds: list[list[float]]) -> dic
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--mode", choices=("all", "classic", "weekly", "reuse", "combine"), default="all"
+        "--mode",
+        choices=("all", "classic", "weekly", "reuse", "combine"),
+        default="all",
     )
     parser.add_argument("--model-id", default="geo-revenue")
     parser.add_argument("--steps", nargs="*", type=float, default=[0.05, 0.01, 0.005])
