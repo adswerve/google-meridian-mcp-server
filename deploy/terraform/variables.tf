@@ -48,6 +48,10 @@ variable "allow_unauthenticated" {
   type    = bool
   default = false
 }
+variable "disable_result_cache" {
+  type    = bool
+  default = false
+}
 variable "labels" {
   type    = map(string)
   default = {}

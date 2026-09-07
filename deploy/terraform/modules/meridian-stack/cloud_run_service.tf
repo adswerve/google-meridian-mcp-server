@@ -48,13 +48,16 @@ resource "google_cloud_run_v2_service" "server" {
         name  = "MERIDIAN_ENABLE_JAX_X64"
         value = "true"
       }
-      # Baseline capture isolation (spec 8): the harness sets
-      # RESULT_CACHE_ENABLED=false in the CLIENT process, which a deployed
-      # server never sees. Without this, cloud analysis captures would be
-      # served from a warm cache and diffed against cold local ones.
+      # Result cache: enabled by default (production-correct). A deployment
+      # doing baseline capture verification (spec 8) needs it OFF instead —
+      # the harness sets RESULT_CACHE_ENABLED=false in the CLIENT process,
+      # which a deployed server never sees, so without disabling it here too,
+      # cloud analysis captures would be served from a warm cache and diffed
+      # against cold local ones. Set disable_result_cache=true for that case;
+      # leave it false (the default) for real client installs.
       env {
         name  = "RESULT_CACHE_ENABLED"
-        value = "false"
+        value = var.disable_result_cache ? "false" : "true"
       }
       # Genuine inputs
       env {

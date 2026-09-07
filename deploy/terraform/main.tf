@@ -27,6 +27,7 @@ module "meridian_stack" {
   optimization_allowed_tiers = var.optimization_allowed_tiers
   optimization_default_tier  = var.optimization_default_tier
   allow_unauthenticated      = var.allow_unauthenticated
+  disable_result_cache       = var.disable_result_cache
 
   labels = var.labels
 }

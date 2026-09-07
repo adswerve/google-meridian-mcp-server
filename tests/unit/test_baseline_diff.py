@@ -741,6 +741,35 @@ def test_report_has_a_legend_explaining_what_blocks():
     assert "block" in report.lower()
 
 
+def test_report_environment_table_prints_the_corrected_probe_backend():
+    """Final-branch-review Important #4: manifest.py writes `probe_backend`
+    (the CORRECTED backend the fixture probe actually ran under) but nothing
+    ever read it back out, so `02-backend-precision.md` printed the frozen,
+    possibly-wrong `worker MERIDIAN_BACKEND` row (`None`) right next to a
+    Fixture-provenance section reporting `TENSORFLOW` for the same label --
+    two contradictory, unlabelled answers in one report.
+
+    Reproduces that exact shape: label `a` never exported MERIDIAN_BACKEND
+    (worker_env value None) but its probe was still forced onto tensorflow;
+    label `b`'s worker_env genuinely says jax. The report must print BOTH
+    manifests' `probe_backend` values distinguishably, not silently drop the
+    corrected one.
+    """
+    manifest_a = _base_manifest()
+    manifest_a["worker_env"] = {"MERIDIAN_BACKEND": None}
+    manifest_a["probe_backend"] = "tensorflow"
+    manifest_b = _base_manifest()
+    manifest_b["worker_env"] = {"MERIDIAN_BACKEND": "jax"}
+    manifest_b["probe_backend"] = "jax"
+    missing = {"only_in_a": [], "only_in_b": []}
+    report = db.render_report("a", "b", {}, manifest_a, manifest_b, missing)
+    env_section = report.split("## Environment")[1].split("## Fixture provenance")[0]
+    assert "| probe backend" in env_section
+    assert "| tensorflow | jax |" in env_section
+    assert "frozen" in env_section.lower()
+    assert "corrected" in env_section.lower()
+
+
 def test_report_collapses_identical_per_case_provenance_lines_to_one():
     findings_by_case = {
         "case1": [db.Finding("FAIL", "/x", "value changed")],

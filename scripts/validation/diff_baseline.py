@@ -687,9 +687,27 @@ def render_report(
             f"| {manifest_b.get('worker_env', {}).get(key)} |"
         )
     lines.append(
+        f"| probe backend (`probe_backend`) | {manifest_a.get('probe_backend')} "
+        f"| {manifest_b.get('probe_backend')} |"
+    )
+    lines.append(
         f"| relative tolerance (REL_TOLERANCE) | {REL_TOLERANCE:.0e} | {REL_TOLERANCE:.0e} |"
     )
     lines.append(f"| absolute floor (ABS_FLOOR) | {ABS_FLOOR:.0e} | {ABS_FLOOR:.0e} |")
+    lines.append("")
+    lines.append(
+        "> `worker MERIDIAN_BACKEND`/`worker MERIDIAN_ENABLE_JAX_X64` above are "
+        "recorded verbatim from the environment this capture DRIVER process "
+        "happened to inherit -- frozen by design (`manifest.build_manifest`'s "
+        "docstring) so existing snapshots never go stale, and may not reflect "
+        "what the tools actually ran on (`None` above is normal, not a bug). "
+        "`probe backend` is the CORRECTED value instead: the backend the "
+        "fixture probe was explicitly forced to run under, mirroring how the "
+        "real analysis/optimization workers resolve it -- this is what the "
+        "Fixture provenance section's `current_backend` below actually "
+        "measures. `None` there means an older manifest predating this field, "
+        "not that no backend was used."
+    )
     lines += ["", "## Fixture provenance", ""]
     lines += _provenance_rows(label_a, manifest_a)
     lines += _provenance_rows(label_b, manifest_b)
