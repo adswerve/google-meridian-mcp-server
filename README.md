@@ -334,7 +334,7 @@ Images are built and tagged automatically (content hash) — there are no image 
 | `optimization_allowed_tiers` | `cloud_cpu` | Comma-separated tiers the server permits (e.g. `cloud_cpu,cloud_gpu`). |
 | `optimization_default_tier` | `auto` | Default tier when a request does not specify one. |
 | `allow_unauthenticated` | `false` | Grant `roles/run.invoker` to `allUsers` (live tooling test only; gate behind auth for real clients). |
-| `disable_result_cache` | `false` | Disable the server's analysis result cache (`RESULT_CACHE_ENABLED=false`). Leave `false` for real client installs; set `true` only for verification work needing cold, uncached responses. |
+| `result_cache_enabled` | `true` | Whether the server caches analysis results (sets `RESULT_CACHE_ENABLED`). Leave `true` for real client installs; set `false` only for verification work needing cold, uncached responses. |
 | `labels` | `{}` | Labels applied to created resources. |
 
 ### Worker environment contract
