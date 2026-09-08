@@ -208,7 +208,7 @@ CLOUD_RUN_JOB_CPU=meridian-opt-cpu
 CLOUD_RUN_JOB_GPU=meridian-opt-gpu
 ```
 
-Cloud tiers use a JAX backend (workers run inside a Cloud Run Job execution). The CPU tier has been verified end-to-end. The GPU tier (NVIDIA L4) is deployed and supported; its live smoke is run manually.
+Cloud tiers use a JAX backend (workers run inside a Cloud Run Job execution). Both the CPU tier and the GPU tier (NVIDIA L4) have run a real optimization end-to-end on Cloud Run (one fixture, one run per tier; CPU ~50s compute, GPU ~65s compute) — functional verification only, not a performance comparison between them.
 
 ### Quality checks
 
@@ -234,6 +234,8 @@ uv run python -m scripts.validation.live_validate
 ```
 
 This generates gitignored fixtures under `models/_validation/` on first run and exits non-zero on any mismatch.
+
+The `reports/` directory holds committed evidence from past verification work (drift reports, refit notes, format-support decisions, and a running list of what verification did *not* cover); see `reports/README.md` for an index.
 
 ### Docker (local container)
 
@@ -283,7 +285,7 @@ Grouped analysis tools return **posterior-only** rows. Prior rows are removed fr
 
 `get_model_overview` returns the model's time range, geo scope, channel/input groups, flattened data schema, and the supported dataset/output-type values for the other analysis tools.
 
-`get_training_data` accepts one or more dataset keys and returns a single merged result set for the requested selections.
+`get_training_data` accepts one or more dataset keys and returns a single merged result set for the requested selections. Against a **deployed** server, call it with a `dataset` or date filter: the unfiltered, all-datasets call returns a large payload (3.2 MB on a national fixture, 16.3 MB on a geo one) that the server accepts (`200 OK`) but the SSE stream is dropped before it reaches the client. This is pre-existing (present since before the Meridian 2.0 upgrade) and only affects the unfiltered case — filtered calls work fine. Details in `reports/drift/04-cloud-vs-local.md`.
 
 `get_channel_summary` exposes:
 
@@ -332,6 +334,7 @@ Images are built and tagged automatically (content hash) — there are no image 
 | `optimization_allowed_tiers` | `cloud_cpu` | Comma-separated tiers the server permits (e.g. `cloud_cpu,cloud_gpu`). |
 | `optimization_default_tier` | `auto` | Default tier when a request does not specify one. |
 | `allow_unauthenticated` | `false` | Grant `roles/run.invoker` to `allUsers` (live tooling test only; gate behind auth for real clients). |
+| `disable_result_cache` | `false` | Disable the server's analysis result cache (`RESULT_CACHE_ENABLED=false`). Leave `false` for real client installs; set `true` only for verification work needing cold, uncached responses. |
 | `labels` | `{}` | Labels applied to created resources. |
 
 ### Worker environment contract
