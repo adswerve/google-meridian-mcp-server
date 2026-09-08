@@ -18,7 +18,8 @@ gcs_bucket = "your-client-meridian"
 # optimization_allowed_tiers = "cloud_cpu"   # add cloud_gpu when GPU job is enabled
 # allow_unauthenticated      = false          # true only for the live tooling test
 
-# disable_result_cache = false   # default false (caching enabled = production-correct).
+# result_cache_enabled = true    # default true (production-correct). Set false only
+#                                # for a baseline-capture verification deployment.
                                   # Set true only for a deployment doing baseline capture
                                   # verification (spec 8), so cloud captures aren't served
                                   # from a warm cache. Never set true for a client install.

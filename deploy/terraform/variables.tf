@@ -48,9 +48,9 @@ variable "allow_unauthenticated" {
   type    = bool
   default = false
 }
-variable "disable_result_cache" {
+variable "result_cache_enabled" {
   type    = bool
-  default = false
+  default = true
 }
 variable "labels" {
   type    = map(string)

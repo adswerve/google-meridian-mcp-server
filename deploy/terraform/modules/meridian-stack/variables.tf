@@ -135,10 +135,10 @@ variable "optimization_default_tier" {
 }
 
 # --- Caching ---
-variable "disable_result_cache" {
+variable "result_cache_enabled" {
   type        = bool
-  description = "Disable the server's analysis result cache (RESULT_CACHE_ENABLED=false). Leave false (the production-correct default) for real client installs. Set true only for a deployment doing baseline capture verification, where the harness's client-side RESULT_CACHE_ENABLED=false must be mirrored on the server so cloud captures aren't served from a warm cache and diffed against cold local ones."
-  default     = false
+  description = "Whether the server caches analysis results (sets RESULT_CACHE_ENABLED). Leave true -- the production-correct default. Set false only for a deployment doing baseline-capture verification, where the harness's client-side RESULT_CACHE_ENABLED=false must be mirrored on the server, so cloud captures are not served from a warm cache and diffed against cold local ones."
+  default     = true
 }
 
 # --- Access ---

@@ -48,16 +48,15 @@ resource "google_cloud_run_v2_service" "server" {
         name  = "MERIDIAN_ENABLE_JAX_X64"
         value = "true"
       }
-      # Result cache: enabled by default (production-correct). A deployment
-      # doing baseline capture verification (spec 8) needs it OFF instead —
-      # the harness sets RESULT_CACHE_ENABLED=false in the CLIENT process,
-      # which a deployed server never sees, so without disabling it here too,
-      # cloud analysis captures would be served from a warm cache and diffed
-      # against cold local ones. Set disable_result_cache=true for that case;
-      # leave it false (the default) for real client installs.
+      # Result cache: ON by default (production-correct). A deployment doing
+      # baseline-capture verification needs it OFF -- the harness sets
+      # RESULT_CACHE_ENABLED=false in the CLIENT process, which a deployed
+      # server never sees, so without mirroring it here cloud captures would
+      # be served from a warm cache and diffed against cold local ones.
+      # Set result_cache_enabled=false for that case only.
       env {
         name  = "RESULT_CACHE_ENABLED"
-        value = var.disable_result_cache ? "false" : "true"
+        value = tostring(var.result_cache_enabled)
       }
       # Genuine inputs
       env {
