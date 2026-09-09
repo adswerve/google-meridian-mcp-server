@@ -359,6 +359,11 @@ def test_returns_result_unchanged_when_neither_key_applies():
     assert "scope" not in out and "ignored_filters" not in out
 
 
+def test_note_appends_when_the_envelope_is_identity_keys_only():
+    out = ap.insert_note({"model_id": "m1"}, ADSTOCK, {})
+    assert list(out) == ["model_id", "scope"]
+
+
 def test_never_mutates_the_input():
     """ResultCache.get returns by reference; mutating would poison it."""
     result = {

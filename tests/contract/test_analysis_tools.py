@@ -125,6 +125,9 @@ class TestAnalysisToolContracts:
             expected.add((tool, None))
 
         assert set(ap.FILTER_APPLICABILITY) == expected
+        # Surface-size canary, not arithmetic: bump this deliberately when a
+        # tool or output type is added or removed, alongside its
+        # FILTER_APPLICABILITY / IGNORED_REASONS entries.
         assert len(expected) == 17
 
     # test_spend_scenario_summary_contract (the "get_spend_scenario returns

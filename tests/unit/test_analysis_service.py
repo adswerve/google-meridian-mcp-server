@@ -419,6 +419,17 @@ async def test_get_training_data_invalid_dataset_no_spawn():
     assert r.calls == []
 
 
+async def test_get_training_data_normalizes_filters_before_resolving_datasets():
+    """Filter normalization runs before dataset-selection validation, so a
+    request with both malformed filters and an unknown dataset must fail on
+    the filters (ValidationError), not the dataset (DatasetNotAvailableError)."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+    with pytest.raises(ValidationError):
+        await svc.get_training_data("m1", "not_a_dataset", {"start_date": "nonsense"})
+    assert r.calls == []
+
+
 async def test_cache_hit_no_spawn():
     cache = ResultCache(enabled=True, ttl_seconds=None)
     r = FakeRunner()
@@ -637,11 +648,9 @@ async def test_spend_scenario_reports_channels_and_keeps_its_own_args():
     assert set(out["ignored_filters"]) == {"channels"}
 
 
-# NOTE: the existing parametrized `test_invalid_output_type_no_spawn`
-# (tests/unit/test_analysis_service.py:397-411) already covers all four
-# dispatch tools and is the stronger guard that the applicability lookup
-# never pre-empts InvalidOutputTypeError. Do not duplicate it here -- just
-# confirm it still passes after Task 4.
+# See test_invalid_output_type_no_spawn: it already covers all four dispatch
+# tools and guards that the applicability lookup never pre-empts
+# InvalidOutputTypeError.
 
 
 # --- Task 5: service-wiring coverage for all nine methods --------------------
@@ -705,7 +714,7 @@ async def test_every_service_method_narrows_and_reports(method, kwargs, field, v
 @pytest.mark.parametrize(
     ("method", "kwargs"),
     [(m, k) for m, k, _, _ in WIRING_CASES],
-    ids=[m + str(sorted(k)) for m, k, _, _ in WIRING_CASES],
+    ids=[m + str(k) for m, k, _, _ in WIRING_CASES],
 )
 async def test_no_method_emits_a_note_when_nothing_was_supplied(method, kwargs):
     """scope is the only key allowed to appear unprompted, and only on adstock."""
