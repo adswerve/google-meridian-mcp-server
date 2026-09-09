@@ -717,3 +717,56 @@ async def test_no_method_emits_a_note_when_nothing_was_supplied(method, kwargs):
     assert "ignored_filters" not in out
     if method != "get_adstock_decay":
         assert "scope" not in out
+
+
+# --- Task 7: Cache behaviour (narrowing, per-call notes, no poisoning) -------
+
+
+async def test_windowed_and_unfiltered_adstock_share_one_cache_entry():
+    """Narrowing happens before _filter_key, so filters that cannot change
+    the rows must not fragment the cache."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=ResultCache(enabled=True))
+
+    await svc.get_adstock_decay("m1", "adstock_decay", None)
+    await svc.get_adstock_decay(
+        "m1", "adstock_decay", {"start_date": "2024-07-01", "geos": ["US-CA"]}
+    )
+
+    assert len(r.calls) == 1, "second call should have hit the cache"
+
+
+async def test_cached_call_still_gets_its_own_note():
+    """The note is applied AFTER the cache returns, so a cache hit must not
+    inherit the note from whichever call populated the entry."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=ResultCache(enabled=True))
+
+    first = await svc.get_adstock_decay("m1", "adstock_decay", None)
+    second = await svc.get_adstock_decay("m1", "adstock_decay", {"geos": ["US-CA"]})
+
+    assert "ignored_filters" not in first
+    assert set(second["ignored_filters"]) == {"geos"}
+
+
+async def test_decorating_a_result_does_not_poison_the_cache_entry():
+    """ResultCache.get returns the stored dict by reference."""
+    cache = ResultCache(enabled=True)
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=cache)
+
+    await svc.get_adstock_decay("m1", "adstock_decay", {"geos": ["US-CA"]})
+    plain = await svc.get_adstock_decay("m1", "adstock_decay", None)
+
+    assert "ignored_filters" not in plain
+
+
+async def test_applicable_filters_still_produce_distinct_cache_keys():
+    """The direct guard against an over-strict entry serving wrong rows."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=ResultCache(enabled=True))
+
+    await svc.get_model_fit("m1", {"use_kpi": True})
+    await svc.get_model_fit("m1", {"use_kpi": False})
+
+    assert len(r.calls) == 2, "use_kpi must not collapse onto one cache key"
