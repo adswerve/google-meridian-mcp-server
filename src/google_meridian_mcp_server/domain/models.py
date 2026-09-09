@@ -67,7 +67,7 @@ class RuntimeConfig(BaseModel):
     analysis_max_parallel: int = 2
     analysis_worker_timeout: float = 300.0
     analysis_queue_wait_timeout: float = 30.0
-    analysis_max_response_bytes: int = 64 * 1024 * 1024
+    analysis_max_response_bytes: int = 4 * 1024 * 1024
     analysis_workdir_root: str = "/tmp/mmm-analysis"
     # F10b: retained analysis workdirs (timeout/spawn-failure/rc!=0
     # keep one each) and optimization worker log files (one per run, forever)
