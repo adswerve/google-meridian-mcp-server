@@ -69,7 +69,7 @@ class RuntimeConfig(BaseModel):
     analysis_queue_wait_timeout: float = 30.0
     analysis_max_response_bytes: int = 64 * 1024 * 1024
     analysis_workdir_root: str = "/tmp/mmm-analysis"
-    # F10b: retained analysis workdirs (timeout/spawn-failure/oversized/rc!=0
+    # F10b: retained analysis workdirs (timeout/spawn-failure/rc!=0
     # keep one each) and optimization worker log files (one per run, forever)
     # accumulate unboundedly with no sweep. This bounds their age at startup.
     analysis_workdir_ttl_seconds: int = 604800  # 7 days

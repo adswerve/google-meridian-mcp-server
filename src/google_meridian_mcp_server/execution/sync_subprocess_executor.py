@@ -14,6 +14,7 @@ from pathlib import Path
 
 from google_meridian_mcp_server.domain.errors import (
     MeridianMcpError,
+    ResponseTooLargeError,
     ServerBusyError,
     WorkerFailedError,
     WorkerTimeoutError,
@@ -28,8 +29,8 @@ log = logging.getLogger(__name__)
 def sweep_stale_entries(root: str | Path, ttl_seconds: float) -> None:
     """Remove files/dirs directly under *root* whose mtime is older than *ttl_seconds*.
 
-    F10b: retained analysis workdirs (one per timeout/spawn-failure/oversized-
-    response/non-domain-rc!=0 run) and optimization worker log files (one per
+    F10b: retained analysis workdirs (one per timeout/spawn-failure/
+    non-domain-rc!=0 run) and optimization worker log files (one per
     run, forever) otherwise accumulate unboundedly on disk. Called once at
     server startup -- NOT on every spawn -- so this is a bounded, best-effort
     hygiene pass: a missing root is a no-op, and a failure removing any single
@@ -180,6 +181,14 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 # a normal domain outcome. Retain the workdir+log so the
                 # traceback (child-log-only per spec) survives. A domain
                 # error with rc == 0 keeps the existing keep=False behavior.
+                # ResponseTooLargeError (raised in _decode before json.loads,
+                # so it lands here too) takes the same path: on rc == 0 the
+                # whole workdir is removed elsewhere (keep=False), but on
+                # rc != 0 the workdir -- including the oversized resp.json --
+                # is deliberately NOT unlinked and is retained for postmortem,
+                # bounded only by ANALYSIS_WORKDIR_TTL_SECONDS. That error
+                # also carries no log_tail, since it's raised before
+                # self._tail(logp) would run.
                 if rc != 0:
                     keep = True
                 raise
@@ -202,15 +211,9 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 f"no response (exit {rc})", {"log_tail": self._tail(logp)}
             )
         if resp.stat().st_size > self._max_bytes:
-            size = resp.stat().st_size
-            # Unlink the oversized file itself before raising: the workdir is
-            # retained for postmortem (WorkerFailedError -> keep=True), but
-            # retaining the exact multi-hundred-MiB file the size ceiling was
-            # meant to guard against would defeat the point. The log tail is
-            # what matters for debugging; that stays.
-            with contextlib.suppress(OSError):
-                resp.unlink()
-            raise WorkerFailedError("response too large", {"bytes": size})
+            raise ResponseTooLargeError(
+                nbytes=resp.stat().st_size, limit_bytes=self._max_bytes
+            )
         try:
             payload = json.loads(resp.read_text())
         except json.JSONDecodeError:

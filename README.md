@@ -150,6 +150,8 @@ LOCAL_MODELS_ROOT=./models
 MODEL_CACHE_ROOT=/tmp/mmm-models
 DISCOVERY_TTL_SECONDS=7200
 RESULT_CACHE_ENABLED=true
+# maximum bytes for one analysis response, measured on the worker's serialized resp.json; over it returns a response_too_large error
+ANALYSIS_MAX_RESPONSE_BYTES=67108864
 ```
 
 `.env` belongs at the project root because the runtime loads it from there explicitly.

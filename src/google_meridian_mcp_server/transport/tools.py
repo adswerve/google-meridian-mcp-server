@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
 from fastmcp import Context, FastMCP
-from mcp.types import ToolAnnotations
+from fastmcp.tools import ToolResult
+from mcp.types import TextContent, ToolAnnotations
 from pydantic import Field
 
 from google_meridian_mcp_server.domain.errors import InternalError, MeridianMcpError
@@ -47,34 +49,64 @@ def _error_response(error: MeridianMcpError) -> dict[str, Any]:
     }
 
 
-def _guarded(fn):
-    """Tool-surface catch-all: no handler may ever leak a raw exception.
+def _content_note(payload: Any) -> str:
+    """The `content` block: a short note, never the data (spec §4.2).
 
-    A ``MeridianMcpError`` becomes its own error envelope (same behavior the
-    per-handler ``try/except MeridianMcpError`` blocks used to provide).
-    Anything else (a bug, an OS error that slipped past a lower layer, etc.)
+    Row-bearing payloads report their shape; everything else -- overviews,
+    spend scenarios, optimization envelopes, error envelopes, and the wrapped
+    ``list_models`` result -- gets the fixed string.
+    """
+    if isinstance(payload, dict):
+        rows, cols = payload.get("row_count"), payload.get("columns")
+        if rows is not None and isinstance(cols, list):
+            return f"{rows} rows x {len(cols)} columns in structuredContent"
+    return "See structuredContent."
+
+
+def _guarded(fn: Callable[..., Any] | None = None, *, wrap_result: bool = False):
+    """Tool-surface catch-all + single-copy envelope.
+
+    A ``MeridianMcpError`` becomes its own error envelope. Anything else
     becomes an ``internal_error`` envelope instead of an uncaught exception
-    escaping into the MCP transport for a completely unrelated tool call.
-    ``functools.wraps`` preserves ``__wrapped__`` so FastMCP's schema
-    introspection (``inspect.signature``) still sees the original handler's
-    parameters/annotations, not ``(*args, **kwargs)``.
+    escaping into the MCP transport for an unrelated tool call.
+
+    The payload is returned as an explicit ``ToolResult`` so it crosses the
+    wire ONCE: FastMCP would otherwise serialize a bare dict into both
+    ``content[0].text`` and ``structuredContent`` (fastmcp/tools/base.py:124).
+
+    ``wrap_result`` reproduces the ``{"result": ...}`` envelope FastMCP derives
+    from a tool's return ANNOTATION via ``x-fastmcp-wrap-result``. Only
+    ``list_models`` needs it, and it must apply to its error envelope too --
+    a client validating against ``required: ["result"]`` raises otherwise.
+
+    Dual-form: ``@_guarded`` (17 sites) and ``@_guarded(wrap_result=True)``
+    (list_models). ``functools.wraps`` preserves ``__wrapped__`` so FastMCP's
+    schema introspection still sees the original handler's signature.
     """
 
-    @functools.wraps(fn)
-    async def _wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        try:
-            return await fn(*args, **kwargs)
-        except MeridianMcpError as error:
-            return _error_response(error)
-        except Exception as exc:  # noqa: BLE001 - tool-surface catch-all
-            # R2: MeridianMcpError above is a normal domain outcome and stays
-            # unlogged; anything landing here is unexpected, so log it
-            # server-side before converting it to the internal_error envelope
-            # -- otherwise the operator gets no signal at all.
-            log.exception("unhandled error in tool handler")
-            return _error_response(InternalError(f"{type(exc).__name__}: {exc}"))
+    def decorate(inner):
+        @functools.wraps(inner)
+        async def _wrapped(*args: Any, **kwargs: Any):
+            try:
+                payload = await inner(*args, **kwargs)
+            except MeridianMcpError as error:
+                payload = _error_response(error)
+            except Exception as exc:  # noqa: BLE001 - tool-surface catch-all
+                # R2: MeridianMcpError above is a normal domain outcome and
+                # stays unlogged; anything landing here is unexpected, so log
+                # it server-side before converting it to internal_error.
+                log.exception("unhandled error in tool handler")
+                payload = _error_response(InternalError(f"{type(exc).__name__}: {exc}"))
+            if wrap_result:
+                payload = {"result": payload}
+            return ToolResult(
+                content=[TextContent(type="text", text=_content_note(payload))],
+                structured_content=payload,
+            )
 
-    return _wrapped
+        return _wrapped
+
+    return decorate(fn) if fn is not None else decorate
 
 
 def _catalog_service(ctx: Context) -> ModelCatalogService:
@@ -102,7 +134,7 @@ def register_tools(mcp: FastMCP) -> None:
     """Register all tool handlers on the provided FastMCP server instance."""
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
-    @_guarded
+    @_guarded(wrap_result=True)
     async def list_models(ctx: Context) -> list[dict[str, Any]] | dict[str, Any]:
         """List all available Meridian marketing-mix models. Call this first to get model_id values needed by every other tool. Returns id, display_name, format, and last_modified for each model."""
         # F6: list_models does discovery I/O (local fs walk or GCS list) synchronously;
@@ -151,7 +183,7 @@ def register_tools(mcp: FastMCP) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Retrieve raw input datasets by name (e.g. 'media_spend', 'kpi', 'controls', 'population') merged into one table — including non-channel series. Use when you want a specific dataset as stored. To investigate a channel's full picture across types, use get_channel_data instead. On a large model, asking for every dataset at once with no date range can come back empty when talking to a deployed server — ask for just the dataset(s) you actually need, or narrow the date range with filters, and it will come back reliably."""
+        """Retrieve raw input datasets by name (e.g. 'media_spend', 'kpi', 'controls', 'population') merged into one table — including non-channel series. Use when you want a specific dataset as stored. To investigate a channel's full picture across types, use get_channel_data instead. On a large model, asking for every dataset at once with no date range can come back empty when talking to a deployed server — ask for just the dataset(s) you actually need, or narrow the date range with filters. Separately, a response over the configured size limit returns a response_too_large error naming the size and the filters (date range, geos, channels, or fewer datasets) that would narrow it."""
         return await _analysis_service(ctx).get_training_data(
             model_id,
             dataset,

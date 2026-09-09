@@ -177,3 +177,40 @@ class WorkerLostError(MeridianMcpError):
         self, message: str = "worker process was lost", details: dict | None = None
     ):
         super().__init__("worker_lost", message, details)
+
+
+class ResponseTooLargeError(MeridianMcpError):
+    """A response too large to cross the wire. User-correctable: narrow it.
+
+    Row/column counts are optional: the executor backstop measures a file and
+    has no shape information, and three worker operations return no rows.
+    """
+
+    def __init__(
+        self,
+        *,
+        nbytes: int,
+        limit_bytes: int,
+        total_rows: int | None = None,
+        total_columns: int | None = None,
+    ):
+        shape = (
+            f" ({total_rows} rows x {total_columns} columns)"
+            if total_rows is not None and total_columns is not None
+            else ""
+        )
+        super().__init__(
+            error_code="response_too_large",
+            message=(
+                f"Response is {nbytes / 1024 / 1024:.2f} MiB{shape}, over the "
+                f"{limit_bytes / 1024 / 1024:.2f} MiB limit. Narrow the request "
+                f"with filters.start_date/filters.end_date, filters.geos, or "
+                f"filters.channels, or request fewer datasets."
+            ),
+            details={
+                "bytes": nbytes,
+                "limit_bytes": limit_bytes,
+                "total_rows": total_rows,
+                "total_columns": total_columns,
+            },
+        )

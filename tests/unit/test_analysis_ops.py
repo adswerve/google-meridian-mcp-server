@@ -802,6 +802,84 @@ def _write_request(tmp_path, payload):
     return str(req), str(tmp_path / "resp.json")
 
 
+class _RowsFacade:
+    """A facade returning a controllable number of contribution rows."""
+
+    def __init__(self, rows: int):
+        self._rows = rows
+
+    def get_contribution_metrics(self, filters):
+        return [{"channel": f"c{i}", "mean": float(i)} for i in range(self._rows)]
+
+
+class _RowsCatalog:
+    def __init__(self, rows: int):
+        self._facade = _RowsFacade(rows)
+
+    def get_facade(self, model_id):
+        return self._facade
+
+    def get_interrogator(self, model_id):
+        return self._facade
+
+
+def _contribution_request(tmp_path):
+    return _write_request(
+        tmp_path,
+        {
+            "operation": "get_contribution",
+            "model_id": "m1",
+            "params": {"output_type": "contribution_metrics", "filters": {}},
+        },
+    )
+
+
+def test_run_analysis_refuses_oversized_payload(tmp_path):
+    req_path, resp_path = _contribution_request(tmp_path)
+
+    rc = worker.run_analysis(
+        req_path, resp_path, catalog=_RowsCatalog(rows=500), limit_bytes=200
+    )
+
+    assert rc == 0, "a user-correctable refusal is not an infra failure"
+    payload = json.loads(open(resp_path).read())
+    assert payload["ok"] is False
+    assert payload["error"]["error_code"] == "response_too_large"
+    details = payload["error"]["details"]
+    assert details["limit_bytes"] == 200
+    assert details["bytes"] > 200
+    assert details["total_rows"] == 500
+    assert details["total_columns"] == 2  # channel, mean
+
+
+def test_run_analysis_allows_payload_just_under_the_limit(tmp_path):
+    """Without this, a guard that refuses everything passes the suite."""
+    req_path, resp_path = _contribution_request(tmp_path)
+
+    # Measure the exact serialized size with the guard effectively disabled...
+    rc = worker.run_analysis(
+        req_path, resp_path, catalog=_RowsCatalog(rows=3), limit_bytes=10_000_000
+    )
+    assert rc == 0
+    exact = len(open(resp_path).read())
+
+    # ...then permit precisely that many bytes. `>` not `>=`, so this passes.
+    rc = worker.run_analysis(
+        req_path, resp_path, catalog=_RowsCatalog(rows=3), limit_bytes=exact
+    )
+
+    assert rc == 0
+    assert json.loads(open(resp_path).read())["ok"] is True
+
+
+def test_run_analysis_requires_an_explicit_limit(tmp_path):
+    """The no-default rule: a caller must opt into a limit, never inherit one.
+    Adding a default to limit_bytes fails here."""
+    req_path, resp_path = _contribution_request(tmp_path)
+    with pytest.raises(TypeError, match="limit_bytes"):
+        worker.run_analysis(req_path, resp_path, catalog=FakeCatalog())
+
+
 def test_run_analysis_success_writes_ok_payload(tmp_path):
     req_path, resp_path = _write_request(
         tmp_path,
@@ -811,7 +889,9 @@ def test_run_analysis_success_writes_ok_payload(tmp_path):
             "params": {"output_type": "contribution_metrics", "filters": {}},
         },
     )
-    rc = worker.run_analysis(req_path, resp_path, catalog=FakeCatalog())
+    rc = worker.run_analysis(
+        req_path, resp_path, catalog=FakeCatalog(), limit_bytes=64 * 1024 * 1024
+    )
     assert rc == 0
     payload = json.loads(open(resp_path).read())
     assert payload["ok"] is True
@@ -824,7 +904,9 @@ def test_run_analysis_domain_error_writes_error_payload_rc0(tmp_path):
         tmp_path,
         {"operation": "nope", "model_id": "m1", "params": {}},
     )
-    rc = worker.run_analysis(req_path, resp_path, catalog=FakeCatalog())
+    rc = worker.run_analysis(
+        req_path, resp_path, catalog=FakeCatalog(), limit_bytes=64 * 1024 * 1024
+    )
     assert rc == 0
     payload = json.loads(open(resp_path).read())
     assert payload["ok"] is False
@@ -840,7 +922,9 @@ def test_run_analysis_unexpected_exception_writes_internal_error_rc1(tmp_path):
             "params": {"output_type": "contribution_metrics", "filters": {}},
         },
     )
-    rc = worker.run_analysis(req_path, resp_path, catalog=_BoomCatalog())
+    rc = worker.run_analysis(
+        req_path, resp_path, catalog=_BoomCatalog(), limit_bytes=64 * 1024 * 1024
+    )
     assert rc == 1
     payload = json.loads(open(resp_path).read())
     assert payload["ok"] is False
@@ -856,7 +940,9 @@ def test_run_analysis_sanitizes_nan_to_null(tmp_path):
             "params": {"output_type": "contribution_metrics", "filters": {}},
         },
     )
-    rc = worker.run_analysis(req_path, resp_path, catalog=_NanCatalog())
+    rc = worker.run_analysis(
+        req_path, resp_path, catalog=_NanCatalog(), limit_bytes=64 * 1024 * 1024
+    )
     assert rc == 0
     raw = open(resp_path).read()
     # allow_nan=False path produced valid strict JSON (no NaN literal).
@@ -923,7 +1009,12 @@ def test_run_analysis_unserializable_result_falls_back_to_internal_error(tmp_pat
             "params": {"output_type": "contribution_metrics", "filters": {}},
         },
     )
-    rc = worker.run_analysis(req_path, resp_path, catalog=_UnserializableCatalog())
+    rc = worker.run_analysis(
+        req_path,
+        resp_path,
+        catalog=_UnserializableCatalog(),
+        limit_bytes=64 * 1024 * 1024,
+    )
     assert rc == 1
     payload = json.loads(open(resp_path).read())  # must be valid JSON
     assert payload == {
@@ -934,3 +1025,41 @@ def test_run_analysis_unserializable_result_falls_back_to_internal_error(tmp_pat
             "details": {},
         },
     }
+
+
+def test_run_analysis_writes_compact_separators(tmp_path):
+    """The bytes on disk must equal the compact serialization exactly -- Tasks 4
+    and 5 both measure this file. Reverting to default separators makes
+    resp.json 9.9% larger and desynchronises the two guards."""
+    req_path, resp_path = _write_request(
+        tmp_path,
+        {
+            "operation": "get_contribution",
+            "model_id": "m1",
+            "params": {"output_type": "contribution_metrics", "filters": {}},
+        },
+    )
+
+    rc = worker.run_analysis(
+        req_path, resp_path, catalog=FakeCatalog(), limit_bytes=64 * 1024 * 1024
+    )
+
+    assert rc == 0
+    written = open(resp_path).read()
+    assert written == json.dumps(
+        json.loads(written), separators=(",", ":"), allow_nan=False
+    )
+
+
+def test_run_analysis_does_not_guard_error_payloads(tmp_path):
+    """An error envelope is never oversized and must never be replaced by a
+    response_too_large envelope. Reverting `payload.get("ok") and` fails here."""
+    req_path, resp_path = _write_request(
+        tmp_path, {"operation": "nope", "model_id": "m1", "params": {}}
+    )
+
+    rc = worker.run_analysis(req_path, resp_path, catalog=FakeCatalog(), limit_bytes=1)
+
+    assert rc == 0
+    payload = json.loads(open(resp_path).read())
+    assert payload["error"]["error_code"] == "invalid_output_type"

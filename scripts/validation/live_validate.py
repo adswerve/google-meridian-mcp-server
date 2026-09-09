@@ -139,6 +139,10 @@ async def _run() -> int:
     os.environ["LOCAL_MODELS_ROOT"] = str(DEFAULT_OUT_ROOT)
     os.environ.setdefault("RESULT_CACHE_ENABLED", "false")
     os.environ.setdefault("OPTIMIZATION_RUNS_ROOT", str(DEFAULT_OUT_ROOT / "_runs"))
+    # Inert at the 64 MiB default, but pins the ceiling so an operator export
+    # cannot shrink it under this run -- and so lowering the default later does
+    # not silently turn these payloads into error envelopes.
+    os.environ["ANALYSIS_MAX_RESPONSE_BYTES"] = str(64 * 1024 * 1024)
 
     from fastmcp import Client
 
