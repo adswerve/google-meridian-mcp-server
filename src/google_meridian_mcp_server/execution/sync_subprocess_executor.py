@@ -181,6 +181,14 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 # a normal domain outcome. Retain the workdir+log so the
                 # traceback (child-log-only per spec) survives. A domain
                 # error with rc == 0 keeps the existing keep=False behavior.
+                # ResponseTooLargeError (raised in _decode before json.loads,
+                # so it lands here too) takes the same path: on rc == 0 the
+                # whole workdir is removed elsewhere (keep=False), but on
+                # rc != 0 the workdir -- including the oversized resp.json --
+                # is deliberately NOT unlinked and is retained for postmortem,
+                # bounded only by ANALYSIS_WORKDIR_TTL_SECONDS. That error
+                # also carries no log_tail, since it's raised before
+                # self._tail(logp) would run.
                 if rc != 0:
                     keep = True
                 raise
