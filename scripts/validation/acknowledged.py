@@ -1,6 +1,6 @@
 """Structural changes pre-registered as intentional (spec section 7.4).
 
-Empty by default and shipping with exactly two entries, each carrying a
+Empty by default and shipping with exactly three entries, each carrying a
 MANDATORY reason. Acknowledged findings are reported in their own section of
 the diff report -- never folded into PASS -- so a reader always sees what was
 waved through and why. ``reason`` is the intent (why the change is
@@ -83,6 +83,14 @@ import dataclasses
 # when it sits at the case root, or one level under one of these four --
 # nowhere else, and in particular not under `result`/`listing`/`deleted`/
 # `canceled`, which never carry it.
+#
+# `/scope`, by contrast, is root-only: it is written directly into the
+# `get_adstock_decay` case payload (both output types) by the service
+# itself, not nested inside a submit/status-shaped sub-envelope the way
+# `backend`/`meridian_version` are. It therefore never needs -- and never
+# gets -- a lookup against this set; `match()` catches it via the bare
+# `pointer == entry.pointer` branch alone, before this frozenset is even
+# consulted.
 _KNOWN_ENVELOPE_KEYS = frozenset(
     {
         "submit",
@@ -117,6 +125,14 @@ ACKNOWLEDGED: tuple[Acknowledged, ...] = (
             "Spec 6.3: replaces `backend` as agent-visible provenance. It was "
             "already written to the run manifest and returned by nothing, so "
             "removing `backend` alone would have been a net LOSS of provenance."
+        ),
+    ),
+    Acknowledged(
+        pointer="/scope",
+        change="added",
+        reason=(
+            "adstock_decay and alpha_summary now declare their national, "
+            "time-invariant scope; see the filter-applicability spec"
         ),
     ),
 )
