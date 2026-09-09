@@ -770,3 +770,32 @@ async def test_applicable_filters_still_produce_distinct_cache_keys():
     await svc.get_model_fit("m1", {"use_kpi": False})
 
     assert len(r.calls) == 2, "use_kpi must not collapse onto one cache key"
+
+
+async def test_regression_windowed_adstock_returns_national_rows_and_says_so():
+    """The reported bug: get_adstock_decay accepted date and geo filters,
+    applied only channels, and gave no sign the rest were dropped."""
+    rows = [["search", 0.0, 1.0], ["search", 1.0, 0.5]]
+    r = FakeRunner(
+        result_factory=lambda op, mid, p: {
+            "model_id": mid,
+            "output_type": p["output_type"],
+            "columns": ["channel", "time_units", "mean"],
+            "rows": rows,
+            "row_count": len(rows),
+        }
+    )
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    windowed = await svc.get_adstock_decay(
+        "m1",
+        "adstock_decay",
+        {"start_date": "2024-07-01", "end_date": "2024-09-30", "geos": ["US-CA"]},
+    )
+
+    # Rows are unchanged -- they were always correct national estimates.
+    assert windowed["rows"] == rows
+    # What changed: the response now says so.
+    assert windowed["scope"] == "national, full training window"
+    assert set(windowed["ignored_filters"]) == {"start_date", "end_date", "geos"}
+    assert "time-invariant" in windowed["ignored_filters"]["end_date"]

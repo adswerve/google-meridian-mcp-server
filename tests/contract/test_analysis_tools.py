@@ -88,6 +88,40 @@ class TestAnalysisToolContracts:
         err = MissingModelDataError("m1", "no inference data")
         assert err.error_code == "missing_model_data"
 
+    def test_every_filter_taking_tool_surface_has_an_applicability_entry(self):
+        """Enumerate mechanically -- a hand-written list is what originally
+        lost get_spend_scenario."""
+        import typing
+
+        from google_meridian_mcp_server.domain import applicability as ap
+        from google_meridian_mcp_server.domain.filters import (
+            ChannelSummaryType,
+            ContributionType,
+            ResponseCurveType,
+            ResponseDynamicsType,
+        )
+
+        expected = set()
+        for tool, alias in (
+            ("get_channel_summary", ChannelSummaryType),
+            ("get_contribution", ContributionType),
+            ("get_adstock_decay", ResponseDynamicsType),
+            ("get_response_curves", ResponseCurveType),
+        ):
+            for output_type in typing.get_args(alias):
+                expected.add((tool, output_type))
+        for tool in (
+            "get_reach_frequency",
+            "get_model_fit",
+            "get_channel_data",
+            "get_training_data",
+            "get_spend_scenario",
+        ):
+            expected.add((tool, None))
+
+        assert set(ap.FILTER_APPLICABILITY) == expected
+        assert len(expected) == 17
+
     # test_spend_scenario_summary_contract (the "get_spend_scenario returns
     # exactly the 15 documented summary keys" contract) moved to
     # tests/unit/test_analysis_ops.py::test_get_spend_scenario_summary_contract
