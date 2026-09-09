@@ -91,6 +91,7 @@ class TestAnalysisToolContracts:
     def test_every_filter_taking_tool_surface_has_an_applicability_entry(self):
         """Enumerate mechanically -- a hand-written list is what originally
         lost get_spend_scenario."""
+        import inspect
         import typing
 
         from google_meridian_mcp_server.domain import applicability as ap
@@ -99,6 +100,9 @@ class TestAnalysisToolContracts:
             ContributionType,
             ResponseCurveType,
             ResponseDynamicsType,
+        )
+        from google_meridian_mcp_server.services.analysis_service import (
+            AnalysisService,
         )
 
         expected = set()
@@ -110,13 +114,14 @@ class TestAnalysisToolContracts:
         ):
             for output_type in typing.get_args(alias):
                 expected.add((tool, output_type))
-        for tool in (
-            "get_reach_frequency",
-            "get_model_fit",
-            "get_channel_data",
-            "get_training_data",
-            "get_spend_scenario",
-        ):
+
+        filter_taking = {
+            name
+            for name, member in inspect.getmembers(AnalysisService, inspect.isfunction)
+            if not name.startswith("_")
+            and "filters" in inspect.signature(member).parameters
+        }
+        for tool in filter_taking - {tool for tool, _ in expected}:
             expected.add((tool, None))
 
         assert set(ap.FILTER_APPLICABILITY) == expected
