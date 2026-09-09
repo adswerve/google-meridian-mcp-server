@@ -72,6 +72,33 @@ async def test_envelope_carries_payload_exactly_once(monkeypatch):
         json.loads(note)
 
 
+@pytest.mark.asyncio
+async def test_envelope_content_note_reports_rows_through_a_real_handler(monkeypatch):
+    """Branch 1 of `_content_note` (row_count/columns) as exercised THROUGH
+    `_guarded`, not just as a direct unit call. `AnalysisService._build_result`
+    stamps row_count/columns onto every analysis payload, so this is the
+    common production path, not the exotic one -- a hardcoded
+    'See structuredContent.' at the ToolResult call site would still pass
+    every other test in this file."""
+    mcp = _FakeFastMCP()
+    analysis_service = SimpleNamespace(
+        get_model_overview=_async(
+            lambda model_id: {
+                "row_count": 2,
+                "columns": ["a", "b"],
+                "rows": [[1, 2], [3, 4]],
+            }
+        ),
+    )
+    monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    result = await mcp.tools["get_model_overview"]("m1", ctx)
+
+    assert result.content[0].text == "2 rows x 2 columns in structuredContent"
+
+
 def test_content_note_reports_rows_and_columns():
     """§4.2 branch 1. Collapsing every tool to the constant string fails here."""
     assert (

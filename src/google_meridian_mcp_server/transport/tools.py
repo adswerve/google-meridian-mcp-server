@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
 from fastmcp import Context, FastMCP
@@ -62,7 +63,7 @@ def _content_note(payload: Any) -> str:
     return "See structuredContent."
 
 
-def _guarded(fn=None, *, wrap_result: bool = False):
+def _guarded(fn: Callable[..., Any] | None = None, *, wrap_result: bool = False):
     """Tool-surface catch-all + single-copy envelope.
 
     A ``MeridianMcpError`` becomes its own error envelope. Anything else
