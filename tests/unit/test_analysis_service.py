@@ -642,3 +642,78 @@ async def test_spend_scenario_reports_channels_and_keeps_its_own_args():
 # dispatch tools and is the stronger guard that the applicability lookup
 # never pre-empts InvalidOutputTypeError. Do not duplicate it here -- just
 # confirm it still passes after Task 4.
+
+
+# --- Task 5: service-wiring coverage for all nine methods --------------------
+
+# (service method, kwargs, an INAPPLICABLE filter for that surface, its value)
+WIRING_CASES = [
+    (
+        "get_channel_summary",
+        {"output_type": "baseline_summary_metrics"},
+        "channels",
+        ["tv"],
+    ),
+    ("get_channel_summary", {"output_type": "roi"}, "include_non_paid", False),
+    (
+        "get_contribution",
+        {"output_type": "contribution_metrics_by_time"},
+        "aggregate_times",
+        False,
+    ),
+    ("get_adstock_decay", {"output_type": "adstock_decay"}, "geos", ["US-CA"]),
+    (
+        "get_response_curves",
+        {"output_type": "response_curves"},
+        "include_non_paid",
+        True,
+    ),
+    ("get_reach_frequency", {}, "aggregate_times", False),
+    ("get_model_fit", {}, "channels", ["tv"]),
+    ("get_channel_data", {}, "use_kpi", True),
+    ("get_training_data", {"dataset": "kpi"}, "use_kpi", True),
+    (
+        "get_spend_scenario",
+        {"channel": "search", "spend_increase": 100.0, "base_spend": None},
+        "channels",
+        ["tv"],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("method", "kwargs", "field", "value"),
+    WIRING_CASES,
+    ids=[f"{m}-{f}" for m, _, f, _ in WIRING_CASES],
+)
+async def test_every_service_method_narrows_and_reports(method, kwargs, field, value):
+    """Fails if ANY method loses its narrowing or its note."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    out = await getattr(svc, method)("m1", filters={field: value}, **kwargs)
+
+    _, _, params = r.calls[0]
+    assert params["filters"][field] == DEFAULT_FILTERS[field], (
+        f"{method} did not strip {field} from the worker payload"
+    )
+    assert field in out.get("ignored_filters", {}), (
+        f"{method} did not report {field} in ignored_filters"
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "kwargs"),
+    [(m, k) for m, k, _, _ in WIRING_CASES],
+    ids=[m + str(sorted(k)) for m, k, _, _ in WIRING_CASES],
+)
+async def test_no_method_emits_a_note_when_nothing_was_supplied(method, kwargs):
+    """scope is the only key allowed to appear unprompted, and only on adstock."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    out = await getattr(svc, method)("m1", filters=None, **kwargs)
+
+    assert "ignored_filters" not in out
+    if method != "get_adstock_decay":
+        assert "scope" not in out
