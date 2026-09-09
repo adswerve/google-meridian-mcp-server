@@ -72,3 +72,11 @@ def test_response_too_large_omits_shape_when_unknown():
     assert "None" not in str(err)
     assert "rows x" not in str(err)
     assert err.details["total_rows"] is None
+
+
+def test_response_too_large_renders_non_round_sizes_accurately():
+    """The threshold this guard exists to enable will not be round. Reverting
+    either format to :.0f renders '24 MiB'/'23 MiB' and fails here."""
+    err = ResponseTooLargeError(nbytes=25_000_000, limit_bytes=24_000_000)
+    assert "23.84 MiB" in str(err)
+    assert "22.89 MiB" in str(err)
