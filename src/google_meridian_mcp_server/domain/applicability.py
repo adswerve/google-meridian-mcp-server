@@ -283,3 +283,40 @@ def narrow(
         update={field: _field_default(field) for field in inapplicable}
     )
     return effective, ignored
+
+
+# Leading identity keys, across every envelope shape this server emits.
+# The note goes after the last of these and before the payload, so an
+# agent reads the caveat before the data it qualifies.
+_IDENTITY_KEYS = frozenset(
+    {"model_id", "output_type", "dataset", "datasets", "channel", "channel_type"}
+)
+
+
+def insert_note(result: dict, key: Key, ignored: dict[str, str]) -> dict:
+    """Return a NEW dict carrying ``scope`` and/or ``ignored_filters``.
+
+    Never mutates ``result``: ``ResultCache.get`` hands back the stored
+    object by reference, so mutating it would poison the entry for every
+    later caller.
+    """
+    scope = SCOPE_NOTE.get(key)
+    if scope is None and not ignored:
+        return result
+
+    note: dict[str, object] = {}
+    if scope is not None:
+        note["scope"] = scope
+    if ignored:
+        note["ignored_filters"] = ignored
+
+    out: dict = {}
+    placed = False
+    for name, value in result.items():
+        if not placed and name not in _IDENTITY_KEYS:
+            out.update(note)
+            placed = True
+        out[name] = value
+    if not placed:  # envelope was identity keys only
+        out.update(note)
+    return out

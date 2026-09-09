@@ -249,3 +249,125 @@ def test_narrow_does_not_mutate_the_callers_instance():
 def test_unregistered_key_raises():
     with pytest.raises(ap.UnregisteredAnalysisKey):
         ap.narrow(AnalysisFilters(), ("get_new_tool", None))
+
+
+ALPHA = ("get_adstock_decay", "alpha_summary")
+MODEL_FIT = ("get_model_fit", None)
+TRAINING = ("get_training_data", None)
+SPEND = ("get_spend_scenario", None)
+
+
+def test_note_lands_after_output_type_on_the_dispatch_shape():
+    result = {
+        "model_id": "m1",
+        "output_type": "adstock_decay",
+        "columns": ["channel"],
+        "rows": [["tv"]],
+        "row_count": 1,
+    }
+    out = ap.insert_note(result, ADSTOCK, {"geos": "reason text here"})
+    assert list(out) == [
+        "model_id",
+        "output_type",
+        "scope",
+        "ignored_filters",
+        "columns",
+        "rows",
+        "row_count",
+    ]
+    assert out["scope"] == "national, full training window"
+    assert out["ignored_filters"] == {"geos": "reason text here"}
+
+
+def test_note_lands_after_model_id_when_there_is_no_output_type():
+    result = {"model_id": "m1", "columns": ["time"], "rows": [], "row_count": 0}
+    out = ap.insert_note(result, MODEL_FIT, {"channels": "reason text here"})
+    assert list(out) == [
+        "model_id",
+        "ignored_filters",
+        "columns",
+        "rows",
+        "row_count",
+    ]
+    assert "scope" not in out  # only the two adstock outputs emit scope
+
+
+def test_note_lands_after_datasets_on_the_training_data_shape():
+    result = {
+        "model_id": "m1",
+        "dataset": "kpi",
+        "datasets": ["kpi"],
+        "columns": ["time"],
+        "rows": [],
+        "row_count": 0,
+    }
+    out = ap.insert_note(result, TRAINING, {"use_kpi": "reason text here"})
+    assert list(out) == [
+        "model_id",
+        "dataset",
+        "datasets",
+        "ignored_filters",
+        "columns",
+        "rows",
+        "row_count",
+    ]
+
+
+def test_note_lands_after_channel_type_on_the_spend_scenario_shape():
+    result = {
+        "model_id": "m1",
+        "channel": "search",
+        "channel_type": "paid_media",
+        "outcome_mode": "revenue",
+        "base_spend": 1000.0,
+    }
+    out = ap.insert_note(result, SPEND, {"channels": "reason text here"})
+    assert list(out) == [
+        "model_id",
+        "channel",
+        "channel_type",
+        "ignored_filters",
+        "outcome_mode",
+        "base_spend",
+    ]
+
+
+def test_scope_is_emitted_even_with_nothing_ignored():
+    """The agent that passes no filters and mislabels the chart anyway."""
+    result = {
+        "model_id": "m1",
+        "output_type": "alpha_summary",
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+    }
+    out = ap.insert_note(result, ALPHA, {})
+    assert out["scope"] == "national, time-invariant"
+    assert "ignored_filters" not in out
+
+
+def test_returns_result_unchanged_when_neither_key_applies():
+    result = {
+        "model_id": "m1",
+        "output_type": "roi",
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+    }
+    out = ap.insert_note(result, ("get_channel_summary", "roi"), {})
+    assert out is result
+    assert "scope" not in out and "ignored_filters" not in out
+
+
+def test_never_mutates_the_input():
+    """ResultCache.get returns by reference; mutating would poison it."""
+    result = {
+        "model_id": "m1",
+        "output_type": "adstock_decay",
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+    }
+    snapshot = dict(result)
+    ap.insert_note(result, ADSTOCK, {"geos": "reason text here"})
+    assert result == snapshot
