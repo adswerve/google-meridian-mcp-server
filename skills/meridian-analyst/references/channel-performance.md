@@ -70,8 +70,9 @@ longest-lasting impact. This is about *timing of effect*, not *how much* — do 
 read an ROI off it. Adstock is **national and full-window** — the decay curve comes
 from a posterior parameter with no geo or time dimension, so it cannot be filtered
 to a date range or a single market. Never label a decay chart with a story's date
-window or geo; if you pass those filters the response lists them under
-`ignored_filters` and states its `scope`.
+window or geo. If you pass those filters, the response lists them under
+`ignored_filters`. The response always states its `scope`, whether or not you
+pass filters.
 
 **`get_response_curves` — saturation and spend sensitivity.** Outcome across a
 *range* of spend per channel. A curve still climbing steeply = headroom; a flat curve
