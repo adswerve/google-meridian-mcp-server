@@ -67,7 +67,11 @@ exposure: a slow decay means today's spend keeps paying out for several periods 
 reason short-window ROI understates a channel); a fast decay means the effect is
 nearly all immediate. Compare curves across channels to say which have the
 longest-lasting impact. This is about *timing of effect*, not *how much* — do not
-read an ROI off it.
+read an ROI off it. Adstock is **national and full-window** — the decay curve comes
+from a posterior parameter with no geo or time dimension, so it cannot be filtered
+to a date range or a single market. Never label a decay chart with a story's date
+window or geo; if you pass those filters the response lists them under
+`ignored_filters` and states its `scope`.
 
 **`get_response_curves` — saturation and spend sensitivity.** Outcome across a
 *range* of spend per channel. A curve still climbing steeply = headroom; a flat curve

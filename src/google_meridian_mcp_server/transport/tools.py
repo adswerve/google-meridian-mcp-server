@@ -240,7 +240,7 @@ def register_tools(mcp: FastMCP) -> None:
         filters: Annotated[
             AnalysisFilters | None,
             Field(
-                description="Optional filters. Only 'channels' is commonly used here to restrict to specific media channels.",
+                description="Optional filters. Only 'channels' is honored. Adstock decay and alpha are national, time-invariant posterior parameters, so date-range and geo filters cannot apply -- if you pass them they come back listed in 'ignored_filters'.",
             ),
         ] = None,
     ) -> dict[str, Any]:
@@ -389,7 +389,7 @@ def register_tools(mcp: FastMCP) -> None:
         filters: Annotated[
             AnalysisFilters | None,
             Field(
-                description="Optional filters: start_date/end_date/geos slice the model; use_kpi selects the efficiency family (defaults to the model's capability).",
+                description="Optional filters: start_date/end_date/geos slice the model; use_kpi selects the efficiency family (defaults to the model's capability). The channel is chosen by the 'channel' argument, so the 'channels' filter is not read and comes back in 'ignored_filters' if passed.",
             ),
         ] = None,
     ) -> dict[str, Any]:
