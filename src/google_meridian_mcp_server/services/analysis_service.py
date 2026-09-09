@@ -159,21 +159,26 @@ class AnalysisService:
 
     async def _cached(
         self,
-        tool_name: str,
+        name: str,
         model_id: str,
         params: dict[str, Any],
-        operation: str,
     ) -> dict[str, Any]:
+        """Cache and dispatch under one name.
+
+        ``name`` doubles as both the cache namespace and the runner
+        operation -- every call site passes ``key[0]``, so the tool name is
+        spelled once at the call site instead of three times.
+        """
         if self._cache:
-            hit = self._cache.get(tool_name, model_id, params)
+            hit = self._cache.get(name, model_id, params)
             if hit is not None:
-                log.debug("Cache hit: %s / %s", tool_name, model_id)
+                log.debug("Cache hit: %s / %s", name, model_id)
                 return hit
 
-        result = await self._runner.run(operation, model_id, params)
+        result = await self._runner.run(name, model_id, params)
 
         if self._cache:
-            self._cache.put(tool_name, model_id, params, result)
+            self._cache.put(name, model_id, params, result)
         return result
 
     async def get_training_data(
@@ -188,9 +193,7 @@ class AnalysisService:
         params, ignored = self._narrowed(
             normalized_filters, key, {"datasets": datasets}
         )
-        result = await self._cached(
-            "get_training_data", model_id, params, "get_training_data"
-        )
+        result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)
 
     async def get_channel_data(
@@ -198,15 +201,11 @@ class AnalysisService:
     ) -> dict[str, Any]:
         key = ("get_channel_data", None)
         params, ignored = self._narrowed(filters, key)
-        result = await self._cached(
-            "get_channel_data", model_id, params, "get_channel_data"
-        )
+        result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)
 
     async def get_model_overview(self, model_id: str) -> dict[str, Any]:
-        raw = await self._cached(
-            "get_model_overview", model_id, {}, "get_model_overview"
-        )
+        raw = await self._cached("get_model_overview", model_id, {})
         return self._decorate_overview(model_id, raw)
 
     @classmethod
@@ -265,9 +264,7 @@ class AnalysisService:
             raise InvalidOutputTypeError(output_type, sorted(CHANNEL_SUMMARY_TYPES))
         key = ("get_channel_summary", output_type)
         params, ignored = self._narrowed(filters, key, {"output_type": output_type})
-        result = await self._cached(
-            "get_channel_summary", model_id, params, "get_channel_summary"
-        )
+        result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)
 
     async def get_contribution(
@@ -280,9 +277,7 @@ class AnalysisService:
             raise InvalidOutputTypeError(output_type, sorted(CONTRIBUTION_TYPES))
         key = ("get_contribution", output_type)
         params, ignored = self._narrowed(filters, key, {"output_type": output_type})
-        result = await self._cached(
-            "get_contribution", model_id, params, "get_contribution"
-        )
+        result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)
 
     async def get_adstock_decay(
@@ -295,9 +290,7 @@ class AnalysisService:
             raise InvalidOutputTypeError(output_type, sorted(RESPONSE_DYNAMICS_TYPES))
         key = ("get_adstock_decay", output_type)
         params, ignored = self._narrowed(filters, key, {"output_type": output_type})
-        result = await self._cached(
-            "get_adstock_decay", model_id, params, "get_adstock_decay"
-        )
+        result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)
 
     async def get_response_curves(
@@ -310,9 +303,7 @@ class AnalysisService:
             raise InvalidOutputTypeError(output_type, sorted(RESPONSE_CURVE_TYPES))
         key = ("get_response_curves", output_type)
         params, ignored = self._narrowed(filters, key, {"output_type": output_type})
-        result = await self._cached(
-            "get_response_curves", model_id, params, "get_response_curves"
-        )
+        result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)
 
     async def get_reach_frequency(
@@ -320,9 +311,7 @@ class AnalysisService:
     ) -> dict[str, Any]:
         key = ("get_reach_frequency", None)
         params, ignored = self._narrowed(filters, key)
-        result = await self._cached(
-            "get_reach_frequency", model_id, params, "get_reach_frequency"
-        )
+        result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)
 
     async def get_model_fit(
@@ -330,7 +319,7 @@ class AnalysisService:
     ) -> dict[str, Any]:
         key = ("get_model_fit", None)
         params, ignored = self._narrowed(filters, key)
-        result = await self._cached("get_model_fit", model_id, params, "get_model_fit")
+        result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)
 
     async def get_spend_scenario(
@@ -351,9 +340,7 @@ class AnalysisService:
                 "base_spend": base_spend,
             },
         )
-        result = await self._cached(
-            "get_spend_scenario", model_id, params, "get_spend_scenario"
-        )
+        result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)
 
     @staticmethod
