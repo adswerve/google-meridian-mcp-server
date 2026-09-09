@@ -872,6 +872,14 @@ def test_run_analysis_allows_payload_just_under_the_limit(tmp_path):
     assert json.loads(open(resp_path).read())["ok"] is True
 
 
+def test_run_analysis_requires_an_explicit_limit(tmp_path):
+    """The no-default rule: a caller must opt into a limit, never inherit one.
+    Adding a default to limit_bytes fails here."""
+    req_path, resp_path = _contribution_request(tmp_path)
+    with pytest.raises(TypeError, match="limit_bytes"):
+        worker.run_analysis(req_path, resp_path, catalog=FakeCatalog())
+
+
 def test_run_analysis_success_writes_ok_payload(tmp_path):
     req_path, resp_path = _write_request(
         tmp_path,
