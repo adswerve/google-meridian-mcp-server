@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
 from fastmcp import Context, FastMCP
-from fastmcp.tools.base import ToolResult
+from fastmcp.tools import ToolResult
 from mcp.types import TextContent, ToolAnnotations
 from pydantic import Field
 
@@ -183,7 +183,7 @@ def register_tools(mcp: FastMCP) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Retrieve raw input datasets by name (e.g. 'media_spend', 'kpi', 'controls', 'population') merged into one table — including non-channel series. Use when you want a specific dataset as stored. To investigate a channel's full picture across types, use get_channel_data instead. On a large model, asking for every dataset at once with no date range is the heaviest call this tool can make against a deployed server — prefer requesting just the dataset(s) you need, or narrowing with a date range. If a response exceeds the configured size limit, the tool returns a response_too_large error naming the size and the filters (date range, geos, channels, or fewer datasets) that would narrow it."""
+        """Retrieve raw input datasets by name (e.g. 'media_spend', 'kpi', 'controls', 'population') merged into one table — including non-channel series. Use when you want a specific dataset as stored. To investigate a channel's full picture across types, use get_channel_data instead. On a large model, asking for every dataset at once with no date range can come back empty when talking to a deployed server — ask for just the dataset(s) you actually need, or narrow the date range with filters. Separately, a response over the configured size limit returns a response_too_large error naming the size and the filters (date range, geos, channels, or fewer datasets) that would narrow it."""
         return await _analysis_service(ctx).get_training_data(
             model_id,
             dataset,

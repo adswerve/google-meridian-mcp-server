@@ -140,6 +140,13 @@ def run_analysis(
         payload = analysis_ops.sanitize_nan(
             payload
         )  # whole payload, incl. error details
+        # GUARD 1 measures len(body) in characters; GUARD 2 (the executor
+        # backstop) measures the written file's st_size in bytes. The two
+        # only agree because ensure_ascii defaults to True here, so every
+        # character in `body` is one ASCII byte. Do NOT pass
+        # ensure_ascii=False: it would let non-ASCII geo/channel names
+        # serialize as multi-byte UTF-8, making GUARD 1 under-count relative
+        # to the actual byte size and admit an over-limit payload.
         body = json.dumps(payload, separators=(",", ":"), allow_nan=False)
         if payload.get("ok") and len(body) > limit_bytes:
             # GUARD 1. Replace, do NOT raise: a raise lands in the except

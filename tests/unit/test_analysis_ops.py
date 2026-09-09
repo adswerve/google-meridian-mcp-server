@@ -1049,7 +1049,6 @@ def test_run_analysis_writes_compact_separators(tmp_path):
     assert written == json.dumps(
         json.loads(written), separators=(",", ":"), allow_nan=False
     )
-    assert ", " not in written and '": ' not in written
 
 
 def test_run_analysis_does_not_guard_error_payloads(tmp_path):

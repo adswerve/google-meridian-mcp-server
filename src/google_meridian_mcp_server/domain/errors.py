@@ -202,8 +202,8 @@ class ResponseTooLargeError(MeridianMcpError):
         super().__init__(
             error_code="response_too_large",
             message=(
-                f"Response is {nbytes / 1024 / 1024:.1f} MiB{shape}, over the "
-                f"{limit_bytes / 1024 / 1024:.0f} MiB limit. Narrow the request "
+                f"Response is {nbytes / 1024 / 1024:.2f} MiB{shape}, over the "
+                f"{limit_bytes / 1024 / 1024:.2f} MiB limit. Narrow the request "
                 f"with filters.start_date/filters.end_date, filters.geos, or "
                 f"filters.channels, or request fewer datasets."
             ),

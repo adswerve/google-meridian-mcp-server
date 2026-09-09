@@ -81,8 +81,9 @@ async def test_unparseable_response(tmp_path):
 
 async def test_response_too_large(tmp_path):
     big = "import sys,os,json; resp=sys.argv[-1]; open(resp,'w').write('{\"ok\":true,\"result\":\"'+ 'x'*20 +'\"}')"
-    with pytest.raises(MeridianMcpError):
+    with pytest.raises(MeridianMcpError) as exc_info:
         await mk(tmp_path, big, max_response_bytes=8).run("op", "m1", {})
+    assert exc_info.value.error_code == "response_too_large"
 
 
 async def test_timeout_kills_fast(tmp_path):

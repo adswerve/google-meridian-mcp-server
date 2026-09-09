@@ -29,8 +29,8 @@ log = logging.getLogger(__name__)
 def sweep_stale_entries(root: str | Path, ttl_seconds: float) -> None:
     """Remove files/dirs directly under *root* whose mtime is older than *ttl_seconds*.
 
-    F10b: retained analysis workdirs (one per timeout/spawn-failure/oversized-
-    response/non-domain-rc!=0 run) and optimization worker log files (one per
+    F10b: retained analysis workdirs (one per timeout/spawn-failure/
+    non-domain-rc!=0 run) and optimization worker log files (one per
     run, forever) otherwise accumulate unboundedly on disk. Called once at
     server startup -- NOT on every spawn -- so this is a bounded, best-effort
     hygiene pass: a missing root is a no-op, and a failure removing any single
