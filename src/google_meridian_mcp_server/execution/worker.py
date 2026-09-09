@@ -100,11 +100,16 @@ def _start_parent_death_guard(poll_interval: float = 2.0) -> threading.Thread:
     return thread
 
 
-def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
+def run_analysis(
+    request_path: str, response_path: str, *, catalog: Any, limit_bytes: int
+) -> int:
     import json
     import traceback
 
-    from google_meridian_mcp_server.domain.errors import MeridianMcpError
+    from google_meridian_mcp_server.domain.errors import (
+        MeridianMcpError,
+        ResponseTooLargeError,
+    )
     from google_meridian_mcp_server.execution import analysis_ops
 
     with open(request_path) as f:
@@ -135,8 +140,25 @@ def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
         payload = analysis_ops.sanitize_nan(
             payload
         )  # whole payload, incl. error details
+        body = json.dumps(payload, separators=(",", ":"), allow_nan=False)
+        if payload.get("ok") and len(body) > limit_bytes:
+            # GUARD 1. Replace, do NOT raise: a raise lands in the except
+            # below and degrades to internal_error/rc 1. This is a normal,
+            # user-correctable domain outcome, so it stays rc 0.
+            result = payload["result"]
+            cols = result.get("columns") if isinstance(result, dict) else None
+            err = ResponseTooLargeError(
+                nbytes=len(body),
+                limit_bytes=limit_bytes,
+                total_rows=result.get("row_count")
+                if isinstance(result, dict)
+                else None,
+                total_columns=len(cols) if cols is not None else None,
+            )
+            payload = {"ok": False, "error": err.to_payload()}
+            body = json.dumps(payload, separators=(",", ":"), allow_nan=False)
         with open(tmp, "w") as f:
-            json.dump(payload, f, separators=(",", ":"), allow_nan=False)
+            f.write(body)
     except Exception as exc:  # noqa: BLE001 - serialization must never leave "no response"
         # sanitize_nan/json.dump raised (e.g. an object type sanitize_nan
         # doesn't know about yet): fall back to a minimal, ALWAYS-serializable
@@ -285,8 +307,12 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["MERIDIAN_ENABLE_JAX_X64"] = "true"
         from google_meridian_mcp_server.config import load_config
 
+        cfg = load_config()
         return run_analysis(
-            argv[2], argv[3], catalog=build_worker_catalog(load_config())
+            argv[2],
+            argv[3],
+            catalog=build_worker_catalog(cfg),
+            limit_bytes=cfg.analysis_max_response_bytes,
         )
 
     _start_parent_death_guard()

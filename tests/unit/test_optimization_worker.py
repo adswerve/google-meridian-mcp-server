@@ -2,6 +2,7 @@
 import os
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import google_meridian_mcp_server.bootstrap as bootstrap_mod
@@ -390,8 +391,14 @@ def test_main_analysis_path_forces_x64_even_if_ambient_env_says_false(monkeypatc
     monkeypatch.setenv("MERIDIAN_ENABLE_JAX_X64", "false")
 
     monkeypatch.setattr(worker_mod, "build_worker_catalog", lambda cfg: object())
-    monkeypatch.setattr(worker_mod, "run_analysis", lambda req, resp, *, catalog: 0)
-    monkeypatch.setattr(config_mod, "load_config", lambda: object())
+    monkeypatch.setattr(
+        worker_mod, "run_analysis", lambda req, resp, *, catalog, limit_bytes: 0
+    )
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: SimpleNamespace(analysis_max_response_bytes=64 * 1024 * 1024),
+    )
 
     rc = worker_mod.main(["worker.py", "analysis", "req.json", "resp.json"])
 
