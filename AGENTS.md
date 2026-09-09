@@ -37,9 +37,12 @@ and CI environments only.
 
 ### Engine: JAX with 64-bit precision, everywhere
 
-`MERIDIAN_BACKEND = "jax"` is a **module constant** in `execution/base_subprocess.py`, not a
-setting. The old `OPTIMIZATION_BACKEND_LOCAL` / `_CLOUD_CPU` / `_CLOUD_GPU` settings and
-`RuntimeConfig.backend_for_tier` **no longer exist** — do not reintroduce them. `child_env` applies `_HYGIENE_DEFAULTS` with `setdefault` (thread counts stay
+See [README.md's "Optimization tiers & concepts"](README.md#optimization-tiers--concepts) for
+the user-facing statement that every tier runs JAX with 64-bit precision and that there is no
+per-tier engine choice — that is canonical; do not restate it here. Implementation detail for
+contributors: `MERIDIAN_BACKEND = "jax"` is a **module constant** in
+`execution/base_subprocess.py`, not a setting, and `RuntimeConfig.backend_for_tier` **no longer
+exists** — do not reintroduce it. `child_env` applies `_HYGIENE_DEFAULTS` with `setdefault` (thread counts stay
 operator-tunable) but `_HYGIENE_OVERRIDES` **unconditionally**: `TF_CPP_MIN_LOG_LEVEL`,
 `MERIDIAN_BACKEND`, `MERIDIAN_ENABLE_JAX_X64="true"`. That split is deliberate — `os.environ`
 stopped being a proxy for operator intent once `jax/__init__.py` began writing
@@ -143,10 +146,11 @@ Markdown report. Kept after the upgrade: it is the cheapest way to prove a bump 
   meridian_version)`, and `compute_tier` is not a config field. Requesting a different tier
   for an identical model+config silently returns the existing run (`reused=true`); pass
   `force_rerun=true` for a genuine second run. Unresolved — the user has not decided yet.
-- **Unfiltered `get_training_data` cannot traverse the HTTP surface.** On a deployed server
-  the response (3.2 MB national to 16.3 MB geo) returns `200 OK` but the SSE stream is
-  dropped. Pre-existing; not caused by the upgrade. Always pass a dataset or date filter.
-  (`reports/drift/04-cloud-vs-local.md`)
+- **Unfiltered `get_training_data` cannot traverse the HTTP surface.** README.md's
+  [Tool surface](README.md#tool-surface) entry for `get_training_data` is canonical for the
+  current explanation — a later controlled experiment corrected the original diagnosis, so
+  don't rely on memory of an older version of this text. Always pass a dataset or date filter
+  against a deployed server. (`reports/drift/04-cloud-vs-local.md`)
 
 ## The recurring defect shape — the most transferable lesson
 
@@ -167,6 +171,10 @@ the specific channel — never just "a result came back".
   pass); loop until `uv run pytest` and `uv run ruff check src scripts tests` are green.
 - Reuse `MeridianInterrogator` for shared model metadata and data extraction. Keep responses
   JSON-safe, stably ordered, and free of broad exception swallowing.
+- Deterministic ordering in all public payloads: never let a tool response's row, column, or
+  list order depend on incidental factors like dict/set iteration or filesystem/GCS listing
+  order — sort explicitly wherever order is not otherwise meaningful. (No test currently
+  enforces this rule repo-wide.)
 - When adding a tool, wire it `transport → service → meridian`. When adding model metadata,
   consider whether it belongs in the overview payload.
 - Tests: unit tests with xarray/pandas fakes for Meridian-facing logic; mocks at the GCS,

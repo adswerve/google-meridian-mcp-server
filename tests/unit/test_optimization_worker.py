@@ -414,8 +414,8 @@ def test_main_analysis_path_passes_configured_limit_bytes_to_run_analysis(
 
     Uses a distinctive, non-default limit so a refactor that swaps in a
     constant, a stale variable, or a different config field (e.g.
-    ``analysis_worker_timeout``) is caught: with the real 64 MiB default
-    still in play, a wrong-but-plausible value would slip past unnoticed.
+    ``analysis_worker_timeout``) is caught: against the real shipped
+    default, a wrong-but-plausible value would slip past unnoticed.
     """
     monkeypatch.setenv("MERIDIAN_ENABLE_JAX_X64", "false")
 

@@ -87,9 +87,17 @@ found that `get_training_data__all_datasets` -- the unfiltered call, no
 `dataset` or date window -- fails against the deployed Cloud Run service in
 every one of the 7 fixtures it was tried on: the server returns `200 OK` and
 the SSE stream is dropped before the payload reaches the client, in ~85s,
-well inside the 300s request timeout and far under both Cloud Run's 32 MiB
-response ceiling and the server's own 64 MB `ANALYSIS_MAX_RESPONSE_BYTES`.
-Payload sizes are 3.2 MB (`national-revenue`) to 16.3 MB (`geo-revenue`).
+well inside the 300s request timeout and far under Cloud Run's 32 MiB
+response ceiling. Payload sizes are 3.2 MB (`national-revenue`) to 16.3 MB
+(`geo-revenue`) as measured at the time of that capture.
+
+**Superseded in part.** A later controlled two-arm experiment established
+that this is a delivery-path size ceiling, not a timeout: the server sends
+the full payload successfully and the client receives zero bytes, delivery
+succeeds at ~46 KB and fails at ~3.3 MB, and a 56s request completed fine.
+The `ANALYSIS_MAX_RESPONSE_BYTES` default has since dropped from 64 MiB to
+4 MiB, which still sits above the measured failure. See
+`drift/04-cloud-vs-local.md` for the measurements.
 
 **Pre-existing, not caused by this upgrade:** the payload is byte-identical
 across all four labels including `v1.7-engine`. It was never observed before

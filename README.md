@@ -285,11 +285,15 @@ Grouped analysis tools return **posterior-only** rows. Prior rows are removed fr
 
 Two optional envelope keys sit after the leading identity keys and before the columnar payload. `ignored_filters` maps a supplied-but-unhonored filter to the reason its output type cannot honor it; it appears only when the caller actually supplied such a filter. `scope` is emitted unconditionally, whether or not any filters were passed, and only by `get_adstock_decay`'s `adstock_decay` and `alpha_summary` output types, since adstock alpha is a national, time-invariant posterior parameter regardless of any date or geo filter.
 
+**Payload location.** Each tool response carries its payload exactly once, in `structuredContent`. The `content` block holds a short human-readable note (for row-bearing results, `"<n> rows x <m> columns in structuredContent"`), never the data itself. Client authors must read `structuredContent` — or the SDK's `.data` accessor — and must not parse `content[0].text` as JSON. `list_models` is the one tool whose payload is wrapped as `{"result": [...]}`.
+
+**Response size limit.** `ANALYSIS_MAX_RESPONSE_BYTES` (default `4194304`, 4 MiB) caps one analysis response, measured on the worker's serialized response. Over it, the tool returns a `response_too_large` error naming the size and the filters that would narrow the request. The default was lowered to sit close to the practical delivery ceiling on Cloud Run described below under `get_training_data`, but the two are not identical: measured failures start as low as ~3.3 MB, under this guard, so a response can still pass the size check and then be silently dropped in transit. Operators deploying behind Cloud Run should not treat this guard as sufficient protection against that failure mode on its own.
+
 **Per-tool notes**
 
 `get_model_overview` returns the model's time range, geo scope, channel/input groups, flattened data schema, and the supported dataset/output-type values for the other analysis tools.
 
-`get_training_data` accepts one or more dataset keys and returns a single merged result set for the requested selections. Against a **deployed** server, call it with a `dataset` or date filter: the unfiltered, all-datasets call returns a large payload (3.2 MB on a national fixture, 16.3 MB on a geo one) that the server accepts (`200 OK`) but the SSE stream is dropped before it reaches the client. This is pre-existing (present since before the Meridian 2.0 upgrade) and only affects the unfiltered case — filtered calls work fine. Details in `reports/drift/04-cloud-vs-local.md`.
+`get_training_data` accepts one or more dataset keys and returns a single merged result set for the requested selections. Against a **deployed** server, call `get_training_data` with a `dataset` or date filter. The unfiltered, all-datasets call produces a response the server sends successfully (Cloud Run logs `200 OK` and the full byte count) but which does not reach the client — the SSE stream ends without a response. Measured on Cloud Run, responses of ~46 KB are delivered and responses of ~3.3 MB are not; the ceiling lies between. This is a delivery-path limit, not a server timeout: a request taking 56s completed successfully, and the ~60-86s these calls take is analysis compute, not a timer. Filtered calls work fine. Details in `reports/drift/04-cloud-vs-local.md`.
 
 `get_channel_summary` exposes:
 
@@ -328,6 +332,7 @@ Images are built and tagged automatically (content hash) — there are no image 
 |----------|---------|-------------|
 | `project_id` | _(required)_ | Existing GCP project to provision into. |
 | `region` | `us-central1` | Region for all regional resources. |
+| `service_account_id` | `""` | Name of a dedicated service account to create/adopt for the service and jobs (e.g. `meridian-mcp`); empty uses the project's compute engine default SA. |
 | `gcs_bucket` | _(required)_ | Bucket holding fitted models and optimization run files. |
 | `create_bucket` | `true` | Create the bucket here, or reference an existing one. |
 | `bucket_force_destroy` | `false` | Allow `destroy` to delete a non-empty bucket (throwaway installs only). |
@@ -407,6 +412,10 @@ The grid shows the *ideal* pick assuming **all three tiers are enabled**. A depl
 # Local gate (no real GCP project needed — runs full cloud launch/liveness/cancel contract with a fake):
 uv run python -m scripts.validation.live_validate
 
-# Real Cloud Run smoke (requires CLOUD_SMOKE=1 and a configured .env with cloud tiers):
-CLOUD_SMOKE=1 COMPUTE_TIER=cloud_cpu uv run python -m scripts.validation.cloud_smoke
+# Real Cloud Run smoke (requires CLOUD_SMOKE=1, MODEL_ID, and a configured .env with cloud tiers):
+CLOUD_SMOKE=1 COMPUTE_TIER=cloud_cpu MODEL_ID=<model_id> uv run python -m scripts.validation.cloud_smoke
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
