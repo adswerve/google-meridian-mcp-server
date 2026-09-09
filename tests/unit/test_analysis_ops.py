@@ -934,3 +934,26 @@ def test_run_analysis_unserializable_result_falls_back_to_internal_error(tmp_pat
             "details": {},
         },
     }
+
+
+def test_run_analysis_writes_compact_separators(tmp_path):
+    """The bytes on disk must equal the compact serialization exactly -- Tasks 4
+    and 5 both measure this file. Reverting to default separators makes
+    resp.json 9.9% larger and desynchronises the two guards."""
+    req_path, resp_path = _write_request(
+        tmp_path,
+        {
+            "operation": "get_contribution",
+            "model_id": "m1",
+            "params": {"output_type": "contribution_metrics", "filters": {}},
+        },
+    )
+
+    rc = worker.run_analysis(req_path, resp_path, catalog=FakeCatalog())
+
+    assert rc == 0
+    written = open(resp_path).read()
+    assert written == json.dumps(
+        json.loads(written), separators=(",", ":"), allow_nan=False
+    )
+    assert ", " not in written and '": ' not in written

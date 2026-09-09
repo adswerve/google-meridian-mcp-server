@@ -136,7 +136,7 @@ def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
             payload
         )  # whole payload, incl. error details
         with open(tmp, "w") as f:
-            json.dump(payload, f, allow_nan=False)
+            json.dump(payload, f, separators=(",", ":"), allow_nan=False)
     except Exception as exc:  # noqa: BLE001 - serialization must never leave "no response"
         # sanitize_nan/json.dump raised (e.g. an object type sanitize_nan
         # doesn't know about yet): fall back to a minimal, ALWAYS-serializable
