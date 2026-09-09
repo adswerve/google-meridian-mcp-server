@@ -8,8 +8,6 @@ inapplicable -- the table cannot drift into under-reporting.
 Keyed by ``(tool_name, output_type)``; ``output_type`` is ``None`` for
 tools that do not take one. A lookup miss raises: a new tool or output
 type cannot ship without registering here.
-
-See docs/superpowers/specs/2026-09-08-filter-applicability-design.md.
 """
 
 from __future__ import annotations
@@ -86,19 +84,18 @@ _PAID_ONLY = (
     "are never included, and include_non_paid is not read"
 )
 _ADSTOCK_TIME = (
-    "adstock alpha is a time-invariant posterior parameter; there is no "
-    "windowed decay curve, and the date range is not read"
+    "adstock alpha is a time-invariant posterior parameter, so the date "
+    "range is not read"
 )
 _ADSTOCK_GEO = (
     "adstock alpha is a national posterior parameter with no geo dimension; "
     "the geo selection is not read"
 )
 _ADSTOCK_AGG = (
-    "the decay curve is indexed by lag, not by calendar time; "
-    "aggregate_times is not read"
+    "adstock alpha has no calendar-time dimension; aggregate_times is not read"
 )
 _ADSTOCK_KPI = (
-    "the decay curve is unitless -- not denominated in revenue or KPI -- "
+    "adstock alpha is unitless -- not denominated in revenue or KPI -- "
     "so use_kpi is not read"
 )
 _ADSTOCK_ORGANIC = (

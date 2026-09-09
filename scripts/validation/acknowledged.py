@@ -131,8 +131,11 @@ ACKNOWLEDGED: tuple[Acknowledged, ...] = (
         pointer="/scope",
         change="added",
         reason=(
-            "adstock_decay and alpha_summary now declare their national, "
-            "time-invariant scope; see the filter-applicability spec"
+            "adstock_decay and alpha_summary now declare their scope "
+            "unconditionally: the alpha posterior has dims (chain, draw, "
+            "channel), so both outputs are national and time-invariant "
+            "regardless of any filter, and the key is a constant per output "
+            "type."
         ),
     ),
 )
