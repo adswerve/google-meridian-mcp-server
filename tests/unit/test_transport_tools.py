@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from types import SimpleNamespace
 
@@ -47,6 +48,140 @@ def _async_raise(exc):
         raise exc
 
     return _wrapped
+
+
+@pytest.mark.asyncio
+async def test_envelope_carries_payload_exactly_once(monkeypatch):
+    """De-dup rule: data lives in structured_content; content is a short note.
+    Reverting the fix makes content[0].text the full JSON and fails here."""
+    mcp = _FakeFastMCP()
+    analysis_service = SimpleNamespace(
+        get_model_overview=_async(lambda model_id: {"model_id": model_id}),
+    )
+    monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    result = await mcp.tools["get_model_overview"]("m1", ctx)
+
+    assert result.structured_content == {"model_id": "m1"}
+    assert len(result.content) == 1
+    note = result.content[0].text
+    assert note == "See structuredContent."
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(note)
+
+
+def test_content_note_reports_rows_and_columns():
+    """§4.2 branch 1. Collapsing every tool to the constant string fails here."""
+    assert (
+        tools_module._content_note({"row_count": 85800, "columns": ["a", "b"]})
+        == "85800 rows x 2 columns in structuredContent"
+    )
+
+
+def test_content_note_falls_back_for_rowless_payloads():
+    """§4.2 branch 2. Always emitting counts fails here."""
+    assert tools_module._content_note({"model_id": "m1"}) == "See structuredContent."
+    assert tools_module._content_note([{"model_id": "m1"}]) == "See structuredContent."
+
+
+@pytest.mark.asyncio
+async def test_list_models_success_envelope_is_wrapped(monkeypatch):
+    mcp = _FakeFastMCP()
+    monkeypatch.setattr(
+        tools_module,
+        "_catalog_service",
+        lambda ctx: SimpleNamespace(list_models=lambda: [{"model_id": "m1"}]),
+    )
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    result = await mcp.tools["list_models"](ctx)
+
+    assert result.structured_content == {"result": [{"model_id": "m1"}]}
+
+
+@pytest.mark.asyncio
+async def test_list_models_error_envelope_is_also_wrapped(monkeypatch):
+    """The path a naive `isinstance(payload, list)` check leaves unwrapped, which
+    every client then rejects with `'result' is a required property`."""
+    mcp = _FakeFastMCP()
+    monkeypatch.setattr(
+        tools_module,
+        "_catalog_service",
+        lambda ctx: SimpleNamespace(
+            list_models=lambda: (_ for _ in ()).throw(
+                BackendUnavailableError("local", "disk full")
+            )
+        ),
+    )
+    tools_module.register_tools(mcp)
+    ctx = SimpleNamespace(lifespan_context={})
+
+    result = await mcp.tools["list_models"](ctx)
+
+    assert result.structured_content == {
+        "result": {
+            "error_code": "backend_unavailable",
+            "message": "Backend 'local' is not available: disk full",
+            "details": {"backend": "local"},
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_models_survives_the_payloads_extractor_round_trip(monkeypatch):
+    """scripts/validation/payloads.extract must return the SAME object as
+    before this change -- the bare list, not the {"result": ...} wrapper.
+    This is what keeps every drift baseline byte-identical (spec §4.5)."""
+    from fastmcp import Client, FastMCP
+
+    from scripts.validation.payloads import extract
+
+    mcp = FastMCP("roundtrip")
+    tools_module.register_tools(mcp)
+    monkeypatch.setattr(
+        tools_module,
+        "_catalog_service",
+        lambda ctx: SimpleNamespace(list_models=lambda: [{"model_id": "m1"}]),
+    )
+    async with Client(mcp) as client:
+        result = await client.call_tool("list_models", {})
+
+    assert extract(result) == [{"model_id": "m1"}]
+
+
+@pytest.mark.asyncio
+async def test_list_models_error_survives_the_payloads_extractor_round_trip(
+    monkeypatch,
+):
+    """Error-path half of the round trip above -- spec §9.2 is explicit that a
+    success-only test passes while the error path is broken, and the error
+    path is the one a naive implementation breaks."""
+    from fastmcp import Client, FastMCP
+
+    from scripts.validation.payloads import extract
+
+    mcp = FastMCP("roundtrip")
+    tools_module.register_tools(mcp)
+    monkeypatch.setattr(
+        tools_module,
+        "_catalog_service",
+        lambda ctx: SimpleNamespace(
+            list_models=lambda: (_ for _ in ()).throw(
+                BackendUnavailableError("local", "disk full")
+            )
+        ),
+    )
+    async with Client(mcp) as client:
+        result = await client.call_tool("list_models", {})
+
+    assert extract(result) == {
+        "error_code": "backend_unavailable",
+        "message": "Backend 'local' is not available: disk full",
+        "details": {"backend": "local"},
+    }
 
 
 @pytest.mark.asyncio
@@ -98,31 +233,35 @@ async def test_register_tools_exposes_successful_handlers(
     tools_module.register_tools(mcp)
     ctx = SimpleNamespace(lifespan_context={})
 
-    assert await mcp.tools["list_models"](ctx) == [{"model_id": "m1"}]
-    assert await mcp.tools["get_model_overview"]("m1", ctx) == {
+    assert (await mcp.tools["list_models"](ctx)).structured_content == {
+        "result": [{"model_id": "m1"}]
+    }
+    assert (await mcp.tools["get_model_overview"]("m1", ctx)).structured_content == {
         "model_id": "m1",
         "model_type": "geo",
     }
     # No filters passed -> the transport layer no longer normalizes; it passes
     # the raw (default None) value straight through to the service, which is
     # now responsible for normalization.
-    assert await mcp.tools["get_training_data"]("m1", ["kpi"], ctx) == {
+    assert (
+        await mcp.tools["get_training_data"]("m1", ["kpi"], ctx)
+    ).structured_content == {
         "model_id": "m1",
         "datasets": ["kpi"],
         "filters": None,
     }
-    assert (await mcp.tools["get_channel_summary"]("m1", "roi", ctx))[
-        "output_type"
-    ] == "roi"
-    assert (await mcp.tools["get_contribution"]("m1", "contribution_metrics", ctx))[
-        "output_type"
-    ] == "contribution_metrics"
-    assert (await mcp.tools["get_adstock_decay"]("m1", "alpha_summary", ctx))[
-        "output_type"
-    ] == "alpha_summary"
+    assert (
+        await mcp.tools["get_channel_summary"]("m1", "roi", ctx)
+    ).structured_content["output_type"] == "roi"
+    assert (
+        await mcp.tools["get_contribution"]("m1", "contribution_metrics", ctx)
+    ).structured_content["output_type"] == "contribution_metrics"
+    assert (
+        await mcp.tools["get_adstock_decay"]("m1", "alpha_summary", ctx)
+    ).structured_content["output_type"] == "alpha_summary"
     assert (
         await mcp.tools["get_response_curves"]("m1", "response_curve_summary", ctx)
-    )["output_type"] == "response_curve_summary"
+    ).structured_content["output_type"] == "response_curve_summary"
 
 
 @pytest.mark.asyncio
@@ -176,12 +315,16 @@ async def test_tool_wrappers_return_standard_error_payloads(
     tools_module.register_tools(mcp)
     ctx = SimpleNamespace(lifespan_context={})
 
-    assert await mcp.tools["list_models"](ctx) == {
-        "error_code": "backend_unavailable",
-        "message": "Backend 'local' is not available: disk full",
-        "details": {"backend": "local"},
+    assert (await mcp.tools["list_models"](ctx)).structured_content == {
+        "result": {
+            "error_code": "backend_unavailable",
+            "message": "Backend 'local' is not available: disk full",
+            "details": {"backend": "local"},
+        }
     }
-    assert await mcp.tools["get_model_overview"]("missing", ctx) == {
+    assert (
+        await mcp.tools["get_model_overview"]("missing", ctx)
+    ).structured_content == {
         "error_code": "model_not_found",
         "message": "Model 'missing' is not available in the configured backend.",
         "details": {"model_id": "missing", "backend": "unknown"},
@@ -207,7 +350,7 @@ async def test_tool_surface_catches_non_meridian_exceptions(
     ctx = SimpleNamespace(lifespan_context={})
 
     with caplog.at_level("ERROR", logger=tools_module.__name__):
-        result = await mcp.tools["get_model_overview"]("m1", ctx)
+        result = (await mcp.tools["get_model_overview"]("m1", ctx)).structured_content
 
     assert result["error_code"] == "internal_error"
     assert "ValueError" in result["message"]
@@ -269,7 +412,7 @@ async def test_register_tools_exposes_get_spend_scenario(
 
     result = await mcp.tools["get_spend_scenario"]("m1", "search", 1000.0, ctx)
 
-    assert result == {
+    assert result.structured_content == {
         "model_id": "m1",
         "channel": "search",
         "outcome_mode": "revenue",
@@ -306,7 +449,7 @@ async def test_list_models_is_offloaded_to_a_worker_thread(
 
     result = await mcp.tools["list_models"](ctx)
 
-    assert result == [{"model_id": "m1"}]
+    assert result.structured_content == {"result": [{"model_id": "m1"}]}
     assert seen["thread"] is not main_thread
 
 
@@ -343,11 +486,21 @@ async def test_optimization_status_result_list_delete_cancel_are_offloaded_to_th
     tools_module.register_tools(mcp)
     ctx = SimpleNamespace(lifespan_context={})
 
-    assert (await mcp.tools["get_optimization_status"]("r1", ctx))["ok"] == "get_status"
-    assert (await mcp.tools["get_optimization_result"]("r1", ctx))["ok"] == "get_result"
-    assert (await mcp.tools["list_optimizations"](ctx))["ok"] == "list_runs"
-    assert (await mcp.tools["delete_optimization"]("r1", ctx))["ok"] == "delete"
-    assert (await mcp.tools["cancel_optimization"]("r1", ctx))["ok"] == "cancel"
+    assert (await mcp.tools["get_optimization_status"]("r1", ctx)).structured_content[
+        "ok"
+    ] == "get_status"
+    assert (await mcp.tools["get_optimization_result"]("r1", ctx)).structured_content[
+        "ok"
+    ] == "get_result"
+    assert (await mcp.tools["list_optimizations"](ctx)).structured_content[
+        "ok"
+    ] == "list_runs"
+    assert (await mcp.tools["delete_optimization"]("r1", ctx)).structured_content[
+        "ok"
+    ] == "delete"
+    assert (await mcp.tools["cancel_optimization"]("r1", ctx)).structured_content[
+        "ok"
+    ] == "cancel"
 
     assert set(calls) == {
         "get_status",
