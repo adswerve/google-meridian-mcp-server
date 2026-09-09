@@ -393,6 +393,10 @@ def prepare_env(runs_root: str) -> None:
     os.environ["REGISTRY_BACKEND"] = "local"
     os.environ["OPTIMIZATION_ALLOWED_TIERS"] = "local"
     os.environ["RESULT_CACHE_ENABLED"] = "false"
+    # Inert at the 64 MiB default, but pins the ceiling so an operator export
+    # cannot shrink it under this run -- and so lowering the default later does
+    # not silently turn these payloads into error envelopes.
+    os.environ["ANALYSIS_MAX_RESPONSE_BYTES"] = str(64 * 1024 * 1024)
     os.environ["OPTIMIZATION_RUNS_ROOT"] = runs_root
 
 
