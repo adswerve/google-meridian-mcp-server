@@ -14,6 +14,8 @@ See docs/superpowers/specs/2026-09-08-filter-applicability-design.md.
 
 from __future__ import annotations
 
+from google_meridian_mcp_server.domain.filters import AnalysisFilters
+
 Key = tuple[str, str | None]
 
 ALL_FILTER_FIELDS: frozenset[str] = frozenset(
@@ -222,3 +224,62 @@ SCOPE_NOTE: dict[Key, str] = {
     ("get_adstock_decay", "adstock_decay"): "national, full training window",
     ("get_adstock_decay", "alpha_summary"): "national, time-invariant",
 }
+
+# Fields with a canonical "no constraint" value. Sending the sentinel asks
+# for nothing, so it is never reported. aggregate_times is deliberately
+# absent: it is a bare bool defaulting to True, so both values are real
+# requests and either one is reported when explicitly sent (spec 4).
+_SENTINELS: dict[str, object] = {
+    "start_date": None,
+    "end_date": None,
+    "geos": [],
+    "channels": [],
+    "use_kpi": None,
+    "include_non_paid": None,
+}
+
+
+def _field_default(name: str) -> object:
+    """A FRESH schema default -- never a shared mutable."""
+    default = AnalysisFilters.model_fields[name].get_default(call_default_factory=True)
+    return default
+
+
+def _is_reportable(filters: AnalysisFilters, field: str) -> bool:
+    if field not in filters.model_fields_set:
+        return False
+    if field not in _SENTINELS:
+        return True  # aggregate_times: no sentinel, any explicit send counts
+    return getattr(filters, field) != _SENTINELS[field]
+
+
+def narrow(
+    filters: AnalysisFilters, key: Key
+) -> tuple[AnalysisFilters, dict[str, str]]:
+    """Reduce ``filters`` to what ``key`` can honor, and say what was dropped.
+
+    Returns ``(effective, ignored)``. ``ignored`` maps each reported field
+    to its reason and is derived from ``filters`` BEFORE the copy --
+    ``model_copy(update=...)`` adds every updated key to
+    ``model_fields_set``, so reading it afterwards would report fields the
+    caller never sent.
+    """
+    try:
+        applicable = FILTER_APPLICABILITY[key]
+    except KeyError:
+        raise UnregisteredAnalysisKey(key) from None
+
+    inapplicable = ALL_FILTER_FIELDS - applicable
+    if not inapplicable:
+        return filters, {}
+
+    reasons = IGNORED_REASONS[key]
+    ignored = {
+        field: reasons[field]
+        for field in sorted(inapplicable)
+        if _is_reportable(filters, field)
+    }
+    effective = filters.model_copy(
+        update={field: _field_default(field) for field in inapplicable}
+    )
+    return effective, ignored
