@@ -14,6 +14,7 @@ from pathlib import Path
 
 from google_meridian_mcp_server.domain.errors import (
     MeridianMcpError,
+    ResponseTooLargeError,
     ServerBusyError,
     WorkerFailedError,
     WorkerTimeoutError,
@@ -202,15 +203,9 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 f"no response (exit {rc})", {"log_tail": self._tail(logp)}
             )
         if resp.stat().st_size > self._max_bytes:
-            size = resp.stat().st_size
-            # Unlink the oversized file itself before raising: the workdir is
-            # retained for postmortem (WorkerFailedError -> keep=True), but
-            # retaining the exact multi-hundred-MiB file the size ceiling was
-            # meant to guard against would defeat the point. The log tail is
-            # what matters for debugging; that stays.
-            with contextlib.suppress(OSError):
-                resp.unlink()
-            raise WorkerFailedError("response too large", {"bytes": size})
+            raise ResponseTooLargeError(
+                nbytes=resp.stat().st_size, limit_bytes=self._max_bytes
+            )
         try:
             payload = json.loads(resp.read_text())
         except json.JSONDecodeError:

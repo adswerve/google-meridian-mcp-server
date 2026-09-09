@@ -7,7 +7,10 @@ import time
 
 import pytest
 
-from google_meridian_mcp_server.domain.errors import MeridianMcpError
+from google_meridian_mcp_server.domain.errors import (
+    MeridianMcpError,
+    ResponseTooLargeError,
+)
 from google_meridian_mcp_server.execution.sync_subprocess_executor import (
     SyncSubprocessExecutor,
 )
@@ -245,21 +248,23 @@ async def test_internal_error_rc1_retains_workdir_and_log(tmp_path):
     assert "some traceback text" in log_text
 
 
-async def test_response_too_large_unlinks_resp_but_keeps_workdir(tmp_path):
-    """Fable finding 4: the too-large response is itself the disk-fill risk
-    the size ceiling exists to prevent, so resp.json must be unlinked even
-    though the workdir (with the log) is retained for postmortem."""
+async def test_response_too_large_raises_domain_error_and_removes_workdir(tmp_path):
+    """Supersedes Fable finding 4. response_too_large is a user-correctable
+    domain error, not an infra failure: rc 0 leaves keep=False, so the whole
+    workdir goes -- which serves the original disk-fill concern better than
+    unlinking resp.json and retaining the directory. The retained log is
+    deliberately traded away; there is nothing to postmortem."""
     root = tmp_path / "too_large"
     big = "import sys,os,json; resp=sys.argv[-1]; open(resp,'w').write('{\"ok\":true,\"result\":\"'+ 'x'*20 +'\"}')"
-    with pytest.raises(MeridianMcpError) as exc_info:
+    with pytest.raises(ResponseTooLargeError) as exc_info:
         await mk(root, big, max_response_bytes=8).run("op", "m1", {})
-    assert exc_info.value.error_code == "worker_failed"
 
-    entries = _entries(root)
-    assert len(entries) == 1, "workdir must still be retained"
-    workdir = root / entries[0]
-    assert not (workdir / "resp.json").exists(), "oversized resp.json must be unlinked"
-    assert (workdir / "log").exists()
+    assert exc_info.value.error_code == "response_too_large"
+    assert exc_info.value.details["limit_bytes"] == 8
+    assert exc_info.value.details["bytes"] > 8
+    assert exc_info.value.details["total_rows"] is None
+    assert exc_info.value.details["total_columns"] is None
+    assert _entries(root) == [], "workdir must be removed for a domain outcome"
 
 
 async def test_workdir_retention_semantics(tmp_path):
