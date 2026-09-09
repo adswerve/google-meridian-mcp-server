@@ -81,7 +81,7 @@ def test_local_and_gcs_catalog_entries_normalize_identically():
         {
             "model_id": "geo-revenue",
             "source_backend": "gcs",
-            "source_path": "rover/geo-revenue/model.binpb",
+            "source_path": "models/geo-revenue/model.binpb",
             "etag_or_fingerprint": "CJmZ2vTx",
         }
     )

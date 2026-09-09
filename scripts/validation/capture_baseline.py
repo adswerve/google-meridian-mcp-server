@@ -838,7 +838,7 @@ def build_client(transport: str, url: str | None):
         if not url:
             raise SystemExit("--transport http requires --url")
         endpoint = normalize_mcp_url(url)
-        # Task 24: example-dev-project's domain-restricted-sharing org policy refused
+        # A domain-restricted-sharing org policy on the test project refused
         # the allUsers invoker binding, so the deployed service requires an
         # identity token (`gcloud auth print-identity-token`) even though
         # allow_unauthenticated=true in Terraform. MCP_AUTH_TOKEN carries it

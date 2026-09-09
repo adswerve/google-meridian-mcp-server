@@ -102,7 +102,7 @@ correction here.
 
 `references/` is gitignored in this repo (`.gitignore:22`) and not present in
 this worktree; read instead from the local `google/meridian` clone checked out
-alongside it at `<repo>/references/meridian`,
+alongside it at `references/meridian`,
 at tag `v2.0.0` — `.agents/skills.json` and the five
 `skills/meridian_*/SKILL.md` files. Meridian's own skills are a different genre from ours: **they guide an
 agent writing and running Meridian *Python scripts* end-to-end** (data

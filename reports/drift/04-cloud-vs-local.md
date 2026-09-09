@@ -9,7 +9,7 @@ limitation. No behavioural drift attributable to the Meridian 2.0 upgrade.**
 - Cases present locally but absent from the cloud capture: **7** (see Limitation)
 
 Deployed service: `https://<service>.run.app`
-(Cloud Run, `us-central1`, project `example-dev-project`), Meridian 2.0.0 on JAX with
+(Cloud Run, `us-central1`, a development project), Meridian 2.0.0 on JAX with
 64-bit precision, Python 3.13, `RESULT_CACHE_ENABLED=false` so the service
 cannot serve one capture's results to the next.
 

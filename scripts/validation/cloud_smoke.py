@@ -1,7 +1,7 @@
-"""Opt-in real Cloud Run smoke test against example-dev-project.
+"""Opt-in real Cloud Run smoke test against a deployed Cloud Run stack.
 
 Run:
-  CLOUD_SMOKE=1 CLOUD_RUN_PROJECT=example-dev-project CLOUD_RUN_REGION=us-central1 \\
+  CLOUD_SMOKE=1 CLOUD_RUN_PROJECT=your-gcp-project CLOUD_RUN_REGION=us-central1 \\
   CLOUD_RUN_JOB_CPU=meridian-opt-cpu GCS_BUCKET=<bucket> GCS_MODELS_PREFIX=<prefix> \\
   PERSISTENCE_BACKEND=gcs REGISTRY_BACKEND=gcs OPTIMIZATION_ALLOWED_TIERS=cloud_cpu \\
   OPTIMIZATION_DEFAULT_TIER=cloud_cpu MODEL_ID=<model_id> \\
