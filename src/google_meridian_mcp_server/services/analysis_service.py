@@ -166,8 +166,10 @@ class AnalysisService:
         """Cache and dispatch under one name.
 
         ``name`` doubles as both the cache namespace and the runner
-        operation -- every call site passes ``key[0]``, so the tool name is
-        spelled once at the call site instead of three times.
+        operation, so the tool name is spelled once at the call site
+        instead of three times. Every filter-taking call site passes
+        ``key[0]``; ``get_model_overview`` has no key tuple and passes its
+        literal directly.
         """
         if self._cache:
             hit = self._cache.get(name, model_id, params)

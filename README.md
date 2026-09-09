@@ -281,7 +281,7 @@ Tool responses are canonical JSON payloads. The row-oriented analysis tools retu
 
 Grouped analysis tools return **posterior-only** rows. Prior rows are removed from tool results, and the transport payloads do not include a `distribution` field.
 
-Two envelope keys are conditional, inserted after the leading identity keys and before the columnar payload. `ignored_filters` maps a supplied-but-unhonoured filter to the reason its output type cannot honor it; it appears only when the caller actually supplied such a filter. `scope` is emitted unconditionally, whether or not any filters were passed, and only by `get_adstock_decay`'s `adstock_decay` and `alpha_summary` output types, since adstock alpha is a national, time-invariant posterior parameter regardless of any date or geo filter.
+Two optional envelope keys sit after the leading identity keys and before the columnar payload. `ignored_filters` maps a supplied-but-unhonored filter to the reason its output type cannot honor it; it appears only when the caller actually supplied such a filter. `scope` is emitted unconditionally, whether or not any filters were passed, and only by `get_adstock_decay`'s `adstock_decay` and `alpha_summary` output types, since adstock alpha is a national, time-invariant posterior parameter regardless of any date or geo filter.
 
 **Per-tool notes**
 

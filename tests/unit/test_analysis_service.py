@@ -714,7 +714,7 @@ async def test_every_service_method_narrows_and_reports(method, kwargs, field, v
 @pytest.mark.parametrize(
     ("method", "kwargs"),
     [(m, k) for m, k, _, _ in WIRING_CASES],
-    ids=[m + str(k) for m, k, _, _ in WIRING_CASES],
+    ids=[m + str(sorted(k.items())) for m, k, _, _ in WIRING_CASES],
 )
 async def test_no_method_emits_a_note_when_nothing_was_supplied(method, kwargs):
     """scope is the only key allowed to appear unprompted, and only on adstock."""
