@@ -77,6 +77,13 @@ PASS / EXPECTED-ERR / FAIL matrix and ends with `LIVE VALIDATION PASSED` or `N f
 - **Do not run two instances concurrently.** It `rmtree`s fixed shared paths at startup
   (`live_validate.py:117-118`, and the shared `_runs` root at `:141`), so a second instance
   destroys the first's run records and produces failures that look like real regressions.
+- **The harness pins `ANALYSIS_MAX_RESPONSE_BYTES` to 64 MiB, deliberately above the shipped
+  4 MiB default, and that divergence is not a bug.** Holding it high keeps large-payload cases
+  returning DATA, so baselines stay byte-comparable across a threshold change — including
+  against labels that can no longer be regenerated. "Correcting" the pin down to the shipped
+  default makes the geo-revenue all-datasets case (~7.8 MB) return `response_too_large`, which
+  reads as a regression and is not one. Verified: a full run under the 4 MiB default passed
+  146/146 with `response_too_large` appearing zero times.
 - **Fixtures** live under gitignored `models/_validation/` and are never committed. The first
   run BUILDS them via real tiny MCMC fits — a few minutes, not a hang.
 - **Generator** `scripts/generate_validation_models.py` builds **7** variants: the 2×3
