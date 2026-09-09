@@ -15,6 +15,7 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+from google_meridian_mcp_server.domain.applicability import Key, insert_note, narrow
 from google_meridian_mcp_server.domain.errors import (
     DatasetNotAvailableError,
     InvalidOutputTypeError,
@@ -64,6 +65,23 @@ class AnalysisService:
     @staticmethod
     def _filter_key(filters: AnalysisFilters) -> dict[str, Any]:
         return filters.model_dump(mode="json")
+
+    def _narrowed(
+        self,
+        filters: AnalysisFilters | dict | None,
+        key: Key,
+        extra: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Build the worker payload from filters this key can actually honor.
+
+        Narrowing happens BEFORE ``_filter_key`` so the cache key and the
+        worker payload are both honest, and two requests differing only in
+        an inapplicable filter share one cache entry.
+        """
+        effective, ignored = narrow(normalize_filters(filters), key)
+        params: dict[str, Any] = dict(extra or {})
+        params["filters"] = self._filter_key(effective)
+        return params, ignored
 
     @staticmethod
     def _build_result(
@@ -166,23 +184,24 @@ class AnalysisService:
     ) -> dict[str, Any]:
         normalized_filters = normalize_filters(filters)
         datasets = self._normalize_dataset_selection(model_id, dataset)
-
-        params = {
-            "datasets": datasets,
-            "filters": self._filter_key(normalized_filters),
-        }
-        return await self._cached(
+        key = ("get_training_data", None)
+        params, ignored = self._narrowed(
+            normalized_filters, key, {"datasets": datasets}
+        )
+        result = await self._cached(
             "get_training_data", model_id, params, "get_training_data"
         )
+        return insert_note(result, key, ignored)
 
     async def get_channel_data(
         self, model_id: str, filters: AnalysisFilters | dict | None
     ) -> dict[str, Any]:
-        normalized_filters = normalize_filters(filters)
-        params = {"filters": self._filter_key(normalized_filters)}
-        return await self._cached(
+        key = ("get_channel_data", None)
+        params, ignored = self._narrowed(filters, key)
+        result = await self._cached(
             "get_channel_data", model_id, params, "get_channel_data"
         )
+        return insert_note(result, key, ignored)
 
     async def get_model_overview(self, model_id: str) -> dict[str, Any]:
         raw = await self._cached(
@@ -244,14 +263,12 @@ class AnalysisService:
     ) -> dict[str, Any]:
         if output_type not in CHANNEL_SUMMARY_TYPES:
             raise InvalidOutputTypeError(output_type, sorted(CHANNEL_SUMMARY_TYPES))
-        normalized_filters = normalize_filters(filters)
-        params = {
-            "output_type": output_type,
-            "filters": self._filter_key(normalized_filters),
-        }
-        return await self._cached(
+        key = ("get_channel_summary", output_type)
+        params, ignored = self._narrowed(filters, key, {"output_type": output_type})
+        result = await self._cached(
             "get_channel_summary", model_id, params, "get_channel_summary"
         )
+        return insert_note(result, key, ignored)
 
     async def get_contribution(
         self,
@@ -261,14 +278,12 @@ class AnalysisService:
     ) -> dict[str, Any]:
         if output_type not in CONTRIBUTION_TYPES:
             raise InvalidOutputTypeError(output_type, sorted(CONTRIBUTION_TYPES))
-        normalized_filters = normalize_filters(filters)
-        params = {
-            "output_type": output_type,
-            "filters": self._filter_key(normalized_filters),
-        }
-        return await self._cached(
+        key = ("get_contribution", output_type)
+        params, ignored = self._narrowed(filters, key, {"output_type": output_type})
+        result = await self._cached(
             "get_contribution", model_id, params, "get_contribution"
         )
+        return insert_note(result, key, ignored)
 
     async def get_adstock_decay(
         self,
@@ -278,14 +293,12 @@ class AnalysisService:
     ) -> dict[str, Any]:
         if output_type not in RESPONSE_DYNAMICS_TYPES:
             raise InvalidOutputTypeError(output_type, sorted(RESPONSE_DYNAMICS_TYPES))
-        normalized_filters = normalize_filters(filters)
-        params = {
-            "output_type": output_type,
-            "filters": self._filter_key(normalized_filters),
-        }
-        return await self._cached(
+        key = ("get_adstock_decay", output_type)
+        params, ignored = self._narrowed(filters, key, {"output_type": output_type})
+        result = await self._cached(
             "get_adstock_decay", model_id, params, "get_adstock_decay"
         )
+        return insert_note(result, key, ignored)
 
     async def get_response_curves(
         self,
@@ -295,30 +308,30 @@ class AnalysisService:
     ) -> dict[str, Any]:
         if output_type not in RESPONSE_CURVE_TYPES:
             raise InvalidOutputTypeError(output_type, sorted(RESPONSE_CURVE_TYPES))
-        normalized_filters = normalize_filters(filters)
-        params = {
-            "output_type": output_type,
-            "filters": self._filter_key(normalized_filters),
-        }
-        return await self._cached(
+        key = ("get_response_curves", output_type)
+        params, ignored = self._narrowed(filters, key, {"output_type": output_type})
+        result = await self._cached(
             "get_response_curves", model_id, params, "get_response_curves"
         )
+        return insert_note(result, key, ignored)
 
     async def get_reach_frequency(
         self, model_id: str, filters: AnalysisFilters | dict | None
     ) -> dict[str, Any]:
-        normalized_filters = normalize_filters(filters)
-        params = {"filters": self._filter_key(normalized_filters)}
-        return await self._cached(
+        key = ("get_reach_frequency", None)
+        params, ignored = self._narrowed(filters, key)
+        result = await self._cached(
             "get_reach_frequency", model_id, params, "get_reach_frequency"
         )
+        return insert_note(result, key, ignored)
 
     async def get_model_fit(
         self, model_id: str, filters: AnalysisFilters | dict | None
     ) -> dict[str, Any]:
-        normalized_filters = normalize_filters(filters)
-        params = {"filters": self._filter_key(normalized_filters)}
-        return await self._cached("get_model_fit", model_id, params, "get_model_fit")
+        key = ("get_model_fit", None)
+        params, ignored = self._narrowed(filters, key)
+        result = await self._cached("get_model_fit", model_id, params, "get_model_fit")
+        return insert_note(result, key, ignored)
 
     async def get_spend_scenario(
         self,
@@ -328,16 +341,20 @@ class AnalysisService:
         base_spend: float | None,
         filters: AnalysisFilters | dict | None,
     ) -> dict[str, Any]:
-        normalized_filters = normalize_filters(filters)
-        params = {
-            "channel": channel,
-            "spend_increase": spend_increase,
-            "base_spend": base_spend,
-            "filters": self._filter_key(normalized_filters),
-        }
-        return await self._cached(
+        key = ("get_spend_scenario", None)
+        params, ignored = self._narrowed(
+            filters,
+            key,
+            {
+                "channel": channel,
+                "spend_increase": spend_increase,
+                "base_spend": base_spend,
+            },
+        )
+        result = await self._cached(
             "get_spend_scenario", model_id, params, "get_spend_scenario"
         )
+        return insert_note(result, key, ignored)
 
     @staticmethod
     def _build_spend_scenario(

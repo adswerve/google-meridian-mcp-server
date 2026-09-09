@@ -566,3 +566,79 @@ class TestBuildSpendScenario:
         )
         assert set(result.keys()) == expected_keys
         assert len(result) == 15
+
+
+# --- filter applicability narrowing (Task 4) ---------------------------------
+
+
+async def test_adstock_strips_date_and_geo_from_the_worker_payload():
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    await svc.get_adstock_decay(
+        "m1",
+        "adstock_decay",
+        {
+            "start_date": "2024-07-01",
+            "end_date": "2024-09-30",
+            "geos": ["US-CA"],
+            "channels": ["tv"],
+        },
+    )
+
+    _, _, params = r.calls[0]
+    assert params["filters"] == {**DEFAULT_FILTERS, "channels": ["tv"]}
+
+
+async def test_adstock_response_carries_scope_and_ignored_filters():
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    out = await svc.get_adstock_decay(
+        "m1",
+        "adstock_decay",
+        {"start_date": "2024-07-01", "end_date": "2024-09-30", "geos": ["US-CA"]},
+    )
+
+    assert out["scope"] == "national, full training window"
+    assert set(out["ignored_filters"]) == {"start_date", "end_date", "geos"}
+
+
+async def test_model_fit_use_kpi_reaches_the_worker():
+    """Regression guard: an over-strict entry here would collapse
+    use_kpi=True/False onto one cache key and serve wrong-denomination rows."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    await svc.get_model_fit("m1", {"use_kpi": True})
+
+    _, _, params = r.calls[0]
+    assert params["filters"]["use_kpi"] is True
+
+
+async def test_spend_scenario_reports_channels_and_keeps_its_own_args():
+    r = FakeRunner(
+        result_factory=lambda op, mid, p: {
+            "model_id": mid,
+            "channel": p["channel"],
+            "channel_type": "paid_media",
+            "outcome_mode": "revenue",
+        }
+    )
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    out = await svc.get_spend_scenario(
+        "m1", "search", 100.0, None, {"channels": ["tv"]}
+    )
+
+    _, _, params = r.calls[0]
+    assert params["channel"] == "search" and params["spend_increase"] == 100.0
+    assert params["filters"]["channels"] == []
+    assert set(out["ignored_filters"]) == {"channels"}
+
+
+# NOTE: the existing parametrized `test_invalid_output_type_no_spawn`
+# (tests/unit/test_analysis_service.py:397-411) already covers all four
+# dispatch tools and is the stronger guard that the applicability lookup
+# never pre-empts InvalidOutputTypeError. Do not duplicate it here -- just
+# confirm it still passes after Task 4.
