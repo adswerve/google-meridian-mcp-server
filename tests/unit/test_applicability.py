@@ -371,3 +371,55 @@ def test_never_mutates_the_input():
     snapshot = dict(result)
     ap.insert_note(result, ADSTOCK, {"geos": "reason text here"})
     assert result == snapshot
+
+
+# A value that expresses a real constraint, per field.
+PROBE = {
+    "start_date": "2024-07-01",
+    "end_date": "2024-09-30",
+    "geos": ["US-CA"],
+    "channels": ["tv"],
+    "aggregate_times": False,
+    "use_kpi": True,
+    "include_non_paid": False,
+}
+PROBE_PARSED = {
+    "start_date": date(2024, 7, 1),
+    "end_date": date(2024, 9, 30),
+    "geos": ["US-CA"],
+    "channels": ["tv"],
+    "aggregate_times": False,
+    "use_kpi": True,
+    "include_non_paid": False,
+}
+
+_ENTRIES = sorted(
+    EXPECTED_APPLICABILITY.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")
+)
+
+
+@pytest.mark.parametrize(("key", "applicable"), _ENTRIES, ids=lambda v: str(v))
+def test_every_applicable_filter_survives_narrowing(key, applicable):
+    """Catches an OVER-STRICT entry -- the regression that would collapse
+    two different requests onto one cache key."""
+    filters = AnalysisFilters.model_validate({f: PROBE[f] for f in applicable})
+    effective, ignored = ap.narrow(filters, key)
+
+    assert ignored == {}, f"{key} reported an applicable filter"
+    for field in applicable:
+        assert getattr(effective, field) == PROBE_PARSED[field], (key, field)
+
+
+@pytest.mark.parametrize(("key", "applicable"), _ENTRIES, ids=lambda v: str(v))
+def test_every_inapplicable_filter_is_reset_and_reported(key, applicable):
+    inapplicable = set(ap.ALL_FILTER_FIELDS) - set(applicable)
+    if not inapplicable:
+        pytest.skip("entry honors every filter")
+
+    filters = AnalysisFilters.model_validate({f: PROBE[f] for f in inapplicable})
+    effective, ignored = ap.narrow(filters, key)
+
+    assert set(ignored) == inapplicable, key
+    for field in inapplicable:
+        assert getattr(effective, field) == DEFAULTS[field], (key, field)
+        assert ignored[field] == ap.IGNORED_REASONS[key][field], (key, field)
