@@ -15,6 +15,7 @@ from google_meridian_mcp_server.domain.optimization import (
 )
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
+    ResultNotReadyError,
     RunNotFoundError,
 )
 
@@ -107,14 +108,22 @@ class BaseExecutor(abc.ABC):
                     # nothing to launch, and this must not escape into whatever
                     # unrelated tool call happened to trigger this pump().
                     continue
+                claim = self._claim(run_id)
+                if claim is None:
+                    # Another instance owns this run. Do NOT re-enqueue and do
+                    # NOT fail it -- the winner is dispatching it.
+                    continue
                 try:
-                    self._handles[run_id] = self._launch(run)
+                    handle = self._launch(run)
                 except Exception as exc:  # noqa: BLE001 - launch failures must not escape pump()
                     self._fail_if_unfinished(
                         run_id,
                         f"failed to launch worker: {exc}",
                         code=self._launch_error_code(exc),
                     )
+                    continue
+                self._handles[run_id] = handle
+                self._record_dispatch(claim, handle)
 
     def _reap(self) -> None:
         with self._lock:
@@ -131,6 +140,18 @@ class BaseExecutor(abc.ABC):
         """Hook: local tier no-ops; cloud tier checks stale heartbeats."""
         return
 
+    def _claim(self, run_id: str) -> Any | None:
+        """Hook: claim the right to dispatch, returning an opaque token.
+
+        Returns None when another instance owns the run. The local tier is
+        single-process, so the run_id itself is a sufficient truthy token.
+        """
+        return run_id
+
+    def _record_dispatch(self, claim: Any, handle: Any) -> None:
+        """Hook: persist the dispatch handle. Local tier keeps none."""
+        return
+
     def _launch_error_code(self, exc: Exception) -> str:
         """Hook: classify a launch failure. Local tier has nothing to classify."""
         return "worker_lost"
@@ -144,14 +165,26 @@ class BaseExecutor(abc.ABC):
             # The run was deleted while its handle was still pending reap; a
             # deleted run is not "unfinished", so there is nothing to fail.
             return
-        if state.status in (RunStatus.RUNNING, RunStatus.QUEUED):
-            self._registry.write_state(
-                OptimizationRunState(
-                    run_id=run_id,
-                    status=RunStatus.FAILED,
-                    error={"code": code, "message": message},
-                )
+        if state.status not in (RunStatus.RUNNING, RunStatus.QUEUED):
+            return
+        try:
+            # The worker writes result.json (worker.py:231) BEFORE its terminal
+            # write_state (:243). A container killed in between leaves a valid
+            # result under a RUNNING state, and failing it destroys a completed
+            # run. Adoption is what makes this window reachable across
+            # processes, but a local worker has it too.
+            self._registry.get_result(run_id)
+        except (ResultNotReadyError, RunNotFoundError):
+            pass
+        else:
+            return
+        self._registry.write_state(
+            OptimizationRunState(
+                run_id=run_id,
+                status=RunStatus.FAILED,
+                error={"code": code, "message": message},
             )
+        )
 
     def _reconcile_stale(self, run_id: str) -> None:
         """Cloud-tier crash reconciliation via stale heartbeat detection.

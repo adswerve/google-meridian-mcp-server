@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from google_meridian_mcp_server.domain.models import RuntimeConfig
-from google_meridian_mcp_server.domain.optimization import OptimizationRun
+from google_meridian_mcp_server.domain.optimization import (
+    OptimizationRun,
+    OptimizationRunDispatch,
+)
 from google_meridian_mcp_server.execution.base_executor import (
     DEFAULT_HEARTBEAT_STALE_SECONDS,
     BaseExecutor,
@@ -14,6 +19,8 @@ from google_meridian_mcp_server.execution.base_subprocess import MERIDIAN_BACKEN
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
 )
+
+log = logging.getLogger(__name__)
 
 
 class CloudRunJobExecutor(BaseExecutor):
@@ -82,8 +89,38 @@ class CloudRunJobExecutor(BaseExecutor):
         return operation.metadata.name  # the Execution resource name
 
     def _is_alive(self, handle: Any) -> bool:
-        execution = self._executions.get_execution(name=handle)
+        from google.api_core.exceptions import NotFound
+
+        try:
+            execution = self._executions.get_execution(name=handle)
+        except NotFound:
+            # GCP collected the Execution. Not alive; _fail_if_unfinished will
+            # respect a terminal state or an existing result.
+            return False
         return not getattr(execution, "completion_time", None)
+
+    def _claim(self, run_id: str) -> Any | None:
+        dispatch = OptimizationRunDispatch(
+            run_id=run_id, claimed_at=datetime.now(timezone.utc).isoformat()
+        )
+        return dispatch if self._registry.claim_dispatch(dispatch) else None
+
+    def _record_dispatch(self, claim: Any, handle: Any) -> None:
+        try:
+            # model_copy does not validate, which is fine: handle is always
+            # operation.metadata.name, a str (cloud_run_executor.py:82).
+            self._registry.write_dispatch(
+                claim.model_copy(update={"execution_name": handle})
+            )
+        except Exception:  # noqa: BLE001 - the execution is already running
+            # Must never fail the run: run_job() succeeded, so the execution is
+            # live and billing. Losing the name costs cancel-by-name, not the run.
+            log.warning(
+                "dispatched %s as %s but could not record it",
+                claim.run_id,
+                handle,
+                exc_info=True,
+            )
 
     def _on_alive(self, run_id: str) -> None:
         # Remote liveness is coarse; stale heartbeat is the authoritative crash signal.
