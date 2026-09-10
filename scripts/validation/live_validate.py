@@ -139,13 +139,6 @@ async def _run() -> int:
     os.environ["LOCAL_MODELS_ROOT"] = str(DEFAULT_OUT_ROOT)
     os.environ.setdefault("RESULT_CACHE_ENABLED", "false")
     os.environ.setdefault("OPTIMIZATION_RUNS_ROOT", str(DEFAULT_OUT_ROOT / "_runs"))
-    # DELIBERATELY ABOVE the shipped 4 MiB default: this pin does not track it.
-    # Holding the harness at 64 MiB keeps large-payload cases returning DATA, so
-    # baselines stay byte-comparable across the threshold change -- including
-    # against labels that can no longer be regenerated. Dropping it to the
-    # production default would rewrite every large case as an error envelope.
-    os.environ["ANALYSIS_MAX_RESPONSE_BYTES"] = str(64 * 1024 * 1024)
-
     from fastmcp import Client
 
     from google_meridian_mcp_server.server import mcp
