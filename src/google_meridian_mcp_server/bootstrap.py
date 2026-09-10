@@ -78,9 +78,13 @@ def reconcile_orphans(registry: OptimizationRunRegistry, executor) -> None:
     Delegates to the executor: the local subprocess tier unconditionally
     fails any run still RUNNING or QUEUED (the PID-1 parent-death guard in
     worker.py guarantees a local worker cannot survive its parent server, so
-    such a run is provably dead); the cloud tier only fails RUNNING runs
-    whose heartbeat has gone stale, since a cloud worker CAN outlive the
-    server process. See BaseExecutor.reconcile_orphans /
+    such a run is provably dead); the cloud tier fails RUNNING runs whose
+    heartbeat has gone stale, since a cloud worker CAN outlive the server
+    process, and additionally rebuilds its in-memory queue from QUEUED runs
+    and re-adopts in-flight executions by their recorded execution_name, so
+    a restart or scale-to-zero no longer strands a queued or running cloud
+    run. See BaseExecutor.reconcile_orphans /
+    CloudRunJobExecutor.reconcile_orphans /
     AsyncSubprocessExecutor.reconcile_orphans.
     """
     # `registry` is unused here (kept for call-site symmetry/back-compat): the

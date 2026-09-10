@@ -24,6 +24,19 @@ from google_meridian_mcp_server.persistence.optimization_run_registry import (
 # deployment input.
 DEFAULT_HEARTBEAT_STALE_SECONDS = 60
 
+# A dispatch claim older than this with no execution name recorded means the
+# claiming process died between claiming and calling run_job.
+#
+# Deliberately far larger than the heartbeat window. The state read in
+# _fail_stale_dispatch is not sufficient protection on its own: it only helps
+# once the worker has written RUNNING, and an execution still cold-starting (a
+# multi-gigabyte GPU image pull, an L4 capacity wait) leaves state.json at
+# QUEUED while the execution is live and billing. Failing that would produce a
+# wrongly-failed run AND a leaked execution -- the exact pair this rule exists
+# to prevent. A module constant, not an env var: the env-var simplification
+# demoted these deliberately.
+DEFAULT_DISPATCH_STALE_SECONDS = 1800
+
 
 class BaseExecutor(abc.ABC):
     def __init__(
@@ -75,13 +88,14 @@ class BaseExecutor(abc.ABC):
     def reconcile_orphans(self) -> None:
         """Startup crash reconciliation for runs left over by a stopped server.
 
-        Default (cloud tier, e.g. CloudRunJobExecutor): only RUNNING runs are
-        considered, via stale-heartbeat detection -- a cloud worker CAN
-        outlive the server process, so a fresh heartbeat may mean the run is
-        still legitimately in flight. QUEUED runs are left untouched (a cloud
-        dispatch request may still be racing startup). The local subprocess
-        tier overrides this with an unconditional fail -- see
-        AsyncSubprocessExecutor.reconcile_orphans.
+        Default: only RUNNING runs are considered, via stale-heartbeat
+        detection -- a cloud worker CAN outlive the server process, so a
+        fresh heartbeat may mean the run is still legitimately in flight.
+        CloudRunJobExecutor overrides this to also rebuild the in-memory
+        queue from QUEUED runs and re-adopt in-flight executions by their
+        recorded execution_name -- see CloudRunJobExecutor.reconcile_orphans.
+        The local subprocess tier overrides this with an unconditional fail
+        -- see AsyncSubprocessExecutor.reconcile_orphans.
         """
         with self._lock:
             for summary in self._registry.list(status=RunStatus.RUNNING):

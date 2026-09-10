@@ -36,7 +36,7 @@ class _InProcessCatalogRunner:
         return analysis_ops.run_operation(self._catalog, operation, model_id, params)
 
 
-def _build_cloud_service(*, shared_dir):
+def _build_cloud_service(*, shared_dir, max_parallel: int = 2):
     """Wire an OptimizationService backed by a CloudRunJobExecutor whose jobs.run
     is faked to launch the REAL worker locally.
 
@@ -45,6 +45,10 @@ def _build_cloud_service(*, shared_dir):
     LocalOptimizationRunRegistry pointing at a shared dir. The worker subprocess
     loads its OWN local config (local backend + local registry on the same dir),
     so an in-memory fake never has to cross the process boundary.
+
+    Returns (service, registry, jobs, execs, cloud_cfg): the restart step
+    needs the registry, the fakes, and cloud_cfg to rebuild a second
+    CloudRunJobExecutor over the same in-flight state.
     """
     from google_meridian_mcp_server.domain.models import RuntimeConfig
     from google_meridian_mcp_server.execution.cloud_run_executor import (
@@ -91,12 +95,120 @@ def _build_cloud_service(*, shared_dir):
     executor = CloudRunJobExecutor(
         registry,
         cfg=cloud_cfg,
-        max_parallel=2,
+        max_parallel=max_parallel,
         heartbeat_stale_seconds=60,
         jobs_client=jobs,
         executions_client=execs,
     )
-    return OptimizationService(runner, registry, executor, cloud_cfg)
+    service = OptimizationService(runner, registry, executor, cloud_cfg)
+    return service, registry, jobs, execs, cloud_cfg
+
+
+async def _assert_cloud_restart_recovery() -> None:
+    """The actual defect, exercised for free on every machine.
+
+    Submits a run (dispatches, filling the only slot) and a second run over
+    the cap (queues), waits for the first to reach RUNNING, then simulates a
+    server restart: discards the executor and rebuilds a fresh
+    CloudRunJobExecutor over the SAME registry and the SAME fake jobs/executions
+    clients, and calls reconcile_orphans(). Confirms the in-flight run is
+    adopted rather than relaunched (FakeJobsClient's launch count is
+    unchanged) and that the queued run does NOT dispatch while the adopted
+    run occupies the only slot -- only once it finishes and a later pump()
+    runs does the queued run get its turn.
+    """
+    import time
+
+    from google_meridian_mcp_server.execution.cloud_run_executor import (
+        CloudRunJobExecutor,
+    )
+
+    model_id = "national-revenue"
+    shared_dir = DEFAULT_OUT_ROOT / "_cloud_restart"
+    shutil.rmtree(shared_dir, ignore_errors=True)
+    shared_dir.mkdir(parents=True, exist_ok=True)
+
+    service, registry, jobs, execs, cloud_cfg = _build_cloud_service(
+        shared_dir=shared_dir, max_parallel=1
+    )
+
+    config_a = {
+        "scenario": {"type": "fixed_budget"},
+        "constraint": {"mode": "global", "pct": 0.2},
+    }
+    config_b = {
+        "scenario": {"type": "fixed_budget"},
+        "constraint": {"mode": "global", "pct": 0.35},
+    }
+    dispatched = await service.run_optimization(
+        model_id, config_a, compute_tier="cloud_cpu"
+    )
+    dispatched_id = dispatched["run_id"]
+    waiting = await service.run_optimization(
+        model_id, config_b, compute_tier="cloud_cpu"
+    )
+    waiting_id = waiting["run_id"]
+    assert waiting_id != dispatched_id, f"expected two distinct runs: {waiting}"
+
+    status = None
+    for _ in range(240):  # ~120s cap
+        status = service.get_status(dispatched_id)
+        if status["status"] in ("running", "completed", "failed"):
+            break
+        time.sleep(0.5)
+    assert status and status["status"] == "running", (
+        f"expected the dispatched run to reach RUNNING before the restart: {status}"
+    )
+    assert service.get_status(waiting_id)["status"] == "queued", (
+        f"expected the second run to queue over the cap: {service.get_status(waiting_id)}"
+    )
+
+    launches_before = len(jobs.procs)
+
+    # The restart: a fresh executor over the same registry and fake clients.
+    new_executor = CloudRunJobExecutor(
+        registry,
+        cfg=cloud_cfg,
+        max_parallel=1,
+        heartbeat_stale_seconds=60,
+        jobs_client=jobs,
+        executions_client=execs,
+    )
+    new_executor.reconcile_orphans()
+
+    assert len(jobs.procs) == launches_before, (
+        "adoption must not relaunch the in-flight execution"
+    )
+    assert dispatched_id in new_executor._handles, (
+        "the in-flight run must be adopted by the rebuilt executor"
+    )
+    assert service.get_status(waiting_id)["status"] == "queued", (
+        "the cap is still full with the adopted run: the queued run must not "
+        "dispatch at reconcile time"
+    )
+
+    # Let the adopted run finish; a later pump() must free the slot and
+    # dispatch the run that was waiting.
+    status = None
+    for _ in range(240):
+        status = service.get_status(dispatched_id)
+        if status["status"] in ("completed", "failed"):
+            break
+        new_executor.pump()
+        time.sleep(0.5)
+    assert status and status["status"] == "completed", (
+        f"adopted run did not complete: {status}"
+    )
+
+    status = None
+    for _ in range(240):
+        status = service.get_status(waiting_id)
+        if status["status"] in ("running", "completed", "failed"):
+            break
+        time.sleep(0.5)
+    assert status and status["status"] in ("running", "completed"), (
+        f"queued run never dispatched once the adopted run freed its slot: {status}"
+    )
 
 
 async def _run_cloud_gate() -> list[str]:
@@ -115,9 +227,13 @@ async def _run_cloud_gate() -> list[str]:
     shared_dir = DEFAULT_OUT_ROOT / "_cloud_runs"
     shutil.rmtree(shared_dir, ignore_errors=True)
     shared_dir.mkdir(parents=True, exist_ok=True)
-    service = _build_cloud_service(shared_dir=shared_dir)
+    service, _registry, _jobs, _execs, _cfg = _build_cloud_service(
+        shared_dir=shared_dir
+    )
+    checks = 0
     for model_id in ("national-revenue", "geo-revenue"):
         label = f"cloud/{model_id}/run_optimization[cloud_cpu]"
+        checks += 1
         try:
             await assert_cloud_live_optimization(service, model_id)
             print(f"  PASS {label}")
@@ -129,6 +245,21 @@ async def _run_cloud_gate() -> list[str]:
     # optimize under JAX) was deleted with the backend knob: with one backend
     # there is nothing to cross. This is a REAL coverage loss and is recorded
     # in AGENTS.md rather than quietly dropped.
+
+    # The actual defect (Task 7): a restart must adopt an in-flight run rather
+    # than strand it, and must not relaunch it. This is the only restart
+    # coverage that runs on every machine for free -- the opt-in Cloud Run
+    # smoke (Task 10) costs real money and needs a deployed stack.
+    restart_label = "cloud/restart-recovery"
+    checks += 1
+    try:
+        await _assert_cloud_restart_recovery()
+        print(f"  PASS {restart_label}")
+    except AssertionError as exc:
+        failures.append(f"{restart_label}: {exc}")
+        print(f"  FAIL {restart_label}: {exc}")
+
+    print(f"  cloud gate: {checks - len(failures)}/{checks} checks passed")
     return failures
 
 

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from google_meridian_mcp_server.domain.optimization import (
@@ -48,9 +48,10 @@ class _FakeJobs:
 class _FakeExecutions:
     def __init__(self, alive=True):
         self.alive = alive
+        self.asked = []
 
     def get_execution(self, name):
-        # completion_time empty -> alive
+        self.asked.append(name)
         return SimpleNamespace(
             completion_time=None if self.alive else "2026-06-30T00:01:00Z"
         )
@@ -144,11 +145,10 @@ def test_is_alive_reflects_execution_completion():
 
 
 def test_reconcile_orphans_leaves_fresh_heartbeat_running_untouched(tmp_path):
-    """F1: cloud tier keeps heartbeat-staleness reconciliation via the
-    default BaseExecutor.reconcile_orphans (CloudRunJobExecutor does not
-    override it, unlike AsyncSubprocessExecutor) -- a RUNNING run with a
-    FRESH heartbeat must be left alone, since a cloud worker CAN outlive the
-    server process, unlike a local subprocess worker."""
+    """F1: cloud tier keeps heartbeat-staleness reconciliation, now via its
+    own reconcile_orphans override (which calls super() for this check) --
+    a RUNNING run with a FRESH heartbeat must be left alone, since a cloud
+    worker CAN outlive the server process, unlike a local subprocess worker."""
     from datetime import datetime, timezone
 
     from google_meridian_mcp_server.domain.optimization import OptimizationRunState
@@ -430,3 +430,314 @@ def test_reap_does_not_fail_a_run_that_already_wrote_a_result(tmp_path):
 
     assert reg.get_state(run.run_id).status is not RunStatus.FAILED
     assert reg.get_result(run.run_id) == {"summary": {"ok": True}}
+
+
+def _fresh_executor(reg, jobs=None, execs=None, max_parallel=1):
+    """A brand-new executor over an existing registry: the restart."""
+    return CloudRunJobExecutor(
+        reg,
+        cfg=_cfg(),
+        max_parallel=max_parallel,
+        jobs_client=jobs or _FakeJobs(),
+        executions_client=execs or _FakeExecutions(),
+    )
+
+
+def _queued(reg, run_id, created="2026-09-10T00:00:00+00:00"):
+    run = _run("cloud_cpu").model_copy(
+        update={"run_id": run_id, "created_at": created, "config_fingerprint": run_id}
+    )
+    reg.create(run)
+    reg.write_state(OptimizationRunState(run_id=run_id, status=RunStatus.QUEUED))
+    return run
+
+
+def test_queued_run_is_dispatched_after_a_restart(tmp_path):
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _queued(reg, "m-1")
+
+    jobs = _FakeJobs()
+    _fresh_executor(reg, jobs).reconcile_orphans()
+
+    assert len(jobs.calls) == 1  # actually dispatched, not merely dequeued
+    assert reg.get_dispatch(run.run_id).execution_name == "exec-123"
+
+
+def test_restart_adopts_a_running_run_and_restores_liveness(tmp_path):
+    """The correction: in-flight runs are RUNNING by the time a restart
+    happens, so gating adoption on QUEUED would never adopt anything and
+    max_parallel would go unenforced against the survivors."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _run("cloud_cpu")
+    reg.create(run)
+    reg.write_state(
+        OptimizationRunState(
+            run_id=run.run_id, status=RunStatus.RUNNING, heartbeat_at=_now()
+        )
+    )
+    reg.claim_dispatch(OptimizationRunDispatch(run_id=run.run_id, claimed_at=_now()))
+    reg.write_dispatch(
+        OptimizationRunDispatch(
+            run_id=run.run_id, claimed_at=_now(), execution_name="exec-live"
+        )
+    )
+
+    jobs, execs = _FakeJobs(), _FakeExecutions()
+    ex = _fresh_executor(reg, jobs, execs)
+    ex.reconcile_orphans()
+
+    assert jobs.calls == []  # not relaunched
+    assert ex._handles[run.run_id] == "exec-live"  # adopted, by exact name
+    assert execs.asked == ["exec-live"]  # and liveness actually probed
+
+
+def test_restart_does_not_adopt_a_running_run_with_no_dispatch_document(tmp_path):
+    """Migration guard: on the first boot after this ships, every in-flight run
+    has no dispatch document. Adopting or re-dispatching those would double-launch
+    every live GPU execution."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _run("cloud_cpu")
+    reg.create(run)
+    reg.write_state(
+        OptimizationRunState(
+            run_id=run.run_id, status=RunStatus.RUNNING, heartbeat_at=_now()
+        )
+    )
+
+    jobs = _FakeJobs()
+    ex = _fresh_executor(reg, jobs)
+    ex.reconcile_orphans()
+
+    assert jobs.calls == []
+    assert ex._handles == {}
+    assert reg.get_state(run.run_id).status is RunStatus.RUNNING
+
+
+def test_adopted_handles_occupy_slots_so_a_queued_run_waits(tmp_path):
+    """The cost brake, restored. With both slots adopted the recovered run must
+    NOT dispatch -- an earlier draft of the live gate asserted the opposite."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    for run_id in ("m-live-1", "m-live-2"):
+        run = _run("cloud_cpu").model_copy(
+            update={"run_id": run_id, "config_fingerprint": run_id}
+        )
+        reg.create(run)
+        reg.write_state(
+            OptimizationRunState(
+                run_id=run_id, status=RunStatus.RUNNING, heartbeat_at=_now()
+            )
+        )
+        reg.claim_dispatch(OptimizationRunDispatch(run_id=run_id, claimed_at=_now()))
+        reg.write_dispatch(
+            OptimizationRunDispatch(
+                run_id=run_id, claimed_at=_now(), execution_name=f"exec-{run_id}"
+            )
+        )
+    _queued(reg, "m-waiting")
+
+    jobs = _FakeJobs()
+    ex = _fresh_executor(reg, jobs, max_parallel=2)
+    ex.reconcile_orphans()
+
+    assert jobs.calls == []  # cap full: nothing new launched
+    assert len(ex._handles) == 2
+    assert list(ex._queue) == ["m-waiting"]  # queued, and still queued
+    assert reg.get_state("m-waiting").status is RunStatus.QUEUED
+
+
+def test_stale_heartbeat_running_run_is_still_failed_by_the_override(tmp_path):
+    """The override must call super(). Dropping the RUNNING branch would leave a
+    fresh-heartbeat run untouched too, so test_cloud_run_executor.py:121 cannot
+    catch its loss."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _run("cloud_cpu")
+    reg.create(run)
+    reg.write_state(
+        OptimizationRunState(
+            run_id=run.run_id,
+            status=RunStatus.RUNNING,
+            heartbeat_at=(
+                datetime.now(timezone.utc) - timedelta(seconds=600)
+            ).isoformat(),
+        )
+    )
+
+    _fresh_executor(reg).reconcile_orphans()
+
+    assert reg.get_state(run.run_id).status is RunStatus.FAILED
+
+
+def test_a_young_claim_over_a_queued_run_is_left_alone(tmp_path):
+    """Branch 3. A peer may be inside run_job() right now.
+
+    Without this test the whole DEFAULT_DISPATCH_STALE_SECONDS check can be
+    deleted and every other Task 7 test still passes.
+    """
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _queued(reg, "m-young")
+    reg.claim_dispatch(OptimizationRunDispatch(run_id=run.run_id, claimed_at=_now()))
+
+    jobs = _FakeJobs()
+    ex = _fresh_executor(reg, jobs)
+    ex.reconcile_orphans()
+
+    assert jobs.calls == []
+    assert list(ex._queue) == []  # not re-enqueued
+    assert reg.get_state(run.run_id).status is RunStatus.QUEUED  # and not failed
+    assert reg.get_state(run.run_id).error is None
+    assert run.run_id not in ex._handles
+
+
+def test_a_stale_claim_over_a_live_run_is_not_failed(tmp_path):
+    """A crash after run_job() but before write_dispatch leaves a claim with no
+    execution name while the execution is live and billing."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _run("cloud_cpu")
+    reg.create(run)
+    reg.write_state(
+        OptimizationRunState(
+            run_id=run.run_id, status=RunStatus.RUNNING, heartbeat_at=_now()
+        )
+    )
+    old = (datetime.now(timezone.utc) - timedelta(seconds=7200)).isoformat()
+    reg.claim_dispatch(OptimizationRunDispatch(run_id=run.run_id, claimed_at=old))
+
+    _fresh_executor(reg).reconcile_orphans()
+
+    assert reg.get_state(run.run_id).status is RunStatus.RUNNING
+
+
+def test_a_stale_claim_over_a_queued_run_is_abandoned(tmp_path):
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _queued(reg, "m-stale")
+    old = (datetime.now(timezone.utc) - timedelta(seconds=7200)).isoformat()
+    reg.claim_dispatch(OptimizationRunDispatch(run_id=run.run_id, claimed_at=old))
+
+    jobs = _FakeJobs()
+    _fresh_executor(reg, jobs).reconcile_orphans()
+
+    assert jobs.calls == []
+    state = reg.get_state(run.run_id)
+    assert state.status is RunStatus.FAILED
+    # NOT worker_lost: no worker ever started, and Task 4 exists precisely
+    # because worker_lost is a catch-all rather than a diagnosis.
+    assert state.error["code"] == "dispatch_abandoned"
+    assert state.error["message"] == "dispatch claimed but never launched"
+
+
+def test_abandoning_a_stale_dispatch_writes_with_the_read_generation(tmp_path):
+    """expected_generation is the protection against clobbering a state another
+    writer advanced. Every other test here runs on the local provider, which
+    ignores it -- so without this the kwarg can be deleted silently.
+    """
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _queued(reg, "m-gen")
+    old = (datetime.now(timezone.utc) - timedelta(seconds=7200)).isoformat()
+    reg.claim_dispatch(OptimizationRunDispatch(run_id=run.run_id, claimed_at=old))
+
+    seen = []
+    real_write = reg.write_state
+    reg.get_state_generation = lambda run_id: 7
+    reg.write_state = lambda s, *, expected_generation=None: (
+        seen.append(expected_generation) or real_write(s)
+    )
+
+    _fresh_executor(reg).reconcile_orphans()
+
+    assert seen[-1] == 7  # not None: an unconditional write would clobber
+
+
+def test_the_executor_writes_no_state_on_the_claim_dispatch_and_adopt_paths(tmp_path):
+    """The plan's own load-bearing constraint, pinned at the executor level.
+
+    A registry-level test cannot fail here: it is the EXECUTOR that must not
+    write state.json to record dispatch.
+    """
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    _queued(reg, "m-fresh")
+    adopted = _run("cloud_cpu").model_copy(
+        update={"run_id": "m-adopted", "config_fingerprint": "m-adopted"}
+    )
+    reg.create(adopted)
+    reg.write_state(
+        OptimizationRunState(
+            run_id="m-adopted", status=RunStatus.RUNNING, heartbeat_at=_now()
+        )
+    )
+    reg.claim_dispatch(OptimizationRunDispatch(run_id="m-adopted", claimed_at=_now()))
+    reg.write_dispatch(
+        OptimizationRunDispatch(
+            run_id="m-adopted", claimed_at=_now(), execution_name="exec-live"
+        )
+    )
+
+    calls = []
+    real_write = reg.write_state
+    reg.write_state = lambda s, *, expected_generation=None: (
+        calls.append(s.status) or real_write(s)
+    )
+
+    _fresh_executor(reg, max_parallel=2).reconcile_orphans()
+
+    assert calls == []  # claim, dispatch and adoption are all state-free
+
+
+def test_recovered_runs_are_dispatched_oldest_first(tmp_path):
+    """registry.list() sorts created_at DESCENDING, so using it unreversed
+    would dispatch newest-first."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    _queued(reg, "m-old", created="2026-09-10T00:00:00+00:00")
+    _queued(reg, "m-new", created="2026-09-10T01:00:00+00:00")
+
+    jobs = _FakeJobs()
+    ex = _fresh_executor(reg, jobs, max_parallel=1)
+    ex.reconcile_orphans()
+
+    assert len(jobs.calls) == 1
+    env = {e.name: e.value for e in jobs.calls[0].overrides.container_overrides[0].env}
+    assert env["OPTIMIZATION_RUN_ID"] == "m-old"  # which, not just how many
+    assert reg.get_dispatch("m-new") is None

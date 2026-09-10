@@ -10,8 +10,11 @@ from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationRun,
     OptimizationRunDispatch,
+    OptimizationRunState,
+    RunStatus,
 )
 from google_meridian_mcp_server.execution.base_executor import (
+    DEFAULT_DISPATCH_STALE_SECONDS,
     DEFAULT_HEARTBEAT_STALE_SECONDS,
     BaseExecutor,
 )
@@ -54,6 +57,84 @@ class CloudRunJobExecutor(BaseExecutor):
         from google.cloud import run_v2
 
         return run_v2.ExecutionsClient()
+
+    def reconcile_orphans(self) -> None:
+        """Rebuild the in-memory queue and re-adopt in-flight executions.
+
+        The base implementation only reconciles RUNNING runs by heartbeat
+        staleness, so before this a QUEUED cloud run survived a restart with no
+        in-memory counterpart and nothing that would ever look at it again.
+
+        Adoption is keyed on a recorded execution_name, NOT on status: the
+        worker writes RUNNING as soon as it starts, so by restart time the
+        in-flight runs are RUNNING. An execution_name can only exist because
+        write_dispatch recorded it, so a pre-migration in-flight run has no
+        document and is left entirely alone -- that is the migration guard.
+        """
+        super().reconcile_orphans()
+        with self._lock:
+            # Adopt anything this design dispatched, whatever its status, so
+            # liveness and cancel work again and max_parallel is enforced
+            # against the survivors.
+            for summary in self._registry.list(status=RunStatus.RUNNING):
+                dispatch = self._registry.get_dispatch(summary.run_id)
+                if dispatch and dispatch.execution_name:
+                    self._handles[summary.run_id] = dispatch.execution_name
+
+            now = datetime.now(timezone.utc)
+            # list() sorts created_at descending; dispatch oldest-first.
+            for summary in sorted(
+                self._registry.list(status=RunStatus.QUEUED),
+                key=lambda s: s.created_at,
+            ):
+                run_id = summary.run_id
+                dispatch = self._registry.get_dispatch(run_id)
+                if dispatch is None:
+                    self._queue.append(run_id)
+                    continue
+                if dispatch.execution_name:
+                    self._handles[run_id] = dispatch.execution_name
+                    continue
+                age = (
+                    now - datetime.fromisoformat(dispatch.claimed_at)
+                ).total_seconds()
+                if age <= DEFAULT_DISPATCH_STALE_SECONDS:
+                    # A peer instance may be inside run_job() right now. Leave
+                    # it: re-enqueuing would only lose the claim (the document
+                    # already exists) and skip the run anyway.
+                    continue
+                self._fail_stale_dispatch(run_id)
+            self.pump()
+
+    def _fail_stale_dispatch(self, run_id: str) -> None:
+        """Fail a run whose claimer died before it managed to call run_job.
+
+        Reads state first: a crash AFTER run_job() succeeded but before the
+        execution name was recorded produces an identical document while the
+        execution is live and billing. Cannot reuse _reconcile_stale, which
+        gates on RUNNING and a non-null heartbeat and is a no-op on a QUEUED
+        run.
+        """
+        from google.api_core.exceptions import PreconditionFailed
+
+        gen = self._registry.get_state_generation(run_id)
+        if self._registry.get_state(run_id).status is not RunStatus.QUEUED:
+            return
+        try:
+            self._registry.write_state(
+                OptimizationRunState(
+                    run_id=run_id,
+                    status=RunStatus.FAILED,
+                    error={
+                        "code": "dispatch_abandoned",
+                        "message": "dispatch claimed but never launched",
+                    },
+                ),
+                expected_generation=gen,
+            )
+        except PreconditionFailed:
+            # Someone advanced the state between our read and our write.
+            return
 
     def _job_name(self, tier: str) -> str:
         job = self._cfg.cloud_run_job_for_tier(tier)
