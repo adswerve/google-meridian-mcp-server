@@ -8,6 +8,9 @@ from unittest import mock
 import pytest
 
 from google_meridian_mcp_server import server
+from google_meridian_mcp_server.persistence.optimization_run_registry import (
+    GcsOptimizationRunRegistry,
+)
 
 
 class _FakeFastMCP:
@@ -32,8 +35,8 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         model_cache_root="/tmp/cache",
         result_cache_enabled=True,
         result_cache_ttl_seconds=30,
-        resolved_registry_backend="local",
         optimization_runs_root="/tmp/optimizations",
+        optimization_gcs_prefix="optimizations/",
         optimization_max_parallel=2,
         optimization_heartbeat_stale_seconds=120,
         optimization_allowed_tiers=("local",),
@@ -71,6 +74,11 @@ async def test_lifespan_selects_expected_provider(
         server, "build_discovery_cache", mock.Mock(return_value=discovery_cache)
     )
     monkeypatch.setattr(server, "ResultCache", mock.Mock(return_value=result_cache))
+    monkeypatch.setattr(
+        GcsOptimizationRunRegistry,
+        "_default_client",
+        staticmethod(lambda: object()),
+    )
 
     async with server._lifespan(SimpleNamespace()) as state:
         assert state["discovery_cache"] is discovery_cache
@@ -79,6 +87,10 @@ async def test_lifespan_selects_expected_provider(
         # subprocess runner is the only thing that ever touches Meridian.
         analysis_runner = state["analysis_runner"]
         assert isinstance(analysis_runner, server.SyncSubprocessExecutor)
+        expected = (
+            "GcsOptimizationRunRegistry" if backend == "gcs" else "LocalOptimizationRunRegistry"
+        )
+        assert type(state["optimization_registry"]).__name__ == expected
 
     server.build_discovery_cache.assert_called_once()
     server.ResultCache.assert_called_once_with(enabled=True, ttl_seconds=30)

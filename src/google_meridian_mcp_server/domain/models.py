@@ -50,7 +50,6 @@ class RuntimeConfig(BaseModel):
     result_cache_ttl_seconds: int | None = None
 
     # Optimization module
-    registry_backend: str | None = None  # None → follows persistence_backend
     optimization_runs_root: str = "./optimizations"
     optimization_gcs_prefix: str = "optimizations/"
     optimization_allowed_tiers: tuple[str, ...] = ("local",)
@@ -71,13 +70,6 @@ class RuntimeConfig(BaseModel):
     # keep one each) and optimization worker log files (one per run, forever)
     # accumulate unboundedly with no sweep. This bounds their age at startup.
     analysis_workdir_ttl_seconds: int = 604800  # 7 days
-
-    @model_validator(mode="before")
-    @classmethod
-    def _set_registry_backend_default(cls, values: Any) -> Any:
-        if isinstance(values, dict) and values.get("registry_backend") is None:
-            values["registry_backend"] = values.get("persistence_backend", "local")
-        return values
 
     @field_validator("transport")
     @classmethod
@@ -144,12 +136,11 @@ class RuntimeConfig(BaseModel):
         cloud_tiers = {ComputeTier.CLOUD_CPU.value, ComputeTier.CLOUD_GPU.value}
         allowed_cloud = cloud_tiers & set(self.optimization_allowed_tiers)
         if allowed_cloud:
-            if self.resolved_registry_backend != PersistenceBackend.GCS.value:
+            if self.persistence_backend != PersistenceBackend.GCS.value:
                 raise ValueError(
-                    "cloud tiers require a gcs registry (set REGISTRY_BACKEND=gcs)"
+                    "cloud optimization tiers require PERSISTENCE_BACKEND=gcs: a "
+                    "Cloud Run Job worker cannot read the server's local disk"
                 )
-            if not self.gcs_bucket:
-                raise ValueError("cloud tiers require GCS_BUCKET")
             if not self.cloud_run_project or not self.cloud_run_region:
                 raise ValueError(
                     "cloud tiers require CLOUD_RUN_PROJECT and CLOUD_RUN_REGION"
@@ -165,10 +156,6 @@ class RuntimeConfig(BaseModel):
             ):
                 raise ValueError("cloud_gpu tier requires CLOUD_RUN_JOB_GPU")
         return self
-
-    @property
-    def resolved_registry_backend(self) -> str:
-        return self.registry_backend or self.persistence_backend
 
     def cloud_run_job_for_tier(self, tier: str) -> str | None:
         return {

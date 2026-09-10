@@ -44,7 +44,9 @@ def test_build_registry_gcs(tmp_path, monkeypatch):
         "_default_client",
         staticmethod(lambda: object()),
     )
-    cfg = _cfg(tmp_path, registry_backend="gcs", gcs_bucket="b", gcs_models_prefix="p/")
+    cfg = _cfg(
+        tmp_path, persistence_backend="gcs", gcs_bucket="b", gcs_models_prefix="p/"
+    )
     assert isinstance(build_registry(cfg), GcsOptimizationRunRegistry)
 
 
@@ -59,7 +61,6 @@ def test_build_executor_cloud_only():
         persistence_backend="gcs",
         gcs_bucket="b",
         gcs_models_prefix="m/",
-        registry_backend="gcs",
         optimization_allowed_tiers=("cloud_cpu",),
         cloud_run_project="example-dev-project",
         cloud_run_region="us-central1",

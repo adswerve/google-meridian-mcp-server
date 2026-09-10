@@ -26,40 +26,36 @@ def test_removed_knobs_are_gone():
     documented. RuntimeConfig is frozen but not extra='forbid', so a re-added
     field would be silently accepted everywhere else; this is the only guard."""
     cfg = RuntimeConfig(**_local_kwargs())
-    for name in ("analysis_max_parallel", "analysis_queue_wait_timeout"):
+    for name in (
+        "analysis_max_parallel",
+        "analysis_queue_wait_timeout",
+        "registry_backend",
+        "resolved_registry_backend",
+    ):
         assert not hasattr(cfg, name), f"{name} came back"
 
 
-def test_cloud_tier_requires_gcs_registry_and_cloud_run_fields():
-    # cloud tier allowed but no gcs registry -> error (Phase 1 guardrail)
-    with pytest.raises(ValidationError, match="gcs registry"):
+def test_cloud_tier_requires_gcs_persistence_and_cloud_run_fields():
+    # cloud tier allowed but persistence_backend isn't gcs -> error (Phase 1 guardrail)
+    with pytest.raises(ValidationError, match="PERSISTENCE_BACKEND=gcs"):
         RuntimeConfig(
             **_local_kwargs(optimization_allowed_tiers=("local", "cloud_cpu"))
         )
-    # gcs registry present but Cloud Run coordinates missing -> error
+    # gcs persistence present but Cloud Run coordinates missing -> error
     with pytest.raises(ValidationError, match="CLOUD_RUN_PROJECT"):
         RuntimeConfig(
             persistence_backend="gcs",
             gcs_bucket="b",
             gcs_models_prefix="models/",
-            registry_backend="gcs",
             optimization_allowed_tiers=("local", "cloud_cpu"),
         )
 
 
-def test_cloud_tier_with_gcs_registry_but_no_bucket_raises():
-    """FIX 2: cloud tier + gcs registry but no GCS_BUCKET raises ValidationError."""
-    with pytest.raises(ValidationError, match="GCS_BUCKET"):
-        RuntimeConfig(
-            persistence_backend="local",
-            local_models_root="/models",
-            registry_backend="gcs",
-            optimization_allowed_tiers=("local", "cloud_cpu"),
-            cloud_run_project="proj",
-            cloud_run_region="us-central1",
-            cloud_run_job_cpu="opt-cpu",
-            # gcs_bucket intentionally omitted
-        )
+# test_cloud_tier_with_gcs_registry_but_no_bucket_raises deleted: its
+# decoupled-registry premise (PERSISTENCE_BACKEND=local + a gcs registry) no
+# longer exists. The rule it exercised (GCS_BUCKET required for cloud tiers)
+# is still covered by test_requires_gcs_bucket_for_gcs_backend in
+# tests/unit/test_config_and_persistence.py.
 
 
 def test_cloud_tier_fully_configured_is_valid():
@@ -67,7 +63,6 @@ def test_cloud_tier_fully_configured_is_valid():
         persistence_backend="gcs",
         gcs_bucket="b",
         gcs_models_prefix="models/",
-        registry_backend="gcs",
         optimization_allowed_tiers=("cloud_cpu", "cloud_gpu"),
         cloud_run_project="example-dev-project",
         cloud_run_region="us-central1",

@@ -116,7 +116,6 @@ class TestRuntimeConfigValidation:
 class TestOptimizationConfig:
     def test_runtime_config_defaults_local(self):
         cfg = RuntimeConfig(persistence_backend="local", local_models_root="/models")
-        assert cfg.registry_backend == "local"  # follows persistence_backend
         assert cfg.optimization_allowed_tiers == ("local",)
         assert cfg.optimization_default_tier == "auto"
         assert cfg.optimization_max_parallel == 2
@@ -126,12 +125,11 @@ class TestOptimizationConfig:
         with pytest.raises(ValidationError, match="LOCAL_MODELS_ROOT"):
             RuntimeConfig(persistence_backend="local", local_models_root=None)
 
-    def test_runtime_config_cloud_tier_requires_gcs_registry(self):
-        with pytest.raises(ValidationError, match="cloud .* require .* gcs registry"):
+    def test_runtime_config_cloud_tier_requires_gcs_persistence(self):
+        with pytest.raises(ValidationError, match="PERSISTENCE_BACKEND=gcs"):
             RuntimeConfig(
                 persistence_backend="local",
                 local_models_root="/models",
-                registry_backend="local",
                 optimization_allowed_tiers=("cloud_cpu",),
             )
 

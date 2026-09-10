@@ -390,7 +390,6 @@ def prepare_env(runs_root: str) -> None:
     """
     os.environ["PERSISTENCE_BACKEND"] = "local"
     os.environ["LOCAL_MODELS_ROOT"] = str(DEFAULT_OUT_ROOT)
-    os.environ["REGISTRY_BACKEND"] = "local"
     os.environ["OPTIMIZATION_ALLOWED_TIERS"] = "local"
     os.environ["RESULT_CACHE_ENABLED"] = "false"
     # DELIBERATELY ABOVE the shipped 4 MiB default: this pin does not track it.

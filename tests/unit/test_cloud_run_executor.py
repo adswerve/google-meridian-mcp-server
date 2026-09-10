@@ -73,7 +73,6 @@ def _cfg():
         persistence_backend="gcs",
         gcs_bucket="b",
         gcs_models_prefix="m/",
-        registry_backend="gcs",
         optimization_allowed_tiers=("cloud_cpu", "cloud_gpu"),
         cloud_run_project="example-dev-project",
         cloud_run_region="us-central1",

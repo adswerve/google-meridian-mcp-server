@@ -32,7 +32,7 @@ def build_discovery_cache(cfg: RuntimeConfig) -> DiscoveryCache:
 
 
 def build_registry(cfg: RuntimeConfig) -> OptimizationRunRegistry:
-    if cfg.resolved_registry_backend == PersistenceBackend.GCS.value:
+    if cfg.persistence_backend == PersistenceBackend.GCS.value:
         from google_meridian_mcp_server.persistence.optimization_run_registry import (
             GcsOptimizationRunRegistry,
         )

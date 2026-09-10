@@ -53,7 +53,6 @@ def load_config() -> RuntimeConfig:
         model_cache_root=os.getenv("MODEL_CACHE_ROOT", "/tmp/mmm-models"),
         result_cache_enabled=_read_bool("RESULT_CACHE_ENABLED", True),
         result_cache_ttl_seconds=int(result_cache_ttl) if result_cache_ttl else None,
-        registry_backend=os.getenv("REGISTRY_BACKEND"),
         optimization_runs_root=os.getenv("OPTIMIZATION_RUNS_ROOT", "./optimizations"),
         optimization_gcs_prefix=os.getenv("OPTIMIZATION_GCS_PREFIX", "optimizations/"),
         optimization_allowed_tiers=_read_csv("OPTIMIZATION_ALLOWED_TIERS", ("local",)),
