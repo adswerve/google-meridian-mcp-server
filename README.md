@@ -150,8 +150,6 @@ LOCAL_MODELS_ROOT=./models
 MODEL_CACHE_ROOT=/tmp/mmm-models
 DISCOVERY_TTL_SECONDS=7200
 RESULT_CACHE_ENABLED=true
-# maximum bytes for one analysis response, measured on the worker's serialized resp.json; over it returns a response_too_large error
-ANALYSIS_MAX_RESPONSE_BYTES=4194304
 ```
 
 `.env` belongs at the project root because the runtime loads it from there explicitly.
@@ -287,13 +285,11 @@ Two optional envelope keys sit after the leading identity keys and before the co
 
 **Payload location.** Each tool response carries its payload exactly once, in `structuredContent`. The `content` block holds a short human-readable note (for row-bearing results, `"<n> rows x <m> columns in structuredContent"`), never the data itself. Client authors must read `structuredContent` — or the SDK's `.data` accessor — and must not parse `content[0].text` as JSON. `list_models` is the one tool whose payload is wrapped as `{"result": [...]}`.
 
-**Response size limit.** `ANALYSIS_MAX_RESPONSE_BYTES` (default `4194304`, 4 MiB) caps one analysis response, measured on the worker's serialized response. Over it, the tool returns a `response_too_large` error naming the size and the filters that would narrow the request. The default was lowered to sit close to the practical delivery ceiling on Cloud Run described below under `get_training_data`, but the two are not identical: measured failures start as low as ~3.3 MB, under this guard, so a response can still pass the size check and then be silently dropped in transit. Operators deploying behind Cloud Run should not treat this guard as sufficient protection against that failure mode on its own.
-
 **Per-tool notes**
 
 `get_model_overview` returns the model's time range, geo scope, channel/input groups, flattened data schema, and the supported dataset/output-type values for the other analysis tools.
 
-`get_training_data` accepts one or more dataset keys and returns a single merged result set for the requested selections. Against a **deployed** server, call `get_training_data` with a `dataset` or date filter. The unfiltered, all-datasets call produces a response the server sends successfully (Cloud Run logs `200 OK` and the full byte count) but which does not reach the client — the SSE stream ends without a response. Measured on Cloud Run, responses of ~46 KB are delivered and responses of ~3.3 MB are not; the ceiling lies between. This is a delivery-path limit, not a server timeout: a request taking 56s completed successfully, and the ~60-86s these calls take is analysis compute, not a timer. Filtered calls work fine. Details in `reports/drift/04-cloud-vs-local.md`.
+`get_training_data` accepts one or more dataset keys and returns a single merged result set for the requested selections. Pass a `dataset` or date filter for anything but small models: the unfiltered, all-datasets call returns 3.2 MB for `national-revenue` and 16.3 MB for `geo-revenue`, which the transport delivers correctly but which is far more than an agent can hold in context.
 
 `get_channel_summary` exposes:
 

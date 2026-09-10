@@ -77,13 +77,6 @@ PASS / EXPECTED-ERR / FAIL matrix and ends with `LIVE VALIDATION PASSED` or `N f
 - **Do not run two instances concurrently.** It `rmtree`s fixed shared paths at startup
   (`live_validate.py:117-118`, and the shared `_runs` root at `:141`), so a second instance
   destroys the first's run records and produces failures that look like real regressions.
-- **The harness pins `ANALYSIS_MAX_RESPONSE_BYTES` to 64 MiB, deliberately above the shipped
-  4 MiB default, and that divergence is not a bug.** Holding it high keeps large-payload cases
-  returning DATA, so baselines stay byte-comparable across a threshold change — including
-  against labels that can no longer be regenerated. "Correcting" the pin down to the shipped
-  default makes the geo-revenue all-datasets case (~7.8 MB) return `response_too_large`, which
-  reads as a regression and is not one. Verified: a full run under the 4 MiB default passed
-  146/146 with `response_too_large` appearing zero times.
 - **Fixtures** live under gitignored `models/_validation/` and are never committed. The first
   run BUILDS them via real tiny MCMC fits — a few minutes, not a hang.
 - **Generator** `scripts/generate_validation_models.py` builds **7** variants: the 2×3
@@ -153,11 +146,13 @@ Markdown report. Kept after the upgrade: it is the cheapest way to prove a bump 
   meridian_version)`, and `compute_tier` is not a config field. Requesting a different tier
   for an identical model+config silently returns the existing run (`reused=true`); pass
   `force_rerun=true` for a genuine second run. Unresolved — the user has not decided yet.
-- **Unfiltered `get_training_data` cannot traverse the HTTP surface.** README.md's
-  [Tool surface](README.md#tool-surface) entry for `get_training_data` is canonical for the
-  current explanation — a later controlled experiment corrected the original diagnosis, so
-  don't rely on memory of an older version of this text. Always pass a dataset or date filter
-  against a deployed server. (`reports/drift/04-cloud-vs-local.md`)
+- **Unfiltered `get_training_data` is a context-budget concern, not a transport failure.**
+  It was misdiagnosed three times — as a Cloud Run delivery ceiling, as a timeout, and as
+  a size ceiling — before measurement showed the server was always healthy. The real cause
+  was a Python-client SSE event-size cap reached only when a handler outran mcp's 15s
+  mode-switch window; `json_response=True` in `server.py` makes that branch unreachable.
+  Still pass a dataset or date filter: the unfiltered payload is megabytes and will
+  overflow an agent's context. (`reports/drift/04-cloud-vs-local.md`)
 
 ## The recurring defect shape — the most transferable lesson
 
