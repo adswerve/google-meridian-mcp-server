@@ -249,6 +249,20 @@ class OptimizationRunState(BaseModel):
     headline: str | None = None
 
 
+class OptimizationRunDispatch(BaseModel):
+    """Executor-owned record of a dispatch attempt.
+
+    Deliberately separate from OptimizationRunState: the worker writes
+    state.json independently and write_state is a full-document overwrite, so
+    an executor write there can clobber a live RUNNING status. Only the
+    executor ever writes this document.
+    """
+
+    run_id: str
+    claimed_at: str
+    execution_name: str | None = None
+
+
 class OptimizationRunSummary(BaseModel):
     run_id: str
     label: str

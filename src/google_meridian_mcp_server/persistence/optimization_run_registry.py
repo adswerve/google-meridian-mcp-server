@@ -11,6 +11,7 @@ from pathlib import Path
 from google_meridian_mcp_server.domain.errors import MeridianMcpError
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationRun,
+    OptimizationRunDispatch,
     OptimizationRunState,
     OptimizationRunSummary,
     RunStatus,
@@ -86,6 +87,12 @@ class OptimizationRunRegistry(abc.ABC):
     def find_by_fingerprint(self, fingerprint: str) -> str | None: ...
     @abc.abstractmethod
     def put_fingerprint(self, fingerprint: str, run_id: str) -> None: ...
+    @abc.abstractmethod
+    def claim_dispatch(self, dispatch: OptimizationRunDispatch) -> bool: ...
+    @abc.abstractmethod
+    def write_dispatch(self, dispatch: OptimizationRunDispatch) -> None: ...
+    @abc.abstractmethod
+    def get_dispatch(self, run_id: str) -> OptimizationRunDispatch | None: ...
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -224,6 +231,35 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
         self._index.mkdir(parents=True, exist_ok=True)
         _atomic_write(self._index / fingerprint, run_id)
 
+    def claim_dispatch(self, dispatch: OptimizationRunDispatch) -> bool:
+        d = self._run_dir(dispatch.run_id)
+        if not d.is_dir():
+            raise RunNotFoundError(dispatch.run_id)
+        try:
+            fd = os.open(
+                d / "dispatch.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
+            )
+        except FileExistsError:
+            return False
+        try:
+            os.write(fd, dispatch.model_dump_json(indent=2).encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return True
+
+    def write_dispatch(self, dispatch: OptimizationRunDispatch) -> None:
+        d = self._run_dir(dispatch.run_id)
+        if not d.is_dir():
+            raise RunNotFoundError(dispatch.run_id)
+        _atomic_write(d / "dispatch.json", dispatch.model_dump_json(indent=2))
+
+    def get_dispatch(self, run_id: str) -> OptimizationRunDispatch | None:
+        path = self._run_dir(run_id) / "dispatch.json"
+        if not path.is_file():
+            return None
+        return OptimizationRunDispatch.model_validate_json(_read_text(path))
+
 
 class GcsOptimizationRunRegistry(OptimizationRunRegistry):
     def __init__(self, bucket: str, prefix: str, *, client_factory=None) -> None:
@@ -349,3 +385,26 @@ class GcsOptimizationRunRegistry(OptimizationRunRegistry):
         self._blob(
             f"{self._prefix}/index/by_fingerprint/{fingerprint}"
         ).upload_from_string(run_id)
+
+    def claim_dispatch(self, dispatch: OptimizationRunDispatch) -> bool:
+        from google.api_core.exceptions import PreconditionFailed
+
+        blob = self._blob(f"{self._run_prefix(dispatch.run_id)}/dispatch.json")
+        try:
+            blob.upload_from_string(
+                dispatch.model_dump_json(indent=2), if_generation_match=0
+            )
+        except PreconditionFailed:
+            return False  # another instance claimed this run first
+        return True
+
+    def write_dispatch(self, dispatch: OptimizationRunDispatch) -> None:
+        self._blob(
+            f"{self._run_prefix(dispatch.run_id)}/dispatch.json"
+        ).upload_from_string(dispatch.model_dump_json(indent=2))
+
+    def get_dispatch(self, run_id: str) -> OptimizationRunDispatch | None:
+        blob = self._blob(f"{self._run_prefix(run_id)}/dispatch.json")
+        if not blob.exists():
+            return None
+        return OptimizationRunDispatch.model_validate_json(blob.download_as_text())

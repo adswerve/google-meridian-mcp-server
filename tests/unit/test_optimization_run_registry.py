@@ -10,6 +10,7 @@ from google_meridian_mcp_server.domain.optimization import (
     FutureOptimizationConfig,
     OptimizationConfig,
     OptimizationRun,
+    OptimizationRunDispatch,
     OptimizationRunState,
     RunStatus,
 )
@@ -212,3 +213,44 @@ def test_registry_reads_are_utf8_under_a_non_utf8_locale(tmp_path):
     )
     assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
     assert "ROUNDTRIP_OK" in proc.stdout
+
+
+def test_claim_dispatch_is_create_if_absent(tmp_path):
+    """The claim is how two server instances avoid double-launching one run."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run())
+    d = OptimizationRunDispatch(
+        run_id="m-1-abc", claimed_at="2026-09-10T00:00:00+00:00"
+    )
+
+    assert reg.claim_dispatch(d) is True
+    assert reg.claim_dispatch(d) is False  # second caller loses
+
+    got = reg.get_dispatch("m-1-abc")
+    assert got.claimed_at == "2026-09-10T00:00:00+00:00"
+    assert got.execution_name is None
+
+
+def test_write_dispatch_records_the_execution_name(tmp_path):
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run())
+    d = OptimizationRunDispatch(
+        run_id="m-1-abc", claimed_at="2026-09-10T00:00:00+00:00"
+    )
+    reg.claim_dispatch(d)
+
+    reg.write_dispatch(
+        d.model_copy(
+            update={"execution_name": "projects/p/locations/r/jobs/j/executions/e1"}
+        )
+    )
+
+    got = reg.get_dispatch("m-1-abc")
+    assert got.execution_name == "projects/p/locations/r/jobs/j/executions/e1"
+    assert got.claimed_at == "2026-09-10T00:00:00+00:00"  # preserved, not reset
+
+
+def test_get_dispatch_is_none_when_never_claimed(tmp_path):
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run())
+    assert reg.get_dispatch("m-1-abc") is None

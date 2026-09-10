@@ -3,6 +3,7 @@ import pytest
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationConfig,
     OptimizationRun,
+    OptimizationRunDispatch,
     OptimizationRunState,
     RunStatus,
 )
@@ -81,3 +82,14 @@ def test_write_state_generation_precondition(registry):
             OptimizationRunState(run_id="m-1", status=RunStatus.FAILED),
             expected_generation=gen,
         )
+
+
+def test_gcs_claim_dispatch_is_create_if_absent(registry):
+    """GCS uses a different primitive (if_generation_match=0) from the local
+    provider's O_CREAT|O_EXCL, so it needs its own proof."""
+    registry.create(_run())
+    d = OptimizationRunDispatch(run_id="m-1", claimed_at="2026-09-10T00:00:00+00:00")
+
+    assert registry.claim_dispatch(d) is True
+    assert registry.claim_dispatch(d) is False
+    assert registry.get_dispatch("m-1").execution_name is None
