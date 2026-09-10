@@ -412,7 +412,7 @@ The optimization tools submit and track long-running Meridian `BudgetOptimizer` 
 |------|---------|-----|
 | `local` | Subprocess (default) | Local development; no GCP required. |
 | `cloud_cpu` | Cloud Run Job (CPU) | Production runs; requires `PERSISTENCE_BACKEND=gcs`. |
-| `cloud_gpu` | Cloud Run Job (NVIDIA L4) | Large or fast runs; requires `enable_gpu_job = true` and L4 quota. |
+| `cloud_gpu` | Cloud Run Job (NVIDIA L4) | Large or fast runs; requires `PERSISTENCE_BACKEND=gcs`, `enable_gpu_job = true`, and L4 quota. |
 
 Every tier runs Meridian on the **JAX** backend with 64-bit precision. There is
 no per-tier engine choice: `OPTIMIZATION_BACKEND_LOCAL` /
