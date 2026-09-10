@@ -152,3 +152,74 @@ def test_reconcile_orphans_leaves_fresh_heartbeat_running_untouched(tmp_path):
     ex.reconcile_orphans()
 
     assert reg.get_state("m-1").status == RunStatus.RUNNING
+
+
+def test_missing_cloud_run_job_reports_configuration_error_not_worker_lost():
+    """A 404 from run_job is a permanent misconfiguration, not a lost worker.
+
+    Asserting only that the run failed would pass under the old blanket
+    handler, which is the whole reason this test exists.
+    """
+    from google.api_core.exceptions import NotFound
+
+    class _NotFoundJobs:
+        def run_job(self, request):
+            raise NotFound(
+                "Resource 'projects/p/locations/r/jobs/opt-gpu' was not found"
+            )
+
+    reg = _Registry()
+    ex = CloudRunJobExecutor(
+        reg,
+        cfg=_cfg(),
+        max_parallel=2,
+        jobs_client=_NotFoundJobs(),
+        executions_client=_FakeExecutions(),
+    )
+    run = _run("cloud_gpu")
+    ex.submit(run)
+
+    state = reg.get_state(run.run_id)
+    assert state.status is RunStatus.FAILED
+    assert state.error["code"] == "cloud_job_not_found"
+    assert "was not found" in state.error["message"]
+
+
+def test_permission_denied_on_launch_is_classified_separately():
+    from google.api_core.exceptions import PermissionDenied
+
+    class _DeniedJobs:
+        def run_job(self, request):
+            raise PermissionDenied("caller lacks run.jobs.run")
+
+    reg = _Registry()
+    ex = CloudRunJobExecutor(
+        reg,
+        cfg=_cfg(),
+        max_parallel=2,
+        jobs_client=_DeniedJobs(),
+        executions_client=_FakeExecutions(),
+    )
+    run = _run("cloud_cpu")
+    ex.submit(run)
+    assert reg.get_state(run.run_id).error["code"] == "cloud_job_permission_denied"
+
+
+def test_unrecognised_launch_failure_still_reports_worker_lost():
+    """The classification must not swallow the generic case."""
+
+    class _BrokenJobs:
+        def run_job(self, request):
+            raise OSError("EMFILE")
+
+    reg = _Registry()
+    ex = CloudRunJobExecutor(
+        reg,
+        cfg=_cfg(),
+        max_parallel=2,
+        jobs_client=_BrokenJobs(),
+        executions_client=_FakeExecutions(),
+    )
+    run = _run("cloud_cpu")
+    ex.submit(run)
+    assert reg.get_state(run.run_id).error["code"] == "worker_lost"

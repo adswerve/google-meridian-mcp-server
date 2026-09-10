@@ -110,7 +110,11 @@ class BaseExecutor(abc.ABC):
                 try:
                     self._handles[run_id] = self._launch(run)
                 except Exception as exc:  # noqa: BLE001 - launch failures must not escape pump()
-                    self._fail_if_unfinished(run_id, f"failed to launch worker: {exc}")
+                    self._fail_if_unfinished(
+                        run_id,
+                        f"failed to launch worker: {exc}",
+                        code=self._launch_error_code(exc),
+                    )
 
     def _reap(self) -> None:
         with self._lock:
@@ -127,7 +131,13 @@ class BaseExecutor(abc.ABC):
         """Hook: local tier no-ops; cloud tier checks stale heartbeats."""
         return
 
-    def _fail_if_unfinished(self, run_id: str, message: str) -> None:
+    def _launch_error_code(self, exc: Exception) -> str:
+        """Hook: classify a launch failure. Local tier has nothing to classify."""
+        return "worker_lost"
+
+    def _fail_if_unfinished(
+        self, run_id: str, message: str, *, code: str = "worker_lost"
+    ) -> None:
         try:
             state = self._registry.get_state(run_id)
         except RunNotFoundError:
@@ -139,7 +149,7 @@ class BaseExecutor(abc.ABC):
                 OptimizationRunState(
                     run_id=run_id,
                     status=RunStatus.FAILED,
-                    error={"code": "worker_lost", "message": message},
+                    error={"code": code, "message": message},
                 )
             )
 

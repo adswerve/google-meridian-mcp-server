@@ -89,6 +89,19 @@ class CloudRunJobExecutor(BaseExecutor):
         # Remote liveness is coarse; stale heartbeat is the authoritative crash signal.
         self._reconcile_stale(run_id)
 
+    def _launch_error_code(self, exc: Exception) -> str:
+        # A dangling CLOUD_RUN_JOB_* name is a permanent misconfiguration, not a
+        # lost worker, and must not read as retryable. There is no boot-time
+        # probe (see the design doc), so this is the only guard that catches a
+        # job deleted after terraform apply.
+        from google.api_core.exceptions import NotFound, PermissionDenied
+
+        if isinstance(exc, NotFound):
+            return "cloud_job_not_found"
+        if isinstance(exc, PermissionDenied):
+            return "cloud_job_permission_denied"
+        return super()._launch_error_code(exc)
+
     def _terminate(self, handle: Any) -> None:
         # Best-effort cancel of the running execution (used by cancel_optimization).
         try:
