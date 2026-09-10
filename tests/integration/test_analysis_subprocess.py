@@ -49,7 +49,6 @@ async def real_runner():
             semaphore=asyncio.Semaphore(2),
             run_timeout=300,
             queue_wait_timeout=30,
-            max_response_bytes=64 * 1024 * 1024,
             workdir_root=tmp_root / "workdirs",
             env_base={
                 "PERSISTENCE_BACKEND": "local",

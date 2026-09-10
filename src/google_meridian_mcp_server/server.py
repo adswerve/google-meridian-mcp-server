@@ -73,7 +73,6 @@ async def _lifespan(server: FastMCP):
         semaphore=asyncio.Semaphore(cfg.analysis_max_parallel),
         run_timeout=cfg.analysis_worker_timeout,
         queue_wait_timeout=cfg.analysis_queue_wait_timeout,
-        max_response_bytes=cfg.analysis_max_response_bytes,
         workdir_root=cfg.analysis_workdir_root,
         env_base={
             "PERSISTENCE_BACKEND": cfg.persistence_backend,
