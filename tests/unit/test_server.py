@@ -37,9 +37,7 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         optimization_max_parallel=2,
         optimization_heartbeat_stale_seconds=120,
         optimization_allowed_tiers=("local",),
-        analysis_max_parallel=2,
         analysis_worker_timeout=300.0,
-        analysis_queue_wait_timeout=30.0,
         analysis_max_response_bytes=64 * 1024 * 1024,
         analysis_workdir_root="/tmp/mmm-analysis",
     )

@@ -21,6 +21,15 @@ def test_the_backend_knob_is_gone():
     assert not hasattr(cfg, "optimization_backend_cloud_gpu")
 
 
+def test_removed_knobs_are_gone():
+    """Every knob this change deletes must stop EXISTING, not merely stop being
+    documented. RuntimeConfig is frozen but not extra='forbid', so a re-added
+    field would be silently accepted everywhere else; this is the only guard."""
+    cfg = RuntimeConfig(**_local_kwargs())
+    for name in ("analysis_max_parallel", "analysis_queue_wait_timeout"):
+        assert not hasattr(cfg, name), f"{name} came back"
+
+
 def test_cloud_tier_requires_gcs_registry_and_cloud_run_fields():
     # cloud tier allowed but no gcs registry -> error (Phase 1 guardrail)
     with pytest.raises(ValidationError, match="gcs registry"):
@@ -70,9 +79,7 @@ def test_cloud_tier_fully_configured_is_valid():
 
 def test_analysis_runner_config_defaults(sample_runtime_config):
     cfg = sample_runtime_config
-    assert cfg.analysis_max_parallel == 2
     assert cfg.analysis_worker_timeout == 300.0
-    assert cfg.analysis_queue_wait_timeout == 30.0
     assert cfg.analysis_max_response_bytes == 4 * 1024 * 1024
     assert cfg.analysis_workdir_root == "/tmp/mmm-analysis"
 
@@ -80,12 +87,10 @@ def test_analysis_runner_config_defaults(sample_runtime_config):
 def test_analysis_runner_config_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("PERSISTENCE_BACKEND", "local")
     monkeypatch.setenv("LOCAL_MODELS_ROOT", str(tmp_path))
-    monkeypatch.setenv("ANALYSIS_MAX_PARALLEL", "4")
     monkeypatch.setenv("ANALYSIS_WORKER_TIMEOUT", "600")
     from google_meridian_mcp_server.config import load_config
 
     cfg = load_config()
-    assert cfg.analysis_max_parallel == 4
     assert cfg.analysis_worker_timeout == 600.0
 
 

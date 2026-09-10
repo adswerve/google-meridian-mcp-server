@@ -15,7 +15,6 @@ from pathlib import Path
 from google_meridian_mcp_server.domain.errors import (
     MeridianMcpError,
     ResponseTooLargeError,
-    ServerBusyError,
     WorkerFailedError,
     WorkerTimeoutError,
 )
@@ -60,18 +59,14 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
     def __init__(
         self,
         *,
-        semaphore,
         run_timeout,
-        queue_wait_timeout,
         max_response_bytes,
         workdir_root,
         worker_argv_prefix=None,
         env_base=None,
     ):
         super().__init__(worker_argv_prefix=worker_argv_prefix, env_base=env_base)
-        self._sem = semaphore
         self._run_timeout = run_timeout
-        self._queue_wait_timeout = queue_wait_timeout
         self._max_bytes = max_response_bytes
         self._root = Path(workdir_root)
         self._live: set[int] = set()
@@ -85,18 +80,6 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         self._pending_spawns: set = set()
 
     async def run(self, operation, model_id, params) -> dict:
-        try:
-            await asyncio.wait_for(
-                self._sem.acquire(), timeout=self._queue_wait_timeout
-            )
-        except asyncio.TimeoutError:
-            raise ServerBusyError() from None
-        try:
-            return await self._run_locked(operation, model_id, params)
-        finally:
-            self._sem.release()
-
-    async def _run_locked(self, operation, model_id, params) -> dict:
         proc, keep, deferred_cleanup = None, False, False
         log_file = None
         workdir: Path | None = None
@@ -274,7 +257,7 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         # `_live` yet and its teardown isn't in `_cleanup_tasks` yet either --
         # nothing above would find or kill it. Cancelling the tracked spawn
         # task directly (not just the caller's shielded await) forces it to
-        # resolve now; `_run_locked`'s own `except CancelledError` branch then
+        # resolve now; `run`'s own `except CancelledError` branch then
         # registers the existing deferred-teardown path exactly as it does for
         # a caller-cancelled run, so the same kill+reap+rmtree logic applies
         # with no new code path and no risk of double-kill/double-rmtree.

@@ -64,9 +64,7 @@ class RuntimeConfig(BaseModel):
     cloud_run_job_gpu: str | None = None
 
     # Analysis subprocess runner
-    analysis_max_parallel: int = 2
     analysis_worker_timeout: float = 300.0
-    analysis_queue_wait_timeout: float = 30.0
     analysis_max_response_bytes: int = 4 * 1024 * 1024
     analysis_workdir_root: str = "/tmp/mmm-analysis"
     # F10b: retained analysis workdirs (timeout/spawn-failure/rc!=0

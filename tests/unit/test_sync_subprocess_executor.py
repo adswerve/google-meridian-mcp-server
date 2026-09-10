@@ -42,9 +42,7 @@ INTERNAL_ERROR_RC1 = textwrap.dedent("""
 
 def mk(tmp, script, **o):
     kw = dict(
-        semaphore=asyncio.Semaphore(2),
         run_timeout=10.0,
-        queue_wait_timeout=5.0,
         max_response_bytes=10_000_000,
         workdir_root=str(tmp),
         worker_argv_prefix=[sys.executable, "-c", script],
@@ -93,14 +91,6 @@ async def test_timeout_kills_fast(tmp_path):
             "op", "m1", {}
         )
     assert e.value.error_code == "worker_timeout" and time.time() - t0 < 30
-
-
-async def test_server_busy_when_no_slot(tmp_path):
-    sem = asyncio.Semaphore(0)  # no slots
-    r = mk(tmp_path, OK, semaphore=sem, queue_wait_timeout=0.2)
-    with pytest.raises(MeridianMcpError) as e:
-        await r.run("op", "m1", {})
-    assert e.value.error_code == "server_busy"
 
 
 async def test_cancellation_kills_child(tmp_path):
@@ -308,7 +298,7 @@ async def test_workdir_retention_semantics(tmp_path):
 
 async def test_workdir_setup_failure_translates_to_worker_failed(tmp_path, monkeypatch):
     """F4(a): self._root.mkdir/tempfile.mkdtemp must be INSIDE the wrapped
-    try in _run_locked (not before it) so ENOSPC/EMFILE/permission failures
+    try in run (not before it) so ENOSPC/EMFILE/permission failures
     at workdir setup translate to a clean WorkerFailedError envelope, same as
     a spawn failure -- not escape as a raw OSError past the tool handlers'
     `except MeridianMcpError`."""
