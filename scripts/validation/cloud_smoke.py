@@ -3,12 +3,12 @@
 Run:
   CLOUD_SMOKE=1 CLOUD_RUN_PROJECT=your-gcp-project CLOUD_RUN_REGION=us-central1 \\
   CLOUD_RUN_JOB_CPU=meridian-opt-cpu GCS_BUCKET=<bucket> GCS_MODELS_PREFIX=<prefix> \\
-  PERSISTENCE_BACKEND=gcs REGISTRY_BACKEND=gcs OPTIMIZATION_ALLOWED_TIERS=cloud_cpu \\
-  OPTIMIZATION_DEFAULT_TIER=cloud_cpu MODEL_ID=<model_id> \\
+  PERSISTENCE_BACKEND=gcs OPTIMIZATION_TIER=cloud_cpu \\
+  MODEL_ID=<model_id> \\
   uv run python -m scripts.validation.cloud_smoke
 
 To smoke-test cloud_gpu instead:
-  COMPUTE_TIER=cloud_gpu CLOUD_RUN_JOB_GPU=meridian-opt-gpu OPTIMIZATION_ALLOWED_TIERS=cloud_gpu \\
+  COMPUTE_TIER=cloud_gpu CLOUD_RUN_JOB_GPU=meridian-opt-gpu OPTIMIZATION_TIER=cloud_gpu \\
   ... (same other vars) ...
   uv run python -m scripts.validation.cloud_smoke
 """

@@ -70,7 +70,7 @@ def _build_cloud_service(*, shared_dir):
         persistence_backend="gcs",
         gcs_bucket="fake",
         gcs_models_prefix="m/",
-        optimization_allowed_tiers=("cloud_cpu",),
+        optimization_tier="cloud_cpu",
         cloud_run_project="fake",
         cloud_run_region="fake",
         cloud_run_job_cpu="opt-cpu",

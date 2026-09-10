@@ -39,7 +39,7 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         optimization_gcs_prefix="optimizations/",
         optimization_max_parallel=2,
         optimization_heartbeat_stale_seconds=120,
-        optimization_allowed_tiers=("local",),
+        optimization_tier="local",
         analysis_worker_timeout=300.0,
         analysis_max_response_bytes=64 * 1024 * 1024,
         analysis_workdir_root="/tmp/mmm-analysis",
@@ -88,7 +88,9 @@ async def test_lifespan_selects_expected_provider(
         analysis_runner = state["analysis_runner"]
         assert isinstance(analysis_runner, server.SyncSubprocessExecutor)
         expected = (
-            "GcsOptimizationRunRegistry" if backend == "gcs" else "LocalOptimizationRunRegistry"
+            "GcsOptimizationRunRegistry"
+            if backend == "gcs"
+            else "LocalOptimizationRunRegistry"
         )
         assert type(state["optimization_registry"]).__name__ == expected
 

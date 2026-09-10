@@ -237,10 +237,7 @@ class OptimizationService:
         score = size_score(size_features)
         try:
             resolved = resolve_tier(
-                score,
-                requested=compute_tier,
-                allowed=self._cfg.optimization_allowed_tiers,
-                thresholds=self._cfg.optimization_size_thresholds,
+                score, mode=self._cfg.optimization_tier, requested=compute_tier
             )
         except ValueError as exc:
             raise InvalidOptimizationConfigError(str(exc)) from exc

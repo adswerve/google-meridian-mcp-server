@@ -306,7 +306,7 @@ async def test_disallowed_compute_tier_raises_typed_error(tmp_path):
         await svc.run_optimization(
             "m",
             {"scenario": {"type": "fixed_budget"}},
-            compute_tier="cloud_gpu",  # not in allowed tiers (default: local only)
+            compute_tier="cloud_gpu",  # OPTIMIZATION_TIER=local does not run cloud_gpu
         )
 
 

@@ -26,6 +26,22 @@ class ComputeTier(str, Enum):
     CLOUD_GPU = "cloud_gpu"
 
 
+class OptimizationMode(str, Enum):
+    """Where THIS DEPLOYMENT runs optimizations -- a deployment mode, not a tier.
+
+    Distinct from ComputeTier on purpose: every ComputeTier member must be
+    dispatchable (cloud_run_job_for_tier maps them to Job names), and CLOUD_AUTO
+    is not -- it resolves to CLOUD_CPU or CLOUD_GPU before anything dispatches.
+    Declared here rather than in execution/routing.py because RuntimeConfig._check
+    validates against it, and domain/ must never import from execution/.
+    """
+
+    LOCAL = "local"
+    CLOUD_CPU = "cloud_cpu"
+    CLOUD_GPU = "cloud_gpu"
+    CLOUD_AUTO = "cloud_auto"
+
+
 class ModelFormat(str, Enum):
     BINPB = "binpb"
 
@@ -52,10 +68,8 @@ class RuntimeConfig(BaseModel):
     # Optimization module
     optimization_runs_root: str = "./optimizations"
     optimization_gcs_prefix: str = "optimizations/"
-    optimization_allowed_tiers: tuple[str, ...] = ("local",)
-    optimization_default_tier: str = "auto"
+    optimization_tier: str = OptimizationMode.LOCAL.value
     optimization_max_parallel: int = 2
-    optimization_size_thresholds: tuple[int, int] = (10_000_000, 100_000_000)
     optimization_heartbeat_stale_seconds: int = 60
     cloud_run_project: str | None = None
     cloud_run_region: str | None = None
@@ -110,32 +124,16 @@ class RuntimeConfig(BaseModel):
         ):
             raise ValueError("RESULT_CACHE_TTL_SECONDS must be positive")
 
-        valid_tiers = {t.value for t in ComputeTier}
-        for tier in self.optimization_allowed_tiers:
-            if tier not in valid_tiers:
-                raise ValueError(
-                    f"Unknown optimization tier '{tier}'. Valid: {sorted(valid_tiers)}"
-                )
-        if not self.optimization_allowed_tiers:
-            raise ValueError("OPTIMIZATION_ALLOWED_TIERS must list at least one tier")
-        if self.optimization_default_tier != "auto" and (
-            self.optimization_default_tier not in self.optimization_allowed_tiers
-        ):
+        valid_modes = {m.value for m in OptimizationMode}
+        if self.optimization_tier not in valid_modes:
             raise ValueError(
-                f"OPTIMIZATION_DEFAULT_TIER '{self.optimization_default_tier}' not in allowed tiers "
-                f"{list(self.optimization_allowed_tiers)}"
+                f"Unknown OPTIMIZATION_TIER '{self.optimization_tier}'. "
+                f"Valid: {sorted(valid_modes)}"
             )
         if self.optimization_max_parallel <= 0:
             raise ValueError("OPTIMIZATION_MAX_PARALLEL must be positive")
-        lo, hi = self.optimization_size_thresholds
-        if not (0 < lo < hi):
-            raise ValueError(
-                "OPTIMIZATION_SIZE_THRESHOLDS must be two ascending positive ints"
-            )
 
-        cloud_tiers = {ComputeTier.CLOUD_CPU.value, ComputeTier.CLOUD_GPU.value}
-        allowed_cloud = cloud_tiers & set(self.optimization_allowed_tiers)
-        if allowed_cloud:
+        if self.optimization_tier != OptimizationMode.LOCAL.value:
             if self.persistence_backend != PersistenceBackend.GCS.value:
                 raise ValueError(
                     "cloud optimization tiers require PERSISTENCE_BACKEND=gcs: a "
@@ -145,16 +143,22 @@ class RuntimeConfig(BaseModel):
                 raise ValueError(
                     "cloud tiers require CLOUD_RUN_PROJECT and CLOUD_RUN_REGION"
                 )
-            if (
-                ComputeTier.CLOUD_CPU.value in allowed_cloud
-                and not self.cloud_run_job_cpu
-            ):
-                raise ValueError("cloud_cpu tier requires CLOUD_RUN_JOB_CPU")
-            if (
-                ComputeTier.CLOUD_GPU.value in allowed_cloud
-                and not self.cloud_run_job_gpu
-            ):
-                raise ValueError("cloud_gpu tier requires CLOUD_RUN_JOB_GPU")
+            needs_cpu = {
+                OptimizationMode.CLOUD_CPU.value,
+                OptimizationMode.CLOUD_AUTO.value,
+            }
+            needs_gpu = {
+                OptimizationMode.CLOUD_GPU.value,
+                OptimizationMode.CLOUD_AUTO.value,
+            }
+            if self.optimization_tier in needs_cpu and not self.cloud_run_job_cpu:
+                raise ValueError(
+                    f"OPTIMIZATION_TIER={self.optimization_tier} requires CLOUD_RUN_JOB_CPU"
+                )
+            if self.optimization_tier in needs_gpu and not self.cloud_run_job_gpu:
+                raise ValueError(
+                    f"OPTIMIZATION_TIER={self.optimization_tier} requires CLOUD_RUN_JOB_GPU"
+                )
         return self
 
     def cloud_run_job_for_tier(self, tier: str) -> str | None:

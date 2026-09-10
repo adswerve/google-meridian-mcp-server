@@ -48,10 +48,9 @@ def build_executor(
     jobs_client=None,
     executions_client=None,
 ):
-    from google_meridian_mcp_server.domain.models import ComputeTier
+    from google_meridian_mcp_server.domain.models import OptimizationMode
 
-    allowed = set(cfg.optimization_allowed_tiers)
-    if ComputeTier.LOCAL.value in allowed:
+    if cfg.optimization_tier == OptimizationMode.LOCAL.value:
         from google_meridian_mcp_server.execution.subprocess_executor import (
             AsyncSubprocessExecutor,
         )

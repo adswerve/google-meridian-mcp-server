@@ -12,7 +12,7 @@ future scenario covers ``future.excluded_channels``, pinning a channel's
 optimized spend to 0.
 
 Usage:
-  OPTIMIZATION_ALLOWED_TIERS=local uv run python scripts/qa/future_optimization_qa.py
+  OPTIMIZATION_TIER=local uv run python scripts/qa/future_optimization_qa.py
 
 Prints a per-scenario PASS/FAIL table, ending ``FUTURE-OPT QA PASSED (11/11)``
 and exiting 0 iff every scenario passes; otherwise exits 1.
@@ -557,7 +557,7 @@ async def run_qa() -> int:
     build_all(_VALIDATION_MODELS_ROOT, force=False)
 
     tmp_runs_root = tempfile.mkdtemp(prefix="future-opt-qa-runs-")
-    os.environ["OPTIMIZATION_ALLOWED_TIERS"] = "local"
+    os.environ["OPTIMIZATION_TIER"] = "local"
     os.environ["PERSISTENCE_BACKEND"] = "local"
     os.environ["LOCAL_MODELS_ROOT"] = str(_VALIDATION_MODELS_ROOT)
     os.environ["RESULT_CACHE_ENABLED"] = "false"

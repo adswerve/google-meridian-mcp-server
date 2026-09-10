@@ -31,23 +31,24 @@ def test_removed_knobs_are_gone():
         "analysis_queue_wait_timeout",
         "registry_backend",
         "resolved_registry_backend",
+        "optimization_allowed_tiers",
+        "optimization_default_tier",
+        "optimization_size_thresholds",
     ):
         assert not hasattr(cfg, name), f"{name} came back"
 
 
 def test_cloud_tier_requires_gcs_persistence_and_cloud_run_fields():
-    # cloud tier allowed but persistence_backend isn't gcs -> error (Phase 1 guardrail)
+    # cloud tier configured but persistence_backend isn't gcs -> error (Phase 1 guardrail)
     with pytest.raises(ValidationError, match="PERSISTENCE_BACKEND=gcs"):
-        RuntimeConfig(
-            **_local_kwargs(optimization_allowed_tiers=("local", "cloud_cpu"))
-        )
+        RuntimeConfig(**_local_kwargs(optimization_tier="cloud_cpu"))
     # gcs persistence present but Cloud Run coordinates missing -> error
     with pytest.raises(ValidationError, match="CLOUD_RUN_PROJECT"):
         RuntimeConfig(
             persistence_backend="gcs",
             gcs_bucket="b",
             gcs_models_prefix="models/",
-            optimization_allowed_tiers=("local", "cloud_cpu"),
+            optimization_tier="cloud_cpu",
         )
 
 
@@ -63,13 +64,48 @@ def test_cloud_tier_fully_configured_is_valid():
         persistence_backend="gcs",
         gcs_bucket="b",
         gcs_models_prefix="models/",
-        optimization_allowed_tiers=("cloud_cpu", "cloud_gpu"),
+        optimization_tier="cloud_auto",
         cloud_run_project="example-dev-project",
         cloud_run_region="us-central1",
         cloud_run_job_cpu="meridian-opt-cpu",
         cloud_run_job_gpu="meridian-opt-gpu",
     )
     assert cfg.cloud_run_project == "example-dev-project"
+    assert cfg.optimization_tier == "cloud_auto"
+
+
+def test_unknown_optimization_tier_names_the_four_legal_values():
+    with pytest.raises(ValidationError) as exc:
+        RuntimeConfig(**_local_kwargs(optimization_tier="cloud"))
+    for value in ("local", "cloud_cpu", "cloud_gpu", "cloud_auto"):
+        assert value in str(exc.value)
+
+
+def test_cloud_auto_requires_both_job_names():
+    base = dict(
+        persistence_backend="gcs",
+        gcs_bucket="b",
+        gcs_models_prefix="m/",
+        optimization_tier="cloud_auto",
+        cloud_run_project="p",
+        cloud_run_region="r",
+    )
+    with pytest.raises(ValidationError, match="CLOUD_RUN_JOB_CPU"):
+        RuntimeConfig(**base, cloud_run_job_gpu="g")
+    with pytest.raises(ValidationError, match="CLOUD_RUN_JOB_GPU"):
+        RuntimeConfig(**base, cloud_run_job_cpu="c")
+
+
+def test_local_tier_with_gcs_persistence_is_legal():
+    """Section 1: the run registry follows the persistence backend, so gcs
+    models with a local optimization tier is a supported combination."""
+    cfg = RuntimeConfig(
+        persistence_backend="gcs",
+        gcs_bucket="b",
+        gcs_models_prefix="m/",
+        optimization_tier="local",
+    )
+    assert cfg.optimization_tier == "local"
 
 
 def test_analysis_runner_config_defaults(sample_runtime_config):

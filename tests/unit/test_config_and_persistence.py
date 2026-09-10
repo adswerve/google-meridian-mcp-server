@@ -66,6 +66,26 @@ class TestLoadConfig:
         assert cfg.result_cache_enabled is False
         assert cfg.result_cache_ttl_seconds == 30
 
+    def test_reads_optimization_tier_from_env(self, monkeypatch):
+        """Discriminating on purpose: an invalid value can only reach _check
+        through config.py's env read, so deleting that read fails this."""
+        monkeypatch.setenv("PERSISTENCE_BACKEND", "local")
+        monkeypatch.setenv("LOCAL_MODELS_ROOT", "/models")
+        monkeypatch.setenv("OPTIMIZATION_TIER", "nonsense")
+        with pytest.raises(ValidationError, match="OPTIMIZATION_TIER"):
+            load_config()
+        monkeypatch.delenv("OPTIMIZATION_TIER")
+        assert load_config().optimization_tier == "local"  # code default
+
+    def test_reads_optimization_max_parallel_from_env(self, monkeypatch):
+        """OPTIMIZATION_MAX_PARALLEL survives this change and Task 6 wires it
+        through Terraform. Step 6 sits one line away from deleting its env read
+        with no other test in the suite to notice."""
+        monkeypatch.setenv("PERSISTENCE_BACKEND", "local")
+        monkeypatch.setenv("LOCAL_MODELS_ROOT", "/models")
+        monkeypatch.setenv("OPTIMIZATION_MAX_PARALLEL", "7")
+        assert load_config().optimization_max_parallel == 7
+
 
 class TestRuntimeConfigValidation:
     def test_rejects_invalid_transport(self):
@@ -116,10 +136,8 @@ class TestRuntimeConfigValidation:
 class TestOptimizationConfig:
     def test_runtime_config_defaults_local(self):
         cfg = RuntimeConfig(persistence_backend="local", local_models_root="/models")
-        assert cfg.optimization_allowed_tiers == ("local",)
-        assert cfg.optimization_default_tier == "auto"
+        assert cfg.optimization_tier == "local"
         assert cfg.optimization_max_parallel == 2
-        assert cfg.optimization_size_thresholds == (10_000_000, 100_000_000)
 
     def test_runtime_config_local_requires_models_root(self):
         with pytest.raises(ValidationError, match="LOCAL_MODELS_ROOT"):
@@ -130,16 +148,7 @@ class TestOptimizationConfig:
             RuntimeConfig(
                 persistence_backend="local",
                 local_models_root="/models",
-                optimization_allowed_tiers=("cloud_cpu",),
-            )
-
-    def test_runtime_config_default_tier_must_be_allowed(self):
-        with pytest.raises(ValidationError, match="not in allowed tiers"):
-            RuntimeConfig(
-                persistence_backend="local",
-                local_models_root="/models",
-                optimization_default_tier="cloud_gpu",
-                optimization_allowed_tiers=("local",),
+                optimization_tier="cloud_cpu",
             )
 
 
