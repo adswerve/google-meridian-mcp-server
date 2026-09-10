@@ -57,9 +57,10 @@ that is *not* re-derivable by reading the code; everything here is.
   index for reuse); `GcsOptimizationRunRegistry` (same layout on GCS, generation-guarded state
   writes via `write_state(*, expected_generation)` + `get_state_generation`);
   `RunNotFoundError`, `ResultNotReadyError`.
-- **execution/routing.py** — `model_size_features`, `size_score`, `resolve_tier`; maps problem
-  size to the cheapest allowed tier; reads `OPTIMIZATION_SIZE_THRESHOLDS` and
-  `OPTIMIZATION_ALLOWED_TIERS`.
+- **execution/routing.py** — `model_size_features`, `size_score`, `resolve_tier`; maps the
+  deployment's `OPTIMIZATION_TIER` mode plus the request's `compute_tier` to one executable tier;
+  `cloud_auto` splits CPU/GPU by problem size at the module constant `_GPU_SIZE_THRESHOLD`. No
+  nearest-allowed fallback.
 - **execution/base_executor.py** — `BaseExecutor` ABC; max-parallel semaphore, launch
   lifecycle, crash reconciliation via stale-heartbeat detection. `_fail_if_unfinished` no-ops
   on a deleted run (`RunNotFoundError` guard) so deleting a just-completed, unreaped run
