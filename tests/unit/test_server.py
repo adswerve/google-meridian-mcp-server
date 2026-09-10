@@ -127,7 +127,6 @@ def test_run_server_uses_http_transport_and_env_host_port(
     monkeypatch.setattr(server.mcp, "run", run)
     monkeypatch.setenv("MCP_HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "9000")
-    monkeypatch.delenv("MCP_PORT", raising=False)
 
     server.run_server()
 

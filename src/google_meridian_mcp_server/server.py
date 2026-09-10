@@ -137,7 +137,7 @@ def run_server() -> None:
         return
 
     host = os.getenv("MCP_HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", os.getenv("MCP_PORT", "8000")))
+    port = int(os.getenv("PORT", "8000"))
     mcp.run(transport="http", host=host, port=port)
 
 
