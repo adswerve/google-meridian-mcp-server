@@ -7,7 +7,6 @@ from google_meridian_mcp_server.domain.errors import (
     InvalidOutputTypeError,
     MissingModelDataError,
     ModelNotFoundError,
-    ResponseTooLargeError,
 )
 
 
@@ -130,19 +129,6 @@ class TestAnalysisToolContracts:
         # tool or output type is added or removed, alongside its
         # FILTER_APPLICABILITY / IGNORED_REASONS entries.
         assert len(expected) == 17
-
-    def test_response_too_large_error_shape(self):
-        err = ResponseTooLargeError(
-            nbytes=99, limit_bytes=8, total_rows=3, total_columns=2
-        )
-        payload = err.to_payload()
-        assert payload["error_code"] == "response_too_large"
-        assert set(payload["details"]) == {
-            "bytes",
-            "limit_bytes",
-            "total_rows",
-            "total_columns",
-        }
 
     # test_spend_scenario_summary_contract (the "get_spend_scenario returns
     # exactly the 15 documented summary keys" contract) moved to

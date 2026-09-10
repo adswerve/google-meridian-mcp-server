@@ -74,9 +74,6 @@ def load_config() -> RuntimeConfig:
         analysis_queue_wait_timeout=float(
             os.getenv("ANALYSIS_QUEUE_WAIT_TIMEOUT", "30")
         ),
-        analysis_max_response_bytes=int(
-            os.getenv("ANALYSIS_MAX_RESPONSE_BYTES", str(4 * 1024 * 1024))
-        ),
         analysis_workdir_root=os.getenv("ANALYSIS_WORKDIR_ROOT", "/tmp/mmm-analysis"),
         analysis_workdir_ttl_seconds=int(
             os.getenv("ANALYSIS_WORKDIR_TTL_SECONDS", "604800")
