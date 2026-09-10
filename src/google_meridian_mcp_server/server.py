@@ -141,7 +141,13 @@ def run_server() -> None:
 
     host = os.getenv("MCP_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", os.getenv("MCP_PORT", "8000")))
-    mcp.run(transport="http", host=host, port=port)
+    # json_response=True keeps every tools/call reply on the uncapped
+    # application/json branch. Without it, any handler running longer than
+    # mcp's 15s mode-switch window commits the reply to a single SSE frame,
+    # which httpx2 clients reject above 1 MiB with the misleading error
+    # "SSE stream ended without a response". See
+    # tests/integration/test_json_response_mode.py.
+    mcp.run(transport="http", host=host, port=port, json_response=True)
 
 
 if __name__ == "__main__":
