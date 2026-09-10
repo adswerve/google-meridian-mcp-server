@@ -15,7 +15,6 @@ from pathlib import Path
 from google_meridian_mcp_server.domain.errors import (
     MeridianMcpError,
     ResponseTooLargeError,
-    ServerBusyError,
     WorkerFailedError,
     WorkerTimeoutError,
 )
@@ -23,10 +22,18 @@ from google_meridian_mcp_server.execution.base_subprocess import BaseSubprocessE
 
 _LOG_TAIL = 4096
 
+DEFAULT_WORKDIR_ROOT = "/tmp/mmm-analysis"
+# F10b: retained analysis workdirs (timeout / spawn failure / non-domain rc!=0)
+# and optimization worker log files accumulate unboundedly; the startup sweep
+# bounds their age at 7 days. Was ANALYSIS_WORKDIR_TTL_SECONDS.
+DEFAULT_WORKDIR_TTL_SECONDS = 604800
+
 log = logging.getLogger(__name__)
 
 
-def sweep_stale_entries(root: str | Path, ttl_seconds: float) -> None:
+def sweep_stale_entries(
+    root: str | Path, ttl_seconds: float = DEFAULT_WORKDIR_TTL_SECONDS
+) -> None:
     """Remove files/dirs directly under *root* whose mtime is older than *ttl_seconds*.
 
     F10b: retained analysis workdirs (one per timeout/spawn-failure/
@@ -60,18 +67,14 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
     def __init__(
         self,
         *,
-        semaphore,
         run_timeout,
-        queue_wait_timeout,
         max_response_bytes,
-        workdir_root,
+        workdir_root=DEFAULT_WORKDIR_ROOT,
         worker_argv_prefix=None,
         env_base=None,
     ):
         super().__init__(worker_argv_prefix=worker_argv_prefix, env_base=env_base)
-        self._sem = semaphore
         self._run_timeout = run_timeout
-        self._queue_wait_timeout = queue_wait_timeout
         self._max_bytes = max_response_bytes
         self._root = Path(workdir_root)
         self._live: set[int] = set()
@@ -85,18 +88,6 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         self._pending_spawns: set = set()
 
     async def run(self, operation, model_id, params) -> dict:
-        try:
-            await asyncio.wait_for(
-                self._sem.acquire(), timeout=self._queue_wait_timeout
-            )
-        except asyncio.TimeoutError:
-            raise ServerBusyError() from None
-        try:
-            return await self._run_locked(operation, model_id, params)
-        finally:
-            self._sem.release()
-
-    async def _run_locked(self, operation, model_id, params) -> dict:
         proc, keep, deferred_cleanup = None, False, False
         log_file = None
         workdir: Path | None = None
@@ -186,7 +177,7 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 # whole workdir is removed elsewhere (keep=False), but on
                 # rc != 0 the workdir -- including the oversized resp.json --
                 # is deliberately NOT unlinked and is retained for postmortem,
-                # bounded only by ANALYSIS_WORKDIR_TTL_SECONDS. That error
+                # bounded only by DEFAULT_WORKDIR_TTL_SECONDS. That error
                 # also carries no log_tail, since it's raised before
                 # self._tail(logp) would run.
                 if rc != 0:
@@ -274,7 +265,7 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         # `_live` yet and its teardown isn't in `_cleanup_tasks` yet either --
         # nothing above would find or kill it. Cancelling the tracked spawn
         # task directly (not just the caller's shielded await) forces it to
-        # resolve now; `_run_locked`'s own `except CancelledError` branch then
+        # resolve now; `run`'s own `except CancelledError` branch then
         # registers the existing deferred-teardown path exactly as it does for
         # a caller-cancelled run, so the same kill+reap+rmtree logic applies
         # with no new code path and no risk of double-kill/double-rmtree.

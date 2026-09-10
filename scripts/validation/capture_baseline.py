@@ -390,8 +390,7 @@ def prepare_env(runs_root: str) -> None:
     """
     os.environ["PERSISTENCE_BACKEND"] = "local"
     os.environ["LOCAL_MODELS_ROOT"] = str(DEFAULT_OUT_ROOT)
-    os.environ["REGISTRY_BACKEND"] = "local"
-    os.environ["OPTIMIZATION_ALLOWED_TIERS"] = "local"
+    os.environ["OPTIMIZATION_TIER"] = "local"
     os.environ["RESULT_CACHE_ENABLED"] = "false"
     # DELIBERATELY ABOVE the shipped 4 MiB default: this pin does not track it.
     # Holding the harness at 64 MiB keeps large-payload cases returning DATA, so
@@ -583,10 +582,9 @@ async def call_tool(client, tool: str, args: dict) -> Any:
 def _submit_args(args: dict, compute_tier: str | None) -> dict:
     """force_rerun is mandatory (spec 4.1); compute_tier only when requested.
 
-    OPTIMIZATION_DEFAULT_TIER does not influence routing -- it feeds a startup
-    validation check only (domain/models.py:135-139). resolve_tier honours the
-    TOOL ARGUMENT and returns it directly when it is not "auto"
-    (routing.py:52-58), so this is the only way to reach the GPU job.
+    compute_tier is the only way to force a tier the deployment's
+    OPTIMIZATION_TIER mode also runs: resolve_tier honours a non-"auto" tool
+    argument and rejects one the mode does not run.
     """
     submit = {**args, "force_rerun": True}
     if compute_tier:
@@ -1126,9 +1124,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         choices=("local", "cloud_cpu", "cloud_gpu"),
         help=(
             "Passed through as the run_optimization/run_future_optimization "
-            "`compute_tier` argument. The ONLY way to reach a specific tier: "
-            "OPTIMIZATION_DEFAULT_TIER does not influence routing, and `auto` "
-            "always resolves to the cheapest allowed tier on these fixtures."
+            "`compute_tier` argument. Must be a tier the server's "
+            "OPTIMIZATION_TIER runs, otherwise the submit is rejected. Under "
+            "cloud_auto, `auto` picks CPU or GPU by problem size."
         ),
     )
     parser.add_argument(

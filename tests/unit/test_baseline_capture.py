@@ -178,8 +178,7 @@ def test_prepare_env_isolates_the_registry(tmp_path, monkeypatch):
     assert os.environ["OPTIMIZATION_RUNS_ROOT"] == str(tmp_path / "runs")
     assert os.environ["RESULT_CACHE_ENABLED"] == "false"
     assert os.environ["PERSISTENCE_BACKEND"] == "local"
-    assert os.environ["REGISTRY_BACKEND"] == "local"
-    assert os.environ["OPTIMIZATION_ALLOWED_TIERS"] == "local"
+    assert os.environ["OPTIMIZATION_TIER"] == "local"
 
 
 def test_worker_env_reports_what_the_workers_actually_get(monkeypatch):

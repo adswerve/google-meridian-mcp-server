@@ -62,7 +62,6 @@ def _build_cloud_service(*, shared_dir):
     worker_base_env = {
         "PERSISTENCE_BACKEND": "local",
         "LOCAL_MODELS_ROOT": str(DEFAULT_OUT_ROOT),
-        "REGISTRY_BACKEND": "local",
         "OPTIMIZATION_RUNS_ROOT": str(shared_dir),
         "RESULT_CACHE_ENABLED": "false",
         "MODEL_CACHE_ROOT": "/tmp/mmm-models-cloudgate",
@@ -71,8 +70,7 @@ def _build_cloud_service(*, shared_dir):
         persistence_backend="gcs",
         gcs_bucket="fake",
         gcs_models_prefix="m/",
-        registry_backend="gcs",
-        optimization_allowed_tiers=("cloud_cpu",),
+        optimization_tier="cloud_cpu",
         cloud_run_project="fake",
         cloud_run_region="fake",
         cloud_run_job_cpu="opt-cpu",

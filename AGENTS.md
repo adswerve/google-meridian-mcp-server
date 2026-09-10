@@ -61,10 +61,10 @@ pickle saved under TensorFlow — that is the reason, not tidiness. See
 
 ```
 uv run python -m google_meridian_mcp_server.server
-uv run pytest                                    # 683 passed on this branch
+uv run pytest                                    # 813 passed, 1 skipped on this branch
 uv run ruff check src scripts tests              # and `ruff format`
 uv run python -m scripts.validation.live_validate            # integration gate; --force rebuilds fixtures
-OPTIMIZATION_ALLOWED_TIERS=local uv run python scripts/qa/future_optimization_qa.py
+OPTIMIZATION_TIER=local uv run python scripts/qa/future_optimization_qa.py
 ```
 
 ## Live validation

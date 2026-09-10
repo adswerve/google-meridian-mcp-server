@@ -1,7 +1,6 @@
 locals {
   worker_env = {
     PERSISTENCE_BACKEND     = "gcs"
-    REGISTRY_BACKEND        = "gcs"
     GCS_BUCKET              = var.gcs_bucket
     GCS_MODELS_PREFIX       = var.gcs_models_prefix
     OPTIMIZATION_GCS_PREFIX = var.optimization_gcs_prefix

@@ -4,14 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from google_meridian_mcp_server.domain.models import ComputeTier
+from google_meridian_mcp_server.domain.models import ComputeTier, OptimizationMode
 
-# Cheapest-first ordering used for nearest-allowed fallback.
-_TIER_ORDER = (
-    ComputeTier.LOCAL.value,
-    ComputeTier.CLOUD_CPU.value,
-    ComputeTier.CLOUD_GPU.value,
-)
+# The single problem-size cutoff used by OPTIMIZATION_TIER=cloud_auto: below it
+# a run goes to the CPU Job, at or above it to the GPU Job. Demoted from the
+# two-element OPTIMIZATION_SIZE_THRESHOLDS env var, whose lower cutoff only ever
+# chose local vs cloud -- a choice cloud_auto never makes. This retains today's
+# upper cutoff exactly. size = geos x time_units x channels x posterior_samples.
+_GPU_SIZE_THRESHOLD = 100_000_000
+
+# Which explicit compute_tier values each deployment mode will honour.
+_PERMITTED = {
+    OptimizationMode.LOCAL.value: frozenset({ComputeTier.LOCAL.value}),
+    OptimizationMode.CLOUD_CPU.value: frozenset({ComputeTier.CLOUD_CPU.value}),
+    OptimizationMode.CLOUD_GPU.value: frozenset({ComputeTier.CLOUD_GPU.value}),
+    OptimizationMode.CLOUD_AUTO.value: frozenset(
+        {ComputeTier.CLOUD_CPU.value, ComputeTier.CLOUD_GPU.value}
+    ),
+}
 
 
 def model_size_features(interrogator: Any) -> dict[str, int]:
@@ -37,33 +47,26 @@ def size_score(features: dict[str, int]) -> int:
     )
 
 
-def _ideal_auto_tier(score: int, thresholds: tuple[int, int]) -> str:
-    t_local, t_gpu = thresholds
-    if score < t_local:
-        return ComputeTier.LOCAL.value
-    if score < t_gpu:
-        return ComputeTier.CLOUD_CPU.value
-    return ComputeTier.CLOUD_GPU.value
+def resolve_tier(score: int, *, mode: str, requested: str) -> str:
+    """Resolve a request's compute tier against the deployment's single mode.
 
-
-def resolve_tier(
-    score: int, *, requested: str, allowed: tuple[str, ...], thresholds: tuple[int, int]
-) -> str:
+    There is no nearest-allowed fallback any more: with one mode there is
+    nothing to fall back to. An explicit tier the deployment does not run is an
+    error rather than a silent substitution -- the substitution is what let a
+    cloud_gpu request run on a local subprocess.
+    """
+    permitted = _PERMITTED[mode]
     if requested != "auto":
-        if requested not in allowed:
+        if requested not in permitted:
             raise ValueError(
-                f"compute_tier '{requested}' is not allowed by this deployment "
-                f"(allowed: {list(allowed)})"
+                f"compute_tier '{requested}' is not available: this deployment "
+                f"runs OPTIMIZATION_TIER={mode}"
             )
         return requested
-    ideal = _ideal_auto_tier(score, thresholds)
-    if ideal in allowed:
-        return ideal
-    # Nearest-allowed fallback: scan from the ideal tier toward more capable,
-    # then toward cheaper, returning the first allowed tier.
-    order = list(_TIER_ORDER)
-    idx = order.index(ideal)
-    for candidate in order[idx:] + order[:idx][::-1]:
-        if candidate in allowed:
-            return candidate
-    raise ValueError(f"no allowed tier among {list(allowed)}")
+    if mode == OptimizationMode.CLOUD_AUTO.value:
+        return (
+            ComputeTier.CLOUD_CPU.value
+            if score < _GPU_SIZE_THRESHOLD
+            else ComputeTier.CLOUD_GPU.value
+        )
+    return mode

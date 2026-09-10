@@ -1,5 +1,7 @@
 """Unit tests for the shared bootstrap helpers."""
 
+import pytest
+
 from google_meridian_mcp_server.bootstrap import (
     build_discovery_cache,
     build_executor,
@@ -44,7 +46,9 @@ def test_build_registry_gcs(tmp_path, monkeypatch):
         "_default_client",
         staticmethod(lambda: object()),
     )
-    cfg = _cfg(tmp_path, registry_backend="gcs", gcs_bucket="b", gcs_models_prefix="p/")
+    cfg = _cfg(
+        tmp_path, persistence_backend="gcs", gcs_bucket="b", gcs_models_prefix="p/"
+    )
     assert isinstance(build_registry(cfg), GcsOptimizationRunRegistry)
 
 
@@ -54,18 +58,39 @@ def test_build_executor_local():
     assert ex.__class__.__name__ == "AsyncSubprocessExecutor"
 
 
-def test_build_executor_cloud_only():
-    cfg = RuntimeConfig(
+def _cloud_cfg(**over):
+    base = dict(
         persistence_backend="gcs",
         gcs_bucket="b",
         gcs_models_prefix="m/",
-        registry_backend="gcs",
-        optimization_allowed_tiers=("cloud_cpu",),
         cloud_run_project="example-dev-project",
         cloud_run_region="us-central1",
         cloud_run_job_cpu="opt-cpu",
+        cloud_run_job_gpu="opt-gpu",
     )
+    base.update(over)
+    return RuntimeConfig(**base)
+
+
+@pytest.mark.parametrize("tier", ["cloud_cpu", "cloud_gpu", "cloud_auto"])
+def test_every_non_local_mode_builds_the_cloud_executor(tier):
+    """Defect 2: OPTIMIZATION_ALLOWED_TIERS=local,cloud_gpu built the LOCAL
+    executor and then ran cloud_gpu runs on it. One mode per deployment makes
+    the executor and the resolved tier agree by construction."""
     ex = build_executor(
-        cfg, _FakeRegistry(), jobs_client=object(), executions_client=object()
+        _cloud_cfg(optimization_tier=tier),
+        _FakeRegistry(),
+        jobs_client=object(),
+        executions_client=object(),
     )
     assert ex.__class__.__name__ == "CloudRunJobExecutor"
+
+
+def test_local_mode_builds_the_subprocess_executor():
+    cfg = RuntimeConfig(
+        persistence_backend="local", local_models_root="/m", optimization_tier="local"
+    )
+    assert (
+        build_executor(cfg, _FakeRegistry()).__class__.__name__
+        == "AsyncSubprocessExecutor"
+    )

@@ -61,7 +61,7 @@ variable "build_context" {
 
 variable "enable_gpu_job" {
   type        = bool
-  description = "Provision the GPU (L4) worker job. Disabled by default: the default optimization_allowed_tiers (cloud_cpu) never invokes it and L4 quota is not guaranteed. To enable: set to true AND add cloud_gpu to optimization_allowed_tiers AND ensure L4 quota in the region."
+  description = "Provision the GPU (L4) worker job. Disabled by default: the default optimization_tier (cloud_cpu) never invokes it and L4 quota is not guaranteed. To enable: set to true AND set optimization_tier to cloud_gpu (or cloud_auto) AND ensure L4 quota in the region."
   default     = false
 }
 
@@ -123,15 +123,29 @@ variable "gpu_job_timeout" {
 }
 
 # --- Optimization tiers (server env) ---
-variable "optimization_allowed_tiers" {
+variable "optimization_tier" {
   type        = string
-  description = "Comma-separated tiers the hosted server permits, e.g. cloud_cpu,cloud_gpu."
+  description = "Where this deployment runs optimizations: local | cloud_cpu | cloud_gpu | cloud_auto. cloud_auto picks CPU or GPU by problem size. Defaults to cloud_cpu, not the code default of local -- Terraform describes a cloud deployment, and mirroring the code default here would silently move every existing deployment to the local tier on apply."
   default     = "cloud_cpu"
 }
 
-variable "optimization_default_tier" {
-  type    = string
-  default = "auto"
+variable "optimization_max_parallel" {
+  type        = number
+  description = "Caps how many Cloud Run Job executions the server will have in flight at once, across whichever tier is active. Over-cap runs are queued (QUEUED), not rejected. Service only -- a job container runs one already-dispatched run and has no notion of siblings."
+  default     = 2
+}
+
+# --- Analysis worker (server env) ---
+variable "analysis_worker_timeout" {
+  type        = number
+  description = "Seconds the server waits for a synchronous analysis worker before killing it and returning a worker_timeout envelope. The service request timeout is derived from this (plus a delivery margin), so raising it here also raises the request timeout."
+  default     = 300
+}
+
+variable "analysis_max_response_bytes" {
+  type        = number
+  description = "Maximum size in bytes of a single analysis response, measured on the worker's serialized resp.json. Over it, the tool returns a response_too_large error naming the filters that would narrow the request -- it does not truncate. Must be set here: the harness's larger client-side pin never reaches a deployed server, the same reason result_cache_enabled is mirrored here."
+  default     = 4194304
 }
 
 # --- Caching ---

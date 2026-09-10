@@ -18,6 +18,11 @@ from google_meridian_mcp_server.persistence.optimization_run_registry import (
     RunNotFoundError,
 )
 
+# A RUNNING run whose heartbeat is older than this is reconciled as crashed.
+# Was OPTIMIZATION_HEARTBEAT_STALE_SECONDS: an internal liveness detail, not a
+# deployment input.
+DEFAULT_HEARTBEAT_STALE_SECONDS = 60
+
 
 class BaseExecutor(abc.ABC):
     def __init__(
@@ -25,7 +30,7 @@ class BaseExecutor(abc.ABC):
         registry: OptimizationRunRegistry,
         *,
         max_parallel: int,
-        heartbeat_stale_seconds: int,
+        heartbeat_stale_seconds: int = DEFAULT_HEARTBEAT_STALE_SECONDS,
     ) -> None:
         self._registry = registry
         self._max_parallel = max_parallel

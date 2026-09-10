@@ -477,10 +477,10 @@ def register_tools(mcp: FastMCP) -> None:
         compute_tier: Annotated[
             Literal["auto", "local", "cloud_cpu", "cloud_gpu"],
             Field(
-                description="Where to run the optimization. 'auto' (default) picks "
-                "the cheapest allowed backend from the problem size; 'local' runs "
-                "in a subprocess on the server host; 'cloud_cpu'/'cloud_gpu' dispatch "
-                "a Cloud Run Job (only if the server enables those tiers).",
+                description="Where to run the optimization. 'auto' (default) runs where "
+                "this deployment is configured to run (OPTIMIZATION_TIER); under "
+                "'cloud_auto' it picks CPU or GPU by problem size. An explicit tier "
+                "the deployment does not run is rejected.",
             ),
         ] = "auto",
         force_rerun: Annotated[
@@ -541,7 +541,10 @@ def register_tools(mcp: FastMCP) -> None:
         compute_tier: Annotated[
             Literal["auto", "local", "cloud_cpu", "cloud_gpu"],
             Field(
-                description="Where to run; 'auto' (default) picks the cheapest allowed backend."
+                description="Where to run the optimization. 'auto' (default) runs where "
+                "this deployment is configured to run (OPTIMIZATION_TIER); under "
+                "'cloud_auto' it picks CPU or GPU by problem size. An explicit tier "
+                "the deployment does not run is rejected.",
             ),
         ] = "auto",
         force_rerun: Annotated[

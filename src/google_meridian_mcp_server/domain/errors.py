@@ -157,11 +157,6 @@ class WorkerTimeoutError(MeridianMcpError):
         super().__init__("worker_timeout", message, details)
 
 
-class ServerBusyError(MeridianMcpError):
-    def __init__(self, message: str = "server is busy", details: dict | None = None):
-        super().__init__("server_busy", message, details)
-
-
 class InternalError(MeridianMcpError):
     def __init__(self, message: str = "internal error", details: dict | None = None):
         super().__init__("internal_error", message, details)

@@ -22,23 +22,6 @@ def _read_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _read_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
-    value = os.getenv(name)
-    if not value:
-        return default
-    return tuple(item.strip() for item in value.split(",") if item.strip())
-
-
-def _read_thresholds(name: str, default: tuple[int, int]) -> tuple[int, int]:
-    value = os.getenv(name)
-    if not value:
-        return default
-    parts = [int(item.strip()) for item in value.split(",")]
-    if len(parts) != 2:
-        raise ValueError(f"{name} must be 'T_local,T_gpu'")
-    return (parts[0], parts[1])
-
-
 def load_config() -> RuntimeConfig:
     """Build a RuntimeConfig from environment variables."""
     result_cache_ttl = os.getenv("RESULT_CACHE_TTL_SECONDS")
@@ -49,36 +32,19 @@ def load_config() -> RuntimeConfig:
         local_models_root=os.getenv("LOCAL_MODELS_ROOT"),
         gcs_bucket=os.getenv("GCS_BUCKET"),
         gcs_models_prefix=os.getenv("GCS_MODELS_PREFIX"),
-        discovery_ttl_seconds=int(os.getenv("DISCOVERY_TTL_SECONDS", "7200")),
         model_cache_root=os.getenv("MODEL_CACHE_ROOT", "/tmp/mmm-models"),
         result_cache_enabled=_read_bool("RESULT_CACHE_ENABLED", True),
         result_cache_ttl_seconds=int(result_cache_ttl) if result_cache_ttl else None,
-        registry_backend=os.getenv("REGISTRY_BACKEND"),
         optimization_runs_root=os.getenv("OPTIMIZATION_RUNS_ROOT", "./optimizations"),
         optimization_gcs_prefix=os.getenv("OPTIMIZATION_GCS_PREFIX", "optimizations/"),
-        optimization_allowed_tiers=_read_csv("OPTIMIZATION_ALLOWED_TIERS", ("local",)),
-        optimization_default_tier=os.getenv("OPTIMIZATION_DEFAULT_TIER", "auto"),
+        optimization_tier=os.getenv("OPTIMIZATION_TIER", "local"),
         optimization_max_parallel=int(os.getenv("OPTIMIZATION_MAX_PARALLEL", "2")),
-        optimization_size_thresholds=_read_thresholds(
-            "OPTIMIZATION_SIZE_THRESHOLDS", (10_000_000, 100_000_000)
-        ),
-        optimization_heartbeat_stale_seconds=int(
-            os.getenv("OPTIMIZATION_HEARTBEAT_STALE_SECONDS", "60")
-        ),
         cloud_run_project=os.getenv("CLOUD_RUN_PROJECT"),
         cloud_run_region=os.getenv("CLOUD_RUN_REGION"),
         cloud_run_job_cpu=os.getenv("CLOUD_RUN_JOB_CPU"),
         cloud_run_job_gpu=os.getenv("CLOUD_RUN_JOB_GPU"),
-        analysis_max_parallel=int(os.getenv("ANALYSIS_MAX_PARALLEL", "2")),
         analysis_worker_timeout=float(os.getenv("ANALYSIS_WORKER_TIMEOUT", "300")),
-        analysis_queue_wait_timeout=float(
-            os.getenv("ANALYSIS_QUEUE_WAIT_TIMEOUT", "30")
-        ),
         analysis_max_response_bytes=int(
             os.getenv("ANALYSIS_MAX_RESPONSE_BYTES", str(4 * 1024 * 1024))
-        ),
-        analysis_workdir_root=os.getenv("ANALYSIS_WORKDIR_ROOT", "/tmp/mmm-analysis"),
-        analysis_workdir_ttl_seconds=int(
-            os.getenv("ANALYSIS_WORKDIR_TTL_SECONDS", "604800")
         ),
     )

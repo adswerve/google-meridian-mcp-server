@@ -48,7 +48,7 @@ It does not replace the per-tool descriptions above, which remain the source of 
 
 ### Architecture
 
-A single `terraform apply` builds and pushes all three images via Cloud Build (content-hash tags), then provisions Artifact Registry, GCS, the Cloud Run Service (MCP server), and the Cloud Run Jobs (CPU worker; GPU opt-in). Per-client inputs (`terraform.tfvars`, `backend.hcl`) are never committed. GPU is opt-in (`enable_gpu_job = true` + add `cloud_gpu` to `optimization_allowed_tiers` + L4 quota in the region). The default apply provisions the CPU worker only.
+A single `terraform apply` builds and pushes all three images via Cloud Build (content-hash tags), then provisions Artifact Registry, GCS, the Cloud Run Service (MCP server), and the Cloud Run Jobs (CPU worker; GPU opt-in). Per-client inputs (`terraform.tfvars`, `backend.hcl`) are never committed. GPU is opt-in (`enable_gpu_job = true` + `optimization_tier = "cloud_gpu"` (or `"cloud_auto"`) + L4 quota in the region). The default apply provisions the CPU worker only.
 
 **Service account:** the service and jobs run as a single identity. By default (`service_account_id` unset) that is the project's compute engine default service account and Terraform creates/binds nothing — it relies on that SA's project `Editor` grant. Set `service_account_id` to a name (e.g. `meridian-mcp`) and Terraform instead creates or adopts a dedicated SA in the project and grants it least-privilege roles (`run.developer`, `storage.objectAdmin`, and `actAs` on itself). `terraform output service_account` reports which identity is in use. This replaces the previous two-SA (`meridian-mcp-server` + `meridian-opt-worker`) layout. Because the dedicated SA is created by an in-apply `gcloud` step (mirroring the image build), `terraform destroy` removes its role bindings but leaves the SA itself in place — just as it leaves built images in Artifact Registry; delete it manually with `gcloud iam service-accounts delete` if you want it gone.
 
@@ -144,17 +144,34 @@ For local filesystem-backed development, a minimal `.env` looks like this:
 ```dotenv
 MCP_TRANSPORT=streamable-http
 MCP_HOST=127.0.0.1
-MCP_PORT=8000
 PERSISTENCE_BACKEND=local
 LOCAL_MODELS_ROOT=./models
-MODEL_CACHE_ROOT=/tmp/mmm-models
-DISCOVERY_TTL_SECONDS=7200
-RESULT_CACHE_ENABLED=true
-# maximum bytes for one analysis response, measured on the worker's serialized resp.json; over it returns a response_too_large error
-ANALYSIS_MAX_RESPONSE_BYTES=4194304
+OPTIMIZATION_TIER=local
 ```
 
 `.env` belongs at the project root because the runtime loads it from there explicitly.
+
+### Migrating an existing `.env`
+
+`load_dotenv` silently ignores keys it doesn't recognize, so a stale `.env` from before this
+change degrades to defaults instead of failing at startup. Update these by hand:
+
+| Old | New |
+|---|---|
+| `OPTIMIZATION_ALLOWED_TIERS=cloud_cpu` | `OPTIMIZATION_TIER=cloud_cpu` |
+| `OPTIMIZATION_ALLOWED_TIERS=local,cloud_cpu` | pick one; the mixed form never worked |
+| `OPTIMIZATION_DEFAULT_TIER=...` | delete; it never influenced routing |
+| `REGISTRY_BACKEND=...` | delete; the run registry follows `PERSISTENCE_BACKEND` |
+| `MCP_PORT=...` | `PORT=...` |
+| `ANALYSIS_MAX_PARALLEL`, `ANALYSIS_QUEUE_WAIT_TIMEOUT` | delete |
+| `DISCOVERY_TTL_SECONDS`, `OPTIMIZATION_SIZE_THRESHOLDS`, `OPTIMIZATION_HEARTBEAT_STALE_SECONDS`, `ANALYSIS_WORKDIR_ROOT`, `ANALYSIS_WORKDIR_TTL_SECONDS` | delete; now module constants |
+
+One case does not degrade benignly. A cloud operator whose `.env` still says
+`OPTIMIZATION_ALLOWED_TIERS=cloud_cpu` gets `OPTIMIZATION_TIER` unset, hence `local`. That is
+fully legal under the new validation — the local tier imposes no requirements, and `gcs`
+persistence with a local optimization tier is supported — so startup cannot catch it. The server
+then runs every optimization as a subprocess on the Cloud Run instance, surfacing as OOM or a
+request timeout rather than a config error.
 
 ### Add a model
 
@@ -194,21 +211,24 @@ python -m google_meridian_mcp_server.server
 
 ### Local optimization tier
 
-By default all optimization runs execute in a local subprocess (`OPTIMIZATION_ALLOWED_TIERS=local`, `REGISTRY_BACKEND=local`). No extra configuration is needed beyond the defaults in `.env.example`.
+By default `OPTIMIZATION_TIER=local` with `PERSISTENCE_BACKEND=local` — nothing else needed
+beyond the defaults in `.env.example`.
 
-To offload heavy runs to Cloud Run Jobs, enable GCS registry and set Cloud Run coordinates in `.env`:
+To offload to Cloud Run Jobs:
 
 ```dotenv
 PERSISTENCE_BACKEND=gcs
 GCS_BUCKET=<bucket>
-REGISTRY_BACKEND=gcs
-OPTIMIZATION_GCS_PREFIX=optimizations/
-OPTIMIZATION_ALLOWED_TIERS=local,cloud_cpu,cloud_gpu
+GCS_MODELS_PREFIX=models/
+OPTIMIZATION_TIER=cloud_cpu
 CLOUD_RUN_PROJECT=<project_id>
 CLOUD_RUN_REGION=us-central1
 CLOUD_RUN_JOB_CPU=meridian-opt-cpu
-CLOUD_RUN_JOB_GPU=meridian-opt-gpu
 ```
+
+`cloud_gpu` swaps `CLOUD_RUN_JOB_CPU` for `CLOUD_RUN_JOB_GPU`; `cloud_auto` needs both. A cloud
+tier requires `PERSISTENCE_BACKEND=gcs` — a Cloud Run Job worker cannot read the server's local
+disk, so it needs the run registry and models in GCS.
 
 Cloud tiers use a JAX backend (workers run inside a Cloud Run Job execution). Both the CPU tier and the GPU tier (NVIDIA L4) have run a real optimization end-to-end on Cloud Run (one fixture, one run per tier; CPU ~50s compute, GPU ~65s compute) — functional verification only, not a performance comparison between them.
 
@@ -339,12 +359,29 @@ Images are built and tagged automatically (content hash) — there are no image 
 | `gcs_models_prefix` | `models/` | Key prefix where fitted models live. |
 | `optimization_gcs_prefix` | `optimizations/` | Key prefix for optimization run files. |
 | `artifact_registry_repo` | `meridian` | Artifact Registry docker repository id. |
-| `enable_gpu_job` | `false` | Provision the GPU (L4) worker. Set `true` AND add `cloud_gpu` to `optimization_allowed_tiers` AND ensure L4 quota. |
-| `optimization_allowed_tiers` | `cloud_cpu` | Comma-separated tiers the server permits (e.g. `cloud_cpu,cloud_gpu`). |
-| `optimization_default_tier` | `auto` | Default tier when a request does not specify one. |
+| `enable_gpu_job` | `false` | Provision the GPU (L4) worker. Set `true` AND `optimization_tier = "cloud_gpu"` (or `"cloud_auto"`) AND ensure L4 quota. |
+| `optimization_tier` | `cloud_cpu` | Where this deployment runs optimizations: `local` \| `cloud_cpu` \| `cloud_gpu` \| `cloud_auto`. |
 | `allow_unauthenticated` | `false` | Grant `roles/run.invoker` to `allUsers` (live tooling test only; gate behind auth for real clients). |
 | `result_cache_enabled` | `true` | Whether the server caches analysis results (sets `RESULT_CACHE_ENABLED`). Leave `true` for real client installs; set `false` only for verification work needing cold, uncached responses. |
 | `labels` | `{}` | Labels applied to created resources. |
+| `optimization_max_parallel` | `2` | Max concurrent optimization worker launches. |
+| `analysis_worker_timeout` | `300` | Seconds an analysis worker may run before the request fails as `worker_timeout`. |
+| `analysis_max_response_bytes` | `4194304` | Max bytes for one analysis response, measured on the worker's serialized `resp.json`. |
+
+The service's request `timeout` is derived as `analysis_worker_timeout + 30s`, so the two cannot
+drift and a worker timeout always reaches the client as an actionable `worker_timeout` envelope
+rather than a dropped connection.
+
+**Analysis concurrency is the operator's job.** The server imposes no in-process limit on
+concurrent analysis requests — the semaphore and `ANALYSIS_MAX_PARALLEL` are gone, and
+concurrency is now a deployment policy, not a library one. Peak memory is therefore N concurrent
+requests × (framework + full model); sizing that is the operator's responsibility. On Cloud Run
+the backpressure knob is `max_instance_request_concurrency` on the service, which this stack
+leaves **unset** — so Cloud Run's default of 80 requests per instance applies, against
+`max_instance_count = 2` (`cloud_run_service.tf:12-13`). An operator who wants a bound should set
+that field; it is the right layer for it. `OPTIMIZATION_MAX_PARALLEL` (`optimization_max_parallel`
+above) is the contrast: it is the only in-process concurrency bound left, and it bounds
+optimization *worker launches*, not analysis requests.
 
 ### Worker environment contract
 
@@ -353,7 +390,6 @@ Set in the Terraform-managed job definition:
 | Variable | Description |
 |----------|-------------|
 | `PERSISTENCE_BACKEND` | Always `gcs` for cloud workers |
-| `REGISTRY_BACKEND` | Always `gcs` for cloud workers |
 | `GCS_BUCKET` | Bucket for model storage and optimization run files |
 | `GCS_MODELS_PREFIX` | Prefix where fitted models are stored |
 | `OPTIMIZATION_GCS_PREFIX` | Prefix for optimization run manifests/state/results |
@@ -375,36 +411,40 @@ The optimization tools submit and track long-running Meridian `BudgetOptimizer` 
 | Tier | Runs on | Use |
 |------|---------|-----|
 | `local` | Subprocess (default) | Local development; no GCP required. |
-| `cloud_cpu` | Cloud Run Job (CPU) | Production runs; requires `REGISTRY_BACKEND=gcs`. |
-| `cloud_gpu` | Cloud Run Job (NVIDIA L4) | Large or fast runs; requires `enable_gpu_job = true` and L4 quota. |
+| `cloud_cpu` | Cloud Run Job (CPU) | Production runs; requires `PERSISTENCE_BACKEND=gcs`. |
+| `cloud_gpu` | Cloud Run Job (NVIDIA L4) | Large or fast runs; requires `PERSISTENCE_BACKEND=gcs`, `enable_gpu_job = true`, and L4 quota. |
 
 Every tier runs Meridian on the **JAX** backend with 64-bit precision. There is
 no per-tier engine choice: `OPTIMIZATION_BACKEND_LOCAL` /
 `OPTIMIZATION_BACKEND_CLOUD_CPU` / `OPTIMIZATION_BACKEND_CLOUD_GPU` were
 removed in the Meridian 2.0 upgrade.
 
-To reach a specific tier, pass `compute_tier` on the tool call.
-`OPTIMIZATION_DEFAULT_TIER` only validates at startup that a named tier is
-allowed; it does not influence routing. With `auto`, the tier is derived from
-problem size, so a small model always lands on the cheapest allowed tier.
+To reach a specific tier, pass `compute_tier` on the tool call. `auto` runs wherever the
+deployment is configured to run (`OPTIMIZATION_TIER`): under `local`, `cloud_cpu` or `cloud_gpu`,
+`auto` is just that tier. Only under `cloud_auto` does problem size choose anything, and then only
+between CPU and GPU.
 
-**Which tier does `auto` pick?**
+**Which tier does `cloud_auto` pick between CPU and GPU?**
 
-Selection multiplies `geos × time_periods × channels × posterior_samples` and compares it to `OPTIMIZATION_SIZE_THRESHOLDS` (default `1e7`, `1e8`). Controls, KPI, and spend columns do **not** affect it; `channels` = paid media + reach/frequency channels.
+Selection multiplies `geos × time_periods × channels × posterior_samples` and compares it to the
+single module constant `_GPU_SIZE_THRESHOLD` (`1e8`) in `execution/routing.py` — not an env var.
+Controls, KPI, and spend columns do **not** affect it; `channels` = paid media + reach/frequency
+channels.
 
-The grid below assumes a typical model — **weekly data over ~2 years (~104 periods)** and **7,000 posterior samples** (7 chains × 1,000 draws):
+The grid below assumes a typical model — **weekly data over ~2 years (~104 periods)** and **7,000 posterior samples** (7 chains × 1,000 draws) — and shows what `cloud_auto` picks between the two cloud tiers:
 
 | channels ↓ \ geos → | 1 (national) | 5 | 10 | 25 | 50 | 100 |
 |---|---|---|---|---|---|---|
-| **5** | local | cloud_cpu | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu |
-| **8** | local | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu |
-| **10** | local | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu |
+| **5** | cloud_cpu | cloud_cpu | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu |
+| **8** | cloud_cpu | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu |
+| **10** | cloud_cpu | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu |
 | **15** | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu | cloud_gpu |
 | **20** | cloud_cpu | cloud_cpu | cloud_gpu | cloud_gpu | cloud_gpu | cloud_gpu |
 
-**Rule of thumb** (this horizon and sampling): `local` when `geos × channels ≲ 14`, `cloud_gpu` when `geos × channels ≳ 137`, and `cloud_cpu` in between — so a national model (1 geo) stays local up to ~13 channels. Other cadences scale the boundaries: 3-year weekly (~156 periods) tips to `cloud_gpu` at `geos × channels ≳ 92`; monthly data keeps far more models on `cloud_cpu`. Longer histories or more posterior draws push runs toward the heavier tiers.
-
-The grid shows the *ideal* pick assuming **all three tiers are enabled**. A deployment that restricts `OPTIMIZATION_ALLOWED_TIERS` (the deployed default is `cloud_cpu` only) makes `auto` fall back to the nearest allowed tier, and an explicit `compute_tier` on `run_optimization` overrides `auto` entirely (subject to the allowed set).
+**Rule of thumb** (this horizon and sampling): `cloud_gpu` when `geos × channels ≳ 137`, and
+`cloud_cpu` below that. Other cadences scale the boundary: 3-year weekly (~156 periods) tips to
+`cloud_gpu` at `geos × channels ≳ 92`; monthly data keeps far more models on `cloud_cpu`. Longer
+histories or more posterior draws push runs toward `cloud_gpu`.
 
 **Validation gates**
 

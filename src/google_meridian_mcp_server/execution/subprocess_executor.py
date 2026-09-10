@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from google_meridian_mcp_server.domain.optimization import OptimizationRun, RunStatus
-from google_meridian_mcp_server.execution.base_executor import BaseExecutor
+from google_meridian_mcp_server.execution.base_executor import (
+    DEFAULT_HEARTBEAT_STALE_SECONDS,
+    BaseExecutor,
+)
 from google_meridian_mcp_server.execution.base_subprocess import BaseSubprocessExecutor
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
@@ -26,7 +29,7 @@ class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
         registry: OptimizationRunRegistry,
         *,
         max_parallel: int,
-        heartbeat_stale_seconds: int,
+        heartbeat_stale_seconds: int = DEFAULT_HEARTBEAT_STALE_SECONDS,
         log_root: str | Path = DEFAULT_LOG_ROOT,
         python_executable: str | None = None,
     ) -> None:

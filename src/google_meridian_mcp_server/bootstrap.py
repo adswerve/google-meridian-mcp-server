@@ -22,7 +22,7 @@ def build_provider(cfg: RuntimeConfig):
 def build_discovery_cache(cfg: RuntimeConfig) -> DiscoveryCache:
     """Server-side: discovery only, no facades/materialization (never pulls Meridian)."""
     provider = build_provider(cfg)
-    return DiscoveryCache(provider, cfg.discovery_ttl_seconds)
+    return DiscoveryCache(provider)
 
 
 # NOTE: build_worker_catalog (full ModelCatalog with materialization + facades)
@@ -32,7 +32,7 @@ def build_discovery_cache(cfg: RuntimeConfig) -> DiscoveryCache:
 
 
 def build_registry(cfg: RuntimeConfig) -> OptimizationRunRegistry:
-    if cfg.resolved_registry_backend == PersistenceBackend.GCS.value:
+    if cfg.persistence_backend == PersistenceBackend.GCS.value:
         from google_meridian_mcp_server.persistence.optimization_run_registry import (
             GcsOptimizationRunRegistry,
         )
@@ -48,10 +48,9 @@ def build_executor(
     jobs_client=None,
     executions_client=None,
 ):
-    from google_meridian_mcp_server.domain.models import ComputeTier
+    from google_meridian_mcp_server.domain.models import OptimizationMode
 
-    allowed = set(cfg.optimization_allowed_tiers)
-    if ComputeTier.LOCAL.value in allowed:
+    if cfg.optimization_tier == OptimizationMode.LOCAL.value:
         from google_meridian_mcp_server.execution.subprocess_executor import (
             AsyncSubprocessExecutor,
         )
@@ -59,7 +58,6 @@ def build_executor(
         return AsyncSubprocessExecutor(
             registry,
             max_parallel=cfg.optimization_max_parallel,
-            heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
         )
     from google_meridian_mcp_server.execution.cloud_run_executor import (
         CloudRunJobExecutor,
@@ -69,7 +67,6 @@ def build_executor(
         registry,
         cfg=cfg,
         max_parallel=cfg.optimization_max_parallel,
-        heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
         jobs_client=jobs_client,
         executions_client=executions_client,
     )

@@ -24,9 +24,11 @@ module "meridian_stack" {
   # deploy/terraform, so ../.. is the repository root.
   build_context = abspath("${path.root}/../..")
 
-  optimization_allowed_tiers = var.optimization_allowed_tiers
-  optimization_default_tier  = var.optimization_default_tier
-  allow_unauthenticated      = var.allow_unauthenticated
+  optimization_tier           = var.optimization_tier
+  optimization_max_parallel   = var.optimization_max_parallel
+  analysis_worker_timeout     = var.analysis_worker_timeout
+  analysis_max_response_bytes = var.analysis_max_response_bytes
+  allow_unauthenticated       = var.allow_unauthenticated
   result_cache_enabled        = var.result_cache_enabled
 
   labels = var.labels

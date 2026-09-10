@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -16,6 +15,7 @@ from google_meridian_mcp_server.config import load_config
 from google_meridian_mcp_server.domain.models import Transport
 from google_meridian_mcp_server.execution.subprocess_executor import DEFAULT_LOG_ROOT
 from google_meridian_mcp_server.execution.sync_subprocess_executor import (
+    DEFAULT_WORKDIR_ROOT,
     SyncSubprocessExecutor,
     sweep_stale_entries,
 )
@@ -70,11 +70,8 @@ async def _lifespan(server: FastMCP):
         log.warning("startup orphan reconcile failed", exc_info=True)
 
     analysis_runner = SyncSubprocessExecutor(
-        semaphore=asyncio.Semaphore(cfg.analysis_max_parallel),
         run_timeout=cfg.analysis_worker_timeout,
-        queue_wait_timeout=cfg.analysis_queue_wait_timeout,
         max_response_bytes=cfg.analysis_max_response_bytes,
-        workdir_root=cfg.analysis_workdir_root,
         env_base={
             "PERSISTENCE_BACKEND": cfg.persistence_backend,
             **(
@@ -96,8 +93,8 @@ async def _lifespan(server: FastMCP):
     # log files, run once at startup (not on every spawn). Best-effort startup
     # hygiene, same posture as reconcile_orphans above.
     try:
-        sweep_stale_entries(cfg.analysis_workdir_root, cfg.analysis_workdir_ttl_seconds)
-        sweep_stale_entries(DEFAULT_LOG_ROOT, cfg.analysis_workdir_ttl_seconds)
+        sweep_stale_entries(DEFAULT_WORKDIR_ROOT)
+        sweep_stale_entries(DEFAULT_LOG_ROOT)
     except Exception:  # noqa: BLE001 - sweep is best-effort startup hygiene
         log.warning("startup workdir/log sweep failed", exc_info=True)
 
@@ -140,7 +137,7 @@ def run_server() -> None:
         return
 
     host = os.getenv("MCP_HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", os.getenv("MCP_PORT", "8000")))
+    port = int(os.getenv("PORT", "8000"))
     mcp.run(transport="http", host=host, port=port)
 
 
