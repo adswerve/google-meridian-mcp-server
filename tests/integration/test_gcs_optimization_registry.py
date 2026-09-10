@@ -93,3 +93,24 @@ def test_gcs_claim_dispatch_is_create_if_absent(registry):
     assert registry.claim_dispatch(d) is True
     assert registry.claim_dispatch(d) is False
     assert registry.get_dispatch("m-1").execution_name is None
+
+
+def test_gcs_delete_removes_the_dispatch_document():
+    """The GCS provider deletes a hardcoded blob list, so a new artifact leaks
+    unless it is added. The local provider deletes by directory, which is the
+    trap: live_validate's delete-verify-gone step would pass while the only
+    backend cloud tiers can use leaked the document forever."""
+    client = FakeGcsClient()
+    registry = GcsOptimizationRunRegistry(
+        "bucket", "optimizations/", client_factory=lambda: client
+    )
+    registry.create(_run())
+    registry.write_state(OptimizationRunState(run_id="m-1", status=RunStatus.QUEUED))
+    registry.claim_dispatch(
+        OptimizationRunDispatch(run_id="m-1", claimed_at="2026-09-10T00:00:00+00:00")
+    )
+
+    registry.delete("m-1")
+
+    leftover = [n for n in client._store if "runs/m-1" in n]
+    assert leftover == []

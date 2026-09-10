@@ -741,3 +741,95 @@ def test_recovered_runs_are_dispatched_oldest_first(tmp_path):
     env = {e.name: e.value for e in jobs.calls[0].overrides.container_overrides[0].env}
     assert env["OPTIMIZATION_RUN_ID"] == "m-old"  # which, not just how many
     assert reg.get_dispatch("m-new") is None
+
+
+def test_cancel_terminates_an_execution_this_process_never_launched(tmp_path):
+    """The billing leak. Before this, cancel wrote CANCELED and returned while
+    the Cloud Run execution kept running -- so a test that checked only the
+    tool response would confirm the bug rather than the fix."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    class _RecordingExecutions:
+        def __init__(self):
+            self.canceled = []
+
+        def get_execution(self, name):
+            return SimpleNamespace(completion_time=None)
+
+        def cancel_execution(self, name):
+            self.canceled.append(name)
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _run("cloud_cpu")
+    reg.create(run)
+    reg.write_state(
+        OptimizationRunState(
+            run_id=run.run_id, status=RunStatus.RUNNING, heartbeat_at=_now()
+        )
+    )
+    reg.claim_dispatch(OptimizationRunDispatch(run_id=run.run_id, claimed_at=_now()))
+    reg.write_dispatch(
+        OptimizationRunDispatch(
+            run_id=run.run_id, claimed_at=_now(), execution_name="exec-live"
+        )
+    )
+
+    executions = _RecordingExecutions()
+    ex = CloudRunJobExecutor(
+        reg,
+        cfg=_cfg(),
+        max_parallel=1,
+        jobs_client=_FakeJobs(),
+        executions_client=executions,
+    )  # fresh process: _handles is empty
+
+    ex.cancel(run.run_id)
+
+    assert executions.canceled == ["exec-live"]
+    assert reg.get_state(run.run_id).status is RunStatus.CANCELED
+
+
+def test_cancel_of_a_completed_run_does_not_touch_the_execution(tmp_path):
+    """OptimizationService.delete calls cancel() first (optimization_service.py:332),
+    so without a state check every delete of a finished cloud run would fire a
+    pointless cancel_execution against a terminal execution."""
+    from google_meridian_mcp_server.persistence.optimization_run_registry import (
+        LocalOptimizationRunRegistry,
+    )
+
+    class _RecordingExecutions:
+        def __init__(self):
+            self.canceled = []
+
+        def get_execution(self, name):
+            return SimpleNamespace(completion_time="2026-09-10T01:00:00Z")
+
+        def cancel_execution(self, name):
+            self.canceled.append(name)
+
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    run = _run("cloud_cpu")
+    reg.create(run)
+    reg.write_state(OptimizationRunState(run_id=run.run_id, status=RunStatus.COMPLETED))
+    reg.claim_dispatch(OptimizationRunDispatch(run_id=run.run_id, claimed_at=_now()))
+    reg.write_dispatch(
+        OptimizationRunDispatch(
+            run_id=run.run_id, claimed_at=_now(), execution_name="exec-done"
+        )
+    )
+
+    executions = _RecordingExecutions()
+    ex = CloudRunJobExecutor(
+        reg,
+        cfg=_cfg(),
+        max_parallel=1,
+        jobs_client=_FakeJobs(),
+        executions_client=executions,
+    )
+
+    ex.cancel(run.run_id)
+
+    assert executions.canceled == []
+    assert reg.get_state(run.run_id).status is RunStatus.COMPLETED

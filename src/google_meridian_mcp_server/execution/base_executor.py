@@ -73,17 +73,26 @@ class BaseExecutor(abc.ABC):
     def cancel(self, run_id: str) -> None:
         with self._lock:
             handle = self._handles.pop(run_id, None)
-            if handle is not None:
-                self._terminate(handle)
             try:
                 self._queue.remove(run_id)
             except ValueError:
                 pass
             state = self._registry.get_state(run_id)
-            if state.status in (RunStatus.QUEUED, RunStatus.RUNNING):
-                self._registry.write_state(
-                    OptimizationRunState(run_id=run_id, status=RunStatus.CANCELED)
-                )
+            if state.status not in (RunStatus.QUEUED, RunStatus.RUNNING):
+                return
+            if handle is None:
+                # A cancel can land on any instance -- Cloud Run has no session
+                # affinity -- and this one may never have launched the run.
+                # Without this, cancel wrote CANCELED while the execution kept
+                # billing. get_dispatch is on the registry ABC, and the local
+                # provider returns None because it never writes the document.
+                dispatch = self._registry.get_dispatch(run_id)
+                handle = dispatch.execution_name if dispatch else None
+            if handle is not None:
+                self._terminate(handle)
+            self._registry.write_state(
+                OptimizationRunState(run_id=run_id, status=RunStatus.CANCELED)
+            )
 
     def reconcile_orphans(self) -> None:
         """Startup crash reconciliation for runs left over by a stopped server.

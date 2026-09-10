@@ -372,6 +372,7 @@ class GcsOptimizationRunRegistry(OptimizationRunRegistry):
             f"{prefix}/record.json",
             f"{prefix}/state.json",
             f"{prefix}/result.json",
+            f"{prefix}/dispatch.json",
         ):
             blob = self._blob(name)
             if blob.exists():
