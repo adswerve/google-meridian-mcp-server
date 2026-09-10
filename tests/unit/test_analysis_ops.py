@@ -772,6 +772,52 @@ def test_get_spend_scenario_nonpositive_base_spend_raises():
 # --- worker.run_analysis IPC contract ----------------------------------------
 
 
+class _Utf8Catalog:
+    """Minimal catalog whose facade returns non-ASCII geo and channel names."""
+
+    def get_facade(self, model_id):
+        return self
+
+    def get_interrogator(self, model_id):
+        return self
+
+    def get_contribution_metrics(self, filters):
+        return [
+            {"geo": "München", "channel": "Réseaux Sociaux", "mean": 1.0},
+            {"geo": "東京", "channel": "tv", "mean": 2.0},
+        ]
+
+
+def test_run_analysis_writes_raw_utf8_not_escapes(tmp_path):
+    """Non-ASCII geo and channel names are written as raw UTF-8 bytes.
+
+    Both halves matter: the raw bytes being present, and the \\uXXXX escapes
+    being absent. The negative half is what fails when the flag is reverted.
+    """
+    req_path, resp_path = _write_request(
+        tmp_path,
+        {
+            "operation": "get_contribution",
+            "model_id": "m1",
+            "params": {"output_type": "contribution_metrics", "filters": {}},
+        },
+    )
+
+    rc = worker.run_analysis(req_path, resp_path, catalog=_Utf8Catalog())
+
+    assert rc == 0
+    with open(resp_path, "rb") as f:
+        raw = f.read()
+    # 2-byte Latin and 3-byte CJK classes both exercised.
+    assert "München".encode("utf-8") in raw
+    assert "東京".encode("utf-8") in raw
+    # And no escapes. This is the half that fails on revert.
+    assert rb"\u00fc" not in raw
+    assert rb"\u6771" not in raw
+    # Lossless: the bytes still parse back to the original strings.
+    assert json.loads(raw.decode("utf-8"))["result"]["rows"][0][0] == "München"
+
+
 class _NanFacade:
     def get_contribution_metrics(self, filters):
         assert isinstance(filters, AnalysisFilters)

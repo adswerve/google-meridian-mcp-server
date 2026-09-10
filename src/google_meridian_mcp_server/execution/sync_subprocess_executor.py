@@ -102,7 +102,8 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 req.write_text(
                     json.dumps(
                         {"operation": operation, "model_id": model_id, "params": params}
-                    )
+                    ),
+                    encoding="utf-8",
                 )
                 log_file = open(logp, "w")  # noqa: SIM115
                 # Shield the spawn itself: create_subprocess_exec can fork+exec the
@@ -191,7 +192,7 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 f"no response (exit {rc})", {"log_tail": self._tail(logp)}
             )
         try:
-            payload = json.loads(resp.read_text())
+            payload = json.loads(resp.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             raise WorkerFailedError(
                 f"bad response (exit {rc})", {"log_tail": self._tail(logp)}

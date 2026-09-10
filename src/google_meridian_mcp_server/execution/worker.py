@@ -107,7 +107,7 @@ def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
     from google_meridian_mcp_server.domain.errors import MeridianMcpError
     from google_meridian_mcp_server.execution import analysis_ops
 
-    with open(request_path) as f:
+    with open(request_path, encoding="utf-8") as f:
         req = json.load(f)
 
     rc = 0
@@ -135,8 +135,10 @@ def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
         payload = analysis_ops.sanitize_nan(
             payload
         )  # whole payload, incl. error details
-        body = json.dumps(payload, separators=(",", ":"), allow_nan=False)
-        with open(tmp, "w") as f:
+        body = json.dumps(
+            payload, separators=(",", ":"), allow_nan=False, ensure_ascii=False
+        )
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(body)
     except Exception as exc:  # noqa: BLE001 - serialization must never leave "no response"
         # sanitize_nan/json.dump raised (e.g. an object type sanitize_nan
@@ -153,7 +155,7 @@ def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
                 "details": {},
             },
         }
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(fallback, f, allow_nan=False)
         rc = 1
     os.replace(tmp, response_path)
