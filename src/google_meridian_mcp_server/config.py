@@ -32,7 +32,6 @@ def load_config() -> RuntimeConfig:
         local_models_root=os.getenv("LOCAL_MODELS_ROOT"),
         gcs_bucket=os.getenv("GCS_BUCKET"),
         gcs_models_prefix=os.getenv("GCS_MODELS_PREFIX"),
-        discovery_ttl_seconds=int(os.getenv("DISCOVERY_TTL_SECONDS", "7200")),
         model_cache_root=os.getenv("MODEL_CACHE_ROOT", "/tmp/mmm-models"),
         result_cache_enabled=_read_bool("RESULT_CACHE_ENABLED", True),
         result_cache_ttl_seconds=int(result_cache_ttl) if result_cache_ttl else None,
@@ -40,9 +39,6 @@ def load_config() -> RuntimeConfig:
         optimization_gcs_prefix=os.getenv("OPTIMIZATION_GCS_PREFIX", "optimizations/"),
         optimization_tier=os.getenv("OPTIMIZATION_TIER", "local"),
         optimization_max_parallel=int(os.getenv("OPTIMIZATION_MAX_PARALLEL", "2")),
-        optimization_heartbeat_stale_seconds=int(
-            os.getenv("OPTIMIZATION_HEARTBEAT_STALE_SECONDS", "60")
-        ),
         cloud_run_project=os.getenv("CLOUD_RUN_PROJECT"),
         cloud_run_region=os.getenv("CLOUD_RUN_REGION"),
         cloud_run_job_cpu=os.getenv("CLOUD_RUN_JOB_CPU"),
@@ -50,9 +46,5 @@ def load_config() -> RuntimeConfig:
         analysis_worker_timeout=float(os.getenv("ANALYSIS_WORKER_TIMEOUT", "300")),
         analysis_max_response_bytes=int(
             os.getenv("ANALYSIS_MAX_RESPONSE_BYTES", str(4 * 1024 * 1024))
-        ),
-        analysis_workdir_root=os.getenv("ANALYSIS_WORKDIR_ROOT", "/tmp/mmm-analysis"),
-        analysis_workdir_ttl_seconds=int(
-            os.getenv("ANALYSIS_WORKDIR_TTL_SECONDS", "604800")
         ),
     )

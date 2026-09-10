@@ -49,7 +49,6 @@ class TestLoadConfig:
         monkeypatch.setenv("MCP_TRANSPORT", "stdio")
         monkeypatch.setenv("PERSISTENCE_BACKEND", "local")
         monkeypatch.setenv("LOCAL_MODELS_ROOT", "/models")
-        monkeypatch.setenv("DISCOVERY_TTL_SECONDS", "12")
         monkeypatch.setenv("MODEL_CACHE_ROOT", "/tmp/cache")
         monkeypatch.setenv("RESULT_CACHE_ENABLED", "off")
         monkeypatch.setenv("RESULT_CACHE_TTL_SECONDS", "30")
@@ -61,7 +60,6 @@ class TestLoadConfig:
         assert cfg.transport == "stdio"
         assert cfg.persistence_backend == "local"
         assert cfg.local_models_root == "/models"
-        assert cfg.discovery_ttl_seconds == 12
         assert cfg.model_cache_root == "/tmp/cache"
         assert cfg.result_cache_enabled is False
         assert cfg.result_cache_ttl_seconds == 30
@@ -114,14 +112,6 @@ class TestRuntimeConfigValidation:
                 persistence_backend="gcs",
                 gcs_bucket="bucket",
                 gcs_models_prefix=None,
-            )
-
-    def test_requires_positive_discovery_ttl(self):
-        with pytest.raises(ValueError, match="DISCOVERY_TTL_SECONDS"):
-            RuntimeConfig(
-                persistence_backend="local",
-                local_models_root="/models",
-                discovery_ttl_seconds=0,
             )
 
     def test_requires_positive_result_cache_ttl(self):

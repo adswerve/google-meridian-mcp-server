@@ -60,7 +60,6 @@ class RuntimeConfig(BaseModel):
     local_models_root: str | None = None
     gcs_bucket: str | None = None
     gcs_models_prefix: str | None = None
-    discovery_ttl_seconds: int = 7200
     model_cache_root: str = "/tmp/mmm-models"
     result_cache_enabled: bool = True
     result_cache_ttl_seconds: int | None = None
@@ -70,7 +69,6 @@ class RuntimeConfig(BaseModel):
     optimization_gcs_prefix: str = "optimizations/"
     optimization_tier: str = OptimizationMode.LOCAL.value
     optimization_max_parallel: int = 2
-    optimization_heartbeat_stale_seconds: int = 60
     cloud_run_project: str | None = None
     cloud_run_region: str | None = None
     cloud_run_job_cpu: str | None = None
@@ -79,11 +77,6 @@ class RuntimeConfig(BaseModel):
     # Analysis subprocess runner
     analysis_worker_timeout: float = 300.0
     analysis_max_response_bytes: int = 4 * 1024 * 1024
-    analysis_workdir_root: str = "/tmp/mmm-analysis"
-    # F10b: retained analysis workdirs (timeout/spawn-failure/rc!=0
-    # keep one each) and optimization worker log files (one per run, forever)
-    # accumulate unboundedly with no sweep. This bounds their age at startup.
-    analysis_workdir_ttl_seconds: int = 604800  # 7 days
 
     @field_validator("transport")
     @classmethod
@@ -114,10 +107,6 @@ class RuntimeConfig(BaseModel):
                 f"Unsupported PERSISTENCE_BACKEND '{self.persistence_backend}'"
             )
 
-        if self.discovery_ttl_seconds <= 0:
-            raise ValueError("DISCOVERY_TTL_SECONDS must be positive")
-        if self.analysis_workdir_ttl_seconds <= 0:
-            raise ValueError("ANALYSIS_WORKDIR_TTL_SECONDS must be positive")
         if (
             self.result_cache_ttl_seconds is not None
             and self.result_cache_ttl_seconds <= 0

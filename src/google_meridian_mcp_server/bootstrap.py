@@ -22,7 +22,7 @@ def build_provider(cfg: RuntimeConfig):
 def build_discovery_cache(cfg: RuntimeConfig) -> DiscoveryCache:
     """Server-side: discovery only, no facades/materialization (never pulls Meridian)."""
     provider = build_provider(cfg)
-    return DiscoveryCache(provider, cfg.discovery_ttl_seconds)
+    return DiscoveryCache(provider)
 
 
 # NOTE: build_worker_catalog (full ModelCatalog with materialization + facades)
@@ -58,7 +58,6 @@ def build_executor(
         return AsyncSubprocessExecutor(
             registry,
             max_parallel=cfg.optimization_max_parallel,
-            heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
         )
     from google_meridian_mcp_server.execution.cloud_run_executor import (
         CloudRunJobExecutor,
@@ -68,7 +67,6 @@ def build_executor(
         registry,
         cfg=cfg,
         max_parallel=cfg.optimization_max_parallel,
-        heartbeat_stale_seconds=cfg.optimization_heartbeat_stale_seconds,
         jobs_client=jobs_client,
         executions_client=executions_client,
     )

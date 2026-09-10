@@ -486,3 +486,16 @@ async def test_concurrent_pump_calls_do_not_raise_or_duplicate_launches(tmp_path
     # Exactly one run_id was ever launched per call to _launch -- no duplicates.
     assert len(ex.launched) == len(set(ex.launched))
     assert len(ex._handles) == 2  # gate still honored after the free slot backfilled
+
+
+def test_heartbeat_stale_default_is_sixty_seconds(tmp_path):
+    """Demoted from OPTIMIZATION_HEARTBEAT_STALE_SECONDS."""
+    from google_meridian_mcp_server.execution.base_executor import (
+        DEFAULT_HEARTBEAT_STALE_SECONDS,
+    )
+
+    assert DEFAULT_HEARTBEAT_STALE_SECONDS == 60
+    ex = AsyncSubprocessExecutor(
+        LocalOptimizationRunRegistry(str(tmp_path)), max_parallel=1
+    )
+    assert ex._stale_seconds == 60

@@ -40,7 +40,7 @@ def build_worker_catalog(cfg: RuntimeConfig) -> ModelCatalog:
     (see TID251 per-file-ignores in pyproject.toml).
     """
     provider = build_provider(cfg)
-    discovery = DiscoveryCache(provider, cfg.discovery_ttl_seconds)
+    discovery = DiscoveryCache(provider)
     materialization = MaterializationCache(provider, cfg.model_cache_root)
     return ModelCatalog(discovery, materialization)
 

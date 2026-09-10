@@ -34,6 +34,10 @@ def test_removed_knobs_are_gone():
         "optimization_allowed_tiers",
         "optimization_default_tier",
         "optimization_size_thresholds",
+        "discovery_ttl_seconds",
+        "optimization_heartbeat_stale_seconds",
+        "analysis_workdir_root",
+        "analysis_workdir_ttl_seconds",
     ):
         assert not hasattr(cfg, name), f"{name} came back"
 
@@ -112,7 +116,6 @@ def test_analysis_runner_config_defaults(sample_runtime_config):
     cfg = sample_runtime_config
     assert cfg.analysis_worker_timeout == 300.0
     assert cfg.analysis_max_response_bytes == 4 * 1024 * 1024
-    assert cfg.analysis_workdir_root == "/tmp/mmm-analysis"
 
 
 def test_analysis_runner_config_from_env(monkeypatch, tmp_path):

@@ -22,10 +22,18 @@ from google_meridian_mcp_server.execution.base_subprocess import BaseSubprocessE
 
 _LOG_TAIL = 4096
 
+DEFAULT_WORKDIR_ROOT = "/tmp/mmm-analysis"
+# F10b: retained analysis workdirs (timeout / spawn failure / non-domain rc!=0)
+# and optimization worker log files accumulate unboundedly; the startup sweep
+# bounds their age at 7 days. Was ANALYSIS_WORKDIR_TTL_SECONDS.
+DEFAULT_WORKDIR_TTL_SECONDS = 604800
+
 log = logging.getLogger(__name__)
 
 
-def sweep_stale_entries(root: str | Path, ttl_seconds: float) -> None:
+def sweep_stale_entries(
+    root: str | Path, ttl_seconds: float = DEFAULT_WORKDIR_TTL_SECONDS
+) -> None:
     """Remove files/dirs directly under *root* whose mtime is older than *ttl_seconds*.
 
     F10b: retained analysis workdirs (one per timeout/spawn-failure/
@@ -61,7 +69,7 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         *,
         run_timeout,
         max_response_bytes,
-        workdir_root,
+        workdir_root=DEFAULT_WORKDIR_ROOT,
         worker_argv_prefix=None,
         env_base=None,
     ):
@@ -169,7 +177,7 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 # whole workdir is removed elsewhere (keep=False), but on
                 # rc != 0 the workdir -- including the oversized resp.json --
                 # is deliberately NOT unlinked and is retained for postmortem,
-                # bounded only by ANALYSIS_WORKDIR_TTL_SECONDS. That error
+                # bounded only by DEFAULT_WORKDIR_TTL_SECONDS. That error
                 # also carries no log_tail, since it's raised before
                 # self._tail(logp) would run.
                 if rc != 0:

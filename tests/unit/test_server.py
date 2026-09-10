@@ -31,18 +31,15 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         local_models_root="/models",
         gcs_bucket="bucket",
         gcs_models_prefix="models",
-        discovery_ttl_seconds=60,
         model_cache_root="/tmp/cache",
         result_cache_enabled=True,
         result_cache_ttl_seconds=30,
         optimization_runs_root="/tmp/optimizations",
         optimization_gcs_prefix="optimizations/",
         optimization_max_parallel=2,
-        optimization_heartbeat_stale_seconds=120,
         optimization_tier="local",
         analysis_worker_timeout=300.0,
         analysis_max_response_bytes=64 * 1024 * 1024,
-        analysis_workdir_root="/tmp/mmm-analysis",
     )
 
 

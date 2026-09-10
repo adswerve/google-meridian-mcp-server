@@ -422,3 +422,13 @@ def test_sweep_stale_entries_ignores_per_entry_errors(tmp_path, monkeypatch):
 
     assert old_dir.exists()  # the "bad" entry survives
     assert not good_file.exists()  # the good entry is still swept
+
+
+def test_workdir_defaults_are_module_constants():
+    """Demoted from ANALYSIS_WORKDIR_ROOT / ANALYSIS_WORKDIR_TTL_SECONDS."""
+    from google_meridian_mcp_server.execution import sync_subprocess_executor as sse
+
+    assert sse.DEFAULT_WORKDIR_ROOT == "/tmp/mmm-analysis"
+    assert sse.DEFAULT_WORKDIR_TTL_SECONDS == 604800  # 7 days
+    ex = sse.SyncSubprocessExecutor(run_timeout=1.0, max_response_bytes=1)
+    assert str(ex._root) == "/tmp/mmm-analysis"

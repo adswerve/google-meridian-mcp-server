@@ -94,6 +94,17 @@ class TestMeridianLoader:
         assert ".binpb" in payload["message"]
 
 
+def test_discovery_cache_defaults_to_the_two_hour_catalog_ttl():
+    """Demoted from DISCOVERY_TTL_SECONDS. The VALUE is the contract now."""
+    from google_meridian_mcp_server.persistence.cache import (
+        DEFAULT_DISCOVERY_TTL_SECONDS,
+        DiscoveryCache,
+    )
+
+    assert DEFAULT_DISCOVERY_TTL_SECONDS == 7200
+    assert DiscoveryCache(object())._ttl == 7200
+
+
 class TestModelCatalogCaching:
     def test_resolve_memoizes_loaded_models(self, monkeypatch):
         entry = _make_entry("demo", "/tmp/demo.binpb")

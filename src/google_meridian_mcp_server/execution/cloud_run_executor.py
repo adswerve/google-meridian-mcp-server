@@ -6,7 +6,10 @@ from typing import Any
 
 from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import OptimizationRun
-from google_meridian_mcp_server.execution.base_executor import BaseExecutor
+from google_meridian_mcp_server.execution.base_executor import (
+    DEFAULT_HEARTBEAT_STALE_SECONDS,
+    BaseExecutor,
+)
 from google_meridian_mcp_server.execution.base_subprocess import MERIDIAN_BACKEND
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
@@ -20,7 +23,7 @@ class CloudRunJobExecutor(BaseExecutor):
         *,
         cfg: RuntimeConfig,
         max_parallel: int,
-        heartbeat_stale_seconds: int,
+        heartbeat_stale_seconds: int = DEFAULT_HEARTBEAT_STALE_SECONDS,
         jobs_client: Any | None = None,
         executions_client: Any | None = None,
     ) -> None:
