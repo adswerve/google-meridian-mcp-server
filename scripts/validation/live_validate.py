@@ -139,6 +139,7 @@ async def _run() -> int:
     os.environ["LOCAL_MODELS_ROOT"] = str(DEFAULT_OUT_ROOT)
     os.environ.setdefault("RESULT_CACHE_ENABLED", "false")
     os.environ.setdefault("OPTIMIZATION_RUNS_ROOT", str(DEFAULT_OUT_ROOT / "_runs"))
+
     from fastmcp import Client
 
     from google_meridian_mcp_server.server import mcp

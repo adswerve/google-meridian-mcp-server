@@ -61,7 +61,7 @@ pickle saved under TensorFlow — that is the reason, not tidiness. See
 
 ```
 uv run python -m google_meridian_mcp_server.server
-uv run pytest                                    # 683 passed on this branch
+uv run pytest                                    # 789 passed on this branch
 uv run ruff check src scripts tests              # and `ruff format`
 uv run python -m scripts.validation.live_validate            # integration gate; --force rebuilds fixtures
 OPTIMIZATION_ALLOWED_TIERS=local uv run python scripts/qa/future_optimization_qa.py
@@ -151,8 +151,12 @@ Markdown report. Kept after the upgrade: it is the cheapest way to prove a bump 
   a size ceiling — before measurement showed the server was always healthy. The real cause
   was a Python-client SSE event-size cap reached only when a handler outran mcp's 15s
   mode-switch window; `json_response=True` in `server.py` makes that branch unreachable.
-  Still pass a dataset or date filter: the unfiltered payload is megabytes and will
-  overflow an agent's context. (`reports/drift/04-cloud-vs-local.md`)
+  Note the trade: `application/json` replies are not chunked, so Cloud Run's 32 MiB
+  non-streaming response limit now applies where the SSE path was exempt. The largest real
+  payload is ~16 MB, comfortably under it, but a response over 32 MiB would now fail at the
+  edge rather than return a clean error. Still pass a dataset or date filter: the unfiltered
+  payload is megabytes and will overflow an agent's context.
+  (`reports/drift/04-cloud-vs-local.md`)
 
 ## The recurring defect shape — the most transferable lesson
 

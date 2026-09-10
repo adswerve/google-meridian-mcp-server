@@ -4,7 +4,11 @@ Two conditions together produced the historical failure, and BOTH are needed
 to reproduce it: the handler must outlive the server's mode-switch window
 (which commits the reply to one SSE frame), and the payload must exceed
 httpx2's 1 MiB per-event cap. A big-but-fast reply takes the uncapped JSON
-branch and proves nothing, which is why this fixture sleeps.
+branch and proves nothing, which is why this fixture sleeps. The sleep is
+load-bearing in the CONTROL arm: with json_response=True the handler
+short-circuits before the window is ever read, so the treatment arm alone
+would pass even with a fast handler. This test's pinning power lives in the
+pairing -- do not delete the control arm as redundant.
 
 This test reads a PRIVATE upstream constant, mcp.server._streamable_http_modern
 ._SSE_PING_INTERVAL. If an upstream rename breaks it, that is the intended
