@@ -391,13 +391,11 @@ def test_main_analysis_path_forces_x64_even_if_ambient_env_says_false(monkeypatc
     monkeypatch.setenv("MERIDIAN_ENABLE_JAX_X64", "false")
 
     monkeypatch.setattr(worker_mod, "build_worker_catalog", lambda cfg: object())
-    monkeypatch.setattr(
-        worker_mod, "run_analysis", lambda req, resp, *, catalog, limit_bytes: 0
-    )
+    monkeypatch.setattr(worker_mod, "run_analysis", lambda req, resp, *, catalog: 0)
     monkeypatch.setattr(
         config_mod,
         "load_config",
-        lambda: SimpleNamespace(analysis_max_response_bytes=64 * 1024 * 1024),
+        lambda: SimpleNamespace(),
     )
 
     rc = worker_mod.main(["worker.py", "analysis", "req.json", "resp.json"])
@@ -405,35 +403,3 @@ def test_main_analysis_path_forces_x64_even_if_ambient_env_says_false(monkeypatc
     assert rc == 0
     assert os.environ["MERIDIAN_ENABLE_JAX_X64"] == "true"
     assert os.environ["MERIDIAN_BACKEND"] == MERIDIAN_BACKEND
-
-
-def test_main_analysis_path_passes_configured_limit_bytes_to_run_analysis(
-    monkeypatch,
-):
-    """main() must forward cfg.analysis_max_response_bytes, not some other value.
-
-    Uses a distinctive, non-default limit so a refactor that swaps in a
-    constant, a stale variable, or a different config field (e.g.
-    ``analysis_worker_timeout``) is caught: against the real shipped
-    default, a wrong-but-plausible value would slip past unnoticed.
-    """
-    monkeypatch.setenv("MERIDIAN_ENABLE_JAX_X64", "false")
-
-    seen: dict[str, Any] = {}
-
-    def fake_run_analysis(req, resp, *, catalog, limit_bytes):
-        seen["limit_bytes"] = limit_bytes
-        return 0
-
-    monkeypatch.setattr(worker_mod, "build_worker_catalog", lambda cfg: object())
-    monkeypatch.setattr(worker_mod, "run_analysis", fake_run_analysis)
-    monkeypatch.setattr(
-        config_mod,
-        "load_config",
-        lambda: SimpleNamespace(analysis_max_response_bytes=12_345),
-    )
-
-    rc = worker_mod.main(["worker.py", "analysis", "req.json", "resp.json"])
-
-    assert rc == 0
-    assert seen["limit_bytes"] == 12_345

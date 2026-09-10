@@ -46,7 +46,6 @@ async def real_runner():
         tmp_root = Path(tmp)
         runner = SyncSubprocessExecutor(
             run_timeout=300,
-            max_response_bytes=64 * 1024 * 1024,
             workdir_root=tmp_root / "workdirs",
             env_base={
                 "PERSISTENCE_BACKEND": "local",

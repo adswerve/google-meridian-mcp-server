@@ -80,36 +80,19 @@ on one fixture). No performance comparison was made, and the
 `WeeklyOptimizationGrid` spike explicitly could not measure GPU. No
 infrastructure sizing decision should be drawn from this upgrade.
 
-## 6. `get_training_data` with no filter cannot traverse the HTTP surface
+## 6. `get_training_data` with no filter over the HTTP surface — RESOLVED
 
-Drift report 4 (`reports/drift/04-cloud-vs-local.md`, Limitation section)
-found that `get_training_data__all_datasets` -- the unfiltered call, no
-`dataset` or date window -- fails against the deployed Cloud Run service in
-every one of the 7 fixtures it was tried on: the server returns `200 OK` and
-the SSE stream is dropped before the payload reaches the client, in ~85s,
-well inside the 300s request timeout and far under Cloud Run's 32 MiB
-response ceiling. Payload sizes are 3.2 MB (`national-revenue`) to 16.3 MB
-(`geo-revenue`) as measured at the time of that capture.
+Drift report 4 recorded that `get_training_data__all_datasets` failed against the
+deployed service in all 7 fixtures, with the server returning `200 OK` and the client
+receiving zero bytes. Two later diagnoses — a Cloud Run delivery ceiling, then a size
+ceiling between 46 KB and 3.3 MB — were both wrong.
 
-**Superseded in part.** A later controlled two-arm experiment established
-that this is a delivery-path size ceiling, not a timeout: the server sends
-the full payload successfully and the client receives zero bytes, delivery
-succeeds at ~46 KB and fails at ~3.3 MB, and a 56s request completed fine.
-The `ANALYSIS_MAX_RESPONSE_BYTES` default has since dropped from 64 MiB to
-4 MiB, which still sits above the measured failure. See
-`drift/04-cloud-vs-local.md` for the measurements.
+Measured cause: mcp's server commits a reply to a single SSE frame when the handler
+outlives its 15s mode-switch window, and httpx2 clients reject any SSE event over
+1 MiB, reporting it as `SSE stream ended without a response`. The server was never at
+fault, and TypeScript clients were never affected. Fixed by `json_response=True` in
+`server.py`, which keeps replies on the uncapped `application/json` branch.
 
-**Pre-existing, not caused by this upgrade:** the payload is byte-identical
-across all four labels including `v1.7-engine`. It was never observed before
-because this is the first time the full tool matrix was captured over HTTP
-against a deployed Cloud Run service.
-
-**Consequence:** any caller of a deployed server that invokes
-`get_training_data` without a `dataset` or date filter on a model with a
-large training set will see the call fail with no payload, even though the
-tool works correctly in-process and over HTTP when filtered. Until the
-transport path is fixed (chunking/paginating large analysis responses
-instead of one SSE event), callers should always pass a `dataset` or date
-filter to `get_training_data` against a deployed server. The tool description
-in `src/google_meridian_mcp_server/transport/tools.py` now says this at the
-point of use.
+Note that `application/json` replies are not chunked, so Cloud Run's 32 MiB
+non-streaming response limit applies where the SSE path was exempt. The largest real
+payload is ~16 MB, well under it.

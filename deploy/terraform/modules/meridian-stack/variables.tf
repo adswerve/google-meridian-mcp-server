@@ -142,12 +142,6 @@ variable "analysis_worker_timeout" {
   default     = 300
 }
 
-variable "analysis_max_response_bytes" {
-  type        = number
-  description = "Maximum size in bytes of a single analysis response, measured on the worker's serialized resp.json. Over it, the tool returns a response_too_large error naming the filters that would narrow the request -- it does not truncate. Must be set here: the harness's larger client-side pin never reaches a deployed server, the same reason result_cache_enabled is mirrored here."
-  default     = 4194304
-}
-
 # --- Caching ---
 variable "result_cache_enabled" {
   type        = bool

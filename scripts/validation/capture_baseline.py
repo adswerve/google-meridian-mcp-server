@@ -392,12 +392,6 @@ def prepare_env(runs_root: str) -> None:
     os.environ["LOCAL_MODELS_ROOT"] = str(DEFAULT_OUT_ROOT)
     os.environ["OPTIMIZATION_TIER"] = "local"
     os.environ["RESULT_CACHE_ENABLED"] = "false"
-    # DELIBERATELY ABOVE the shipped 4 MiB default: this pin does not track it.
-    # Holding the harness at 64 MiB keeps large-payload cases returning DATA, so
-    # baselines stay byte-comparable across the threshold change -- including
-    # against labels that can no longer be regenerated. Dropping it to the
-    # production default would rewrite every large case as an error envelope.
-    os.environ["ANALYSIS_MAX_RESPONSE_BYTES"] = str(64 * 1024 * 1024)
     os.environ["OPTIMIZATION_RUNS_ROOT"] = runs_root
 
 

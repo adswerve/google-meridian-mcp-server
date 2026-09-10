@@ -87,10 +87,6 @@ resource "google_cloud_run_v2_service" "server" {
         name  = "ANALYSIS_WORKER_TIMEOUT"
         value = tostring(var.analysis_worker_timeout)
       }
-      env {
-        name  = "ANALYSIS_MAX_RESPONSE_BYTES"
-        value = tostring(var.analysis_max_response_bytes)
-      }
       # Auto-wired from resources / config
       env {
         name  = "CLOUD_RUN_PROJECT"

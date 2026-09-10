@@ -100,16 +100,11 @@ def _start_parent_death_guard(poll_interval: float = 2.0) -> threading.Thread:
     return thread
 
 
-def run_analysis(
-    request_path: str, response_path: str, *, catalog: Any, limit_bytes: int
-) -> int:
+def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
     import json
     import traceback
 
-    from google_meridian_mcp_server.domain.errors import (
-        MeridianMcpError,
-        ResponseTooLargeError,
-    )
+    from google_meridian_mcp_server.domain.errors import MeridianMcpError
     from google_meridian_mcp_server.execution import analysis_ops
 
     with open(request_path) as f:
@@ -140,30 +135,7 @@ def run_analysis(
         payload = analysis_ops.sanitize_nan(
             payload
         )  # whole payload, incl. error details
-        # GUARD 1 measures len(body) in characters; GUARD 2 (the executor
-        # backstop) measures the written file's st_size in bytes. The two
-        # only agree because ensure_ascii defaults to True here, so every
-        # character in `body` is one ASCII byte. Do NOT pass
-        # ensure_ascii=False: it would let non-ASCII geo/channel names
-        # serialize as multi-byte UTF-8, making GUARD 1 under-count relative
-        # to the actual byte size and admit an over-limit payload.
         body = json.dumps(payload, separators=(",", ":"), allow_nan=False)
-        if payload.get("ok") and len(body) > limit_bytes:
-            # GUARD 1. Replace, do NOT raise: a raise lands in the except
-            # below and degrades to internal_error/rc 1. This is a normal,
-            # user-correctable domain outcome, so it stays rc 0.
-            result = payload["result"]
-            cols = result.get("columns") if isinstance(result, dict) else None
-            err = ResponseTooLargeError(
-                nbytes=len(body),
-                limit_bytes=limit_bytes,
-                total_rows=result.get("row_count")
-                if isinstance(result, dict)
-                else None,
-                total_columns=len(cols) if cols is not None else None,
-            )
-            payload = {"ok": False, "error": err.to_payload()}
-            body = json.dumps(payload, separators=(",", ":"), allow_nan=False)
         with open(tmp, "w") as f:
             f.write(body)
     except Exception as exc:  # noqa: BLE001 - serialization must never leave "no response"
@@ -319,7 +291,6 @@ def main(argv: list[str] | None = None) -> int:
             argv[2],
             argv[3],
             catalog=build_worker_catalog(cfg),
-            limit_bytes=cfg.analysis_max_response_bytes,
         )
 
     _start_parent_death_guard()

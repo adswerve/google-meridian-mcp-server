@@ -28,6 +28,7 @@ def test_removed_knobs_are_gone():
     cfg = RuntimeConfig(**_local_kwargs())
     for name in (
         "analysis_max_parallel",
+        "analysis_max_response_bytes",
         "analysis_queue_wait_timeout",
         "registry_backend",
         "resolved_registry_backend",
@@ -115,7 +116,6 @@ def test_local_tier_with_gcs_persistence_is_legal():
 def test_analysis_runner_config_defaults(sample_runtime_config):
     cfg = sample_runtime_config
     assert cfg.analysis_worker_timeout == 300.0
-    assert cfg.analysis_max_response_bytes == 4 * 1024 * 1024
 
 
 def test_analysis_runner_config_from_env(monkeypatch, tmp_path):
@@ -126,23 +126,3 @@ def test_analysis_runner_config_from_env(monkeypatch, tmp_path):
 
     cfg = load_config()
     assert cfg.analysis_worker_timeout == 600.0
-
-
-def test_analysis_max_response_bytes_default_comes_from_load_config(
-    monkeypatch, tmp_path
-):
-    """The SHIPPED default, read the way production reads it.
-
-    ``test_analysis_runner_config_defaults`` constructs RuntimeConfig directly,
-    so it only pins ``domain/models.py``'s dataclass fallback. ``load_config()``
-    always supplies this field from ``os.getenv``, so production actually reads
-    ``config.py``'s literal. Changing one and not the other leaves the suite
-    green while shipping the wrong ceiling -- this test is the half-fix guard.
-    """
-    monkeypatch.setenv("PERSISTENCE_BACKEND", "local")
-    monkeypatch.setenv("LOCAL_MODELS_ROOT", str(tmp_path))
-    monkeypatch.delenv("ANALYSIS_MAX_RESPONSE_BYTES", raising=False)
-    from google_meridian_mcp_server.config import load_config
-
-    cfg = load_config()
-    assert cfg.analysis_max_response_bytes == 4 * 1024 * 1024 == 4_194_304

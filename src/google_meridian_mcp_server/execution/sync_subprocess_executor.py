@@ -14,7 +14,6 @@ from pathlib import Path
 
 from google_meridian_mcp_server.domain.errors import (
     MeridianMcpError,
-    ResponseTooLargeError,
     WorkerFailedError,
     WorkerTimeoutError,
 )
@@ -68,14 +67,12 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         self,
         *,
         run_timeout,
-        max_response_bytes,
         workdir_root=DEFAULT_WORKDIR_ROOT,
         worker_argv_prefix=None,
         env_base=None,
     ):
         super().__init__(worker_argv_prefix=worker_argv_prefix, env_base=env_base)
         self._run_timeout = run_timeout
-        self._max_bytes = max_response_bytes
         self._root = Path(workdir_root)
         self._live: set[int] = set()
         self._cleanup_tasks: set = set()
@@ -172,14 +169,6 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 # a normal domain outcome. Retain the workdir+log so the
                 # traceback (child-log-only per spec) survives. A domain
                 # error with rc == 0 keeps the existing keep=False behavior.
-                # ResponseTooLargeError (raised in _decode before json.loads,
-                # so it lands here too) takes the same path: on rc == 0 the
-                # whole workdir is removed elsewhere (keep=False), but on
-                # rc != 0 the workdir -- including the oversized resp.json --
-                # is deliberately NOT unlinked and is retained for postmortem,
-                # bounded only by DEFAULT_WORKDIR_TTL_SECONDS. That error
-                # also carries no log_tail, since it's raised before
-                # self._tail(logp) would run.
                 if rc != 0:
                     keep = True
                 raise
@@ -200,10 +189,6 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         if not resp.exists():
             raise WorkerFailedError(
                 f"no response (exit {rc})", {"log_tail": self._tail(logp)}
-            )
-        if resp.stat().st_size > self._max_bytes:
-            raise ResponseTooLargeError(
-                nbytes=resp.stat().st_size, limit_bytes=self._max_bytes
             )
         try:
             payload = json.loads(resp.read_text())

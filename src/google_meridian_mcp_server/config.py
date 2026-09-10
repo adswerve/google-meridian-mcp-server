@@ -44,7 +44,4 @@ def load_config() -> RuntimeConfig:
         cloud_run_job_cpu=os.getenv("CLOUD_RUN_JOB_CPU"),
         cloud_run_job_gpu=os.getenv("CLOUD_RUN_JOB_GPU"),
         analysis_worker_timeout=float(os.getenv("ANALYSIS_WORKER_TIMEOUT", "300")),
-        analysis_max_response_bytes=int(
-            os.getenv("ANALYSIS_MAX_RESPONSE_BYTES", str(4 * 1024 * 1024))
-        ),
     )

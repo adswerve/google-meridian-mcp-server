@@ -7,7 +7,6 @@ from google_meridian_mcp_server.domain.errors import (
     MeridianMcpError,
     MissingModelDataError,
     OptimizationFailedError,
-    ResponseTooLargeError,
     WorkerFailedError,
     WorkerLostError,
     WorkerTimeoutError,
@@ -47,34 +46,3 @@ def test_execution_error_codes_match_serialized_registry_dicts():
     """
     assert OptimizationFailedError("x").error_code == "optimization_failed"
     assert WorkerLostError().error_code == "worker_lost"
-
-
-def test_response_too_large_reports_shape_when_known():
-    err = ResponseTooLargeError(
-        nbytes=7774957, limit_bytes=4194304, total_rows=85800, total_columns=10
-    )
-    assert err.error_code == "response_too_large"
-    assert "85800 rows x 10 columns" in str(err)
-    assert "filters.geos" in str(err)
-    assert err.details == {
-        "bytes": 7774957,
-        "limit_bytes": 4194304,
-        "total_rows": 85800,
-        "total_columns": 10,
-    }
-
-
-def test_response_too_large_omits_shape_when_unknown():
-    """GUARD 2 has no row/column counts; the message must not say 'None rows'."""
-    err = ResponseTooLargeError(nbytes=99, limit_bytes=8)
-    assert "None" not in str(err)
-    assert "rows x" not in str(err)
-    assert err.details["total_rows"] is None
-
-
-def test_response_too_large_renders_non_round_sizes_accurately():
-    """The threshold this guard exists to enable will not be round. Reverting
-    either format to :.0f renders '24 MiB'/'23 MiB' and fails here."""
-    err = ResponseTooLargeError(nbytes=25_000_000, limit_bytes=24_000_000)
-    assert "23.84 MiB" in str(err)
-    assert "22.89 MiB" in str(err)

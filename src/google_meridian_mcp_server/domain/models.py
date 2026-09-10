@@ -76,7 +76,6 @@ class RuntimeConfig(BaseModel):
 
     # Analysis subprocess runner
     analysis_worker_timeout: float = 300.0
-    analysis_max_response_bytes: int = 4 * 1024 * 1024
 
     @field_validator("transport")
     @classmethod

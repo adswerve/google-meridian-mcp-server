@@ -27,7 +27,6 @@ module "meridian_stack" {
   optimization_tier           = var.optimization_tier
   optimization_max_parallel   = var.optimization_max_parallel
   analysis_worker_timeout     = var.analysis_worker_timeout
-  analysis_max_response_bytes = var.analysis_max_response_bytes
   allow_unauthenticated       = var.allow_unauthenticated
   result_cache_enabled        = var.result_cache_enabled
 

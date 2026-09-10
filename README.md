@@ -165,6 +165,7 @@ change degrades to defaults instead of failing at startup. Update these by hand:
 | `MCP_PORT=...` | `PORT=...` |
 | `ANALYSIS_MAX_PARALLEL`, `ANALYSIS_QUEUE_WAIT_TIMEOUT` | delete |
 | `DISCOVERY_TTL_SECONDS`, `OPTIMIZATION_SIZE_THRESHOLDS`, `OPTIMIZATION_HEARTBEAT_STALE_SECONDS`, `ANALYSIS_WORKDIR_ROOT`, `ANALYSIS_WORKDIR_TTL_SECONDS` | delete; now module constants |
+| `ANALYSIS_MAX_RESPONSE_BYTES=...` | delete; no response is capped any more |
 
 One case does not degrade benignly. A cloud operator whose `.env` still says
 `OPTIMIZATION_ALLOWED_TIERS=cloud_cpu` gets `OPTIMIZATION_TIER` unset, hence `local`. That is
@@ -307,13 +308,11 @@ Two optional envelope keys sit after the leading identity keys and before the co
 
 **Payload location.** Each tool response carries its payload exactly once, in `structuredContent`. The `content` block holds a short human-readable note (for row-bearing results, `"<n> rows x <m> columns in structuredContent"`), never the data itself. Client authors must read `structuredContent` — or the SDK's `.data` accessor — and must not parse `content[0].text` as JSON. `list_models` is the one tool whose payload is wrapped as `{"result": [...]}`.
 
-**Response size limit.** `ANALYSIS_MAX_RESPONSE_BYTES` (default `4194304`, 4 MiB) caps one analysis response, measured on the worker's serialized response. Over it, the tool returns a `response_too_large` error naming the size and the filters that would narrow the request. The default was lowered to sit close to the practical delivery ceiling on Cloud Run described below under `get_training_data`, but the two are not identical: measured failures start as low as ~3.3 MB, under this guard, so a response can still pass the size check and then be silently dropped in transit. Operators deploying behind Cloud Run should not treat this guard as sufficient protection against that failure mode on its own.
-
 **Per-tool notes**
 
 `get_model_overview` returns the model's time range, geo scope, channel/input groups, flattened data schema, and the supported dataset/output-type values for the other analysis tools.
 
-`get_training_data` accepts one or more dataset keys and returns a single merged result set for the requested selections. Against a **deployed** server, call `get_training_data` with a `dataset` or date filter. The unfiltered, all-datasets call produces a response the server sends successfully (Cloud Run logs `200 OK` and the full byte count) but which does not reach the client — the SSE stream ends without a response. Measured on Cloud Run, responses of ~46 KB are delivered and responses of ~3.3 MB are not; the ceiling lies between. This is a delivery-path limit, not a server timeout: a request taking 56s completed successfully, and the ~60-86s these calls take is analysis compute, not a timer. Filtered calls work fine. Details in `reports/drift/04-cloud-vs-local.md`.
+`get_training_data` accepts one or more dataset keys and returns a single merged result set for the requested selections. Pass a `dataset` or date filter for anything but small models: the unfiltered, all-datasets call returns 3.2 MB for `national-revenue` and 16.3 MB for `geo-revenue`, which the transport delivers correctly but which is far more than an agent can hold in context.
 
 `get_channel_summary` exposes:
 
@@ -366,7 +365,6 @@ Images are built and tagged automatically (content hash) — there are no image 
 | `labels` | `{}` | Labels applied to created resources. |
 | `optimization_max_parallel` | `2` | Max concurrent optimization worker launches. |
 | `analysis_worker_timeout` | `300` | Seconds an analysis worker may run before the request fails as `worker_timeout`. |
-| `analysis_max_response_bytes` | `4194304` | Max bytes for one analysis response, measured on the worker's serialized `resp.json`. |
 
 The service's request `timeout` is derived as `analysis_worker_timeout + 30s`, so the two cannot
 drift and a worker timeout always reaches the client as an actionable `worker_timeout` envelope

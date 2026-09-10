@@ -39,7 +39,6 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         optimization_max_parallel=2,
         optimization_tier="local",
         analysis_worker_timeout=300.0,
-        analysis_max_response_bytes=64 * 1024 * 1024,
     )
 
 
@@ -141,4 +140,6 @@ def test_run_server_uses_http_transport_and_env_host_port(
 
     server.run_server()
 
-    run.assert_called_once_with(transport="http", host="127.0.0.1", port=9000)
+    run.assert_called_once_with(
+        transport="http", host="127.0.0.1", port=9000, json_response=True
+    )

@@ -48,10 +48,6 @@ variable "analysis_worker_timeout" {
   type    = number
   default = 300
 }
-variable "analysis_max_response_bytes" {
-  type    = number
-  default = 4194304
-}
 variable "allow_unauthenticated" {
   type    = bool
   default = false

@@ -20,7 +20,6 @@ gcs_bucket = "your-client-meridian"
 # allow_unauthenticated      = false          # true only for the live tooling test
 
 # analysis_worker_timeout      = 300      # seconds; the service request timeout is derived from this
-# analysis_max_response_bytes  = 4194304  # bytes; server-side pin (the harness's client-side pin never reaches a deployed server)
 
 # result_cache_enabled = true    # default true (production-correct). Set false only for a
 #                                # baseline-capture verification deployment, so captures are
