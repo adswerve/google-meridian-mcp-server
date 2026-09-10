@@ -13,6 +13,14 @@ resource "google_cloud_run_v2_service" "server" {
       max_instance_count = 2
     }
 
+    # Cloud Run's unset default is 300s, which happens to equal today's
+    # ANALYSIS_WORKER_TIMEOUT. At equality the request is severed at the same
+    # instant sync_subprocess_executor kills the worker and starts building the
+    # worker_timeout envelope, so the client gets a dropped connection instead
+    # of the actionable error. Derived from the same variable, plus a margin to
+    # serialize and deliver that envelope, so the two cannot drift.
+    timeout = "${var.analysis_worker_timeout + 30}s"
+
     containers {
       image = local.image_ref["server"]
 
@@ -30,10 +38,6 @@ resource "google_cloud_run_v2_service" "server" {
       # Constants
       env {
         name  = "PERSISTENCE_BACKEND"
-        value = "gcs"
-      }
-      env {
-        name  = "REGISTRY_BACKEND"
         value = "gcs"
       }
       env {
@@ -72,12 +76,20 @@ resource "google_cloud_run_v2_service" "server" {
         value = var.optimization_gcs_prefix
       }
       env {
-        name  = "OPTIMIZATION_ALLOWED_TIERS"
-        value = var.optimization_allowed_tiers
+        name  = "OPTIMIZATION_TIER"
+        value = var.optimization_tier
       }
       env {
-        name  = "OPTIMIZATION_DEFAULT_TIER"
-        value = var.optimization_default_tier
+        name  = "OPTIMIZATION_MAX_PARALLEL"
+        value = tostring(var.optimization_max_parallel)
+      }
+      env {
+        name  = "ANALYSIS_WORKER_TIMEOUT"
+        value = tostring(var.analysis_worker_timeout)
+      }
+      env {
+        name  = "ANALYSIS_MAX_RESPONSE_BYTES"
+        value = tostring(var.analysis_max_response_bytes)
       }
       # Auto-wired from resources / config
       env {
