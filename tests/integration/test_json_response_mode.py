@@ -27,8 +27,8 @@ from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 
 PAYLOAD_BYTES = 2 * 1024 * 1024  # over httpx2's 1 MiB DEFAULT_MAX_EVENT_SIZE_BYTES
-HANDLER_DELAY = 0.2              # must exceed the patched window below
-PATCHED_WINDOW = 0.05            # stands in for the production 15.0s
+HANDLER_DELAY = 0.2  # must exceed the patched window below
+PATCHED_WINDOW = 0.05  # stands in for the production 15.0s
 
 
 def _free_port() -> int:
