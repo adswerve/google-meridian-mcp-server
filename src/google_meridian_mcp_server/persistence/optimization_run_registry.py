@@ -108,6 +108,17 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
+def _read_text(path: Path) -> str:
+    """Read *path* as UTF-8 regardless of the interpreter's locale encoding.
+
+    Pydantic's model_dump_json() emits raw non-ASCII, and _atomic_write
+    persists it with str.encode(), which is always UTF-8. A bare read_text()
+    would decode with the locale's preferred encoding and silently mojibake a
+    non-ASCII run label under a non-UTF-8 locale.
+    """
+    return path.read_text(encoding="utf-8")
+
+
 class LocalOptimizationRunRegistry(OptimizationRunRegistry):
     def __init__(self, root: str) -> None:
         self._root = Path(root)
@@ -143,7 +154,7 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
         path = self._run_dir(run_id) / "record.json"
         if not path.is_file():
             raise RunNotFoundError(run_id)
-        return OptimizationRun.model_validate_json(path.read_text())
+        return OptimizationRun.model_validate_json(_read_text(path))
 
     def get_state(self, run_id: str) -> OptimizationRunState:
         path = self._run_dir(run_id) / "state.json"
@@ -151,14 +162,14 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
             if not self._run_dir(run_id).is_dir():
                 raise RunNotFoundError(run_id)
             return OptimizationRunState(run_id=run_id, status=RunStatus.QUEUED)
-        return OptimizationRunState.model_validate_json(path.read_text())
+        return OptimizationRunState.model_validate_json(_read_text(path))
 
     def get_result(self, run_id: str) -> dict:
         state = self.get_state(run_id)
         path = self._run_dir(run_id) / "result.json"
         if not path.is_file():
             raise ResultNotReadyError(run_id, state.status.value)
-        return json.loads(path.read_text())
+        return json.loads(_read_text(path))
 
     def list(self, *, model_id=None, status=None, limit=None):
         if not self._runs.is_dir():
@@ -168,7 +179,7 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
             record_path = d / "record.json"
             if not record_path.is_file():
                 continue
-            run = OptimizationRun.model_validate_json(record_path.read_text())
+            run = OptimizationRun.model_validate_json(_read_text(record_path))
             if model_id is not None and run.model_id != model_id:
                 continue
             state = self.get_state(run.run_id)
@@ -196,10 +207,10 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
         record_path = d / "record.json"
         if record_path.is_file():
             fp = OptimizationRun.model_validate_json(
-                record_path.read_text()
+                _read_text(record_path)
             ).config_fingerprint
             pointer = self._index / fp
-            if pointer.is_file() and pointer.read_text().strip() == run_id:
+            if pointer.is_file() and _read_text(pointer).strip() == run_id:
                 pointer.unlink()
         for child in d.iterdir():
             child.unlink()
@@ -207,7 +218,7 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
 
     def find_by_fingerprint(self, fingerprint: str) -> str | None:
         pointer = self._index / fingerprint
-        return pointer.read_text().strip() if pointer.is_file() else None
+        return _read_text(pointer).strip() if pointer.is_file() else None
 
     def put_fingerprint(self, fingerprint: str, run_id: str) -> None:
         self._index.mkdir(parents=True, exist_ok=True)
