@@ -100,10 +100,26 @@ resource "google_cloud_run_v2_service" "server" {
         name  = "CLOUD_RUN_JOB_CPU"
         value = var.cpu_job_name
       }
-      env {
-        name  = "CLOUD_RUN_JOB_GPU"
-        value = var.gpu_job_name
+      dynamic "env" {
+        for_each = var.enable_gpu_job ? { CLOUD_RUN_JOB_GPU = var.gpu_job_name } : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !(contains(["cloud_gpu", "cloud_auto"], var.optimization_tier) && !var.enable_gpu_job)
+      error_message = <<-EOT
+        optimization_tier = "${var.optimization_tier}" requires enable_gpu_job = true.
+        Both cloud_gpu and cloud_auto need the GPU Cloud Run Job to exist: the server
+        validates CLOUD_RUN_JOB_GPU at startup for either tier, and cloud_auto routes
+        large models to GPU. Set enable_gpu_job = true (and ensure L4 quota), or set
+        optimization_tier = "cloud_cpu".
+      EOT
     }
   }
 

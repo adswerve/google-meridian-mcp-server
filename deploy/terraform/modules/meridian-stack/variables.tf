@@ -131,7 +131,7 @@ variable "optimization_tier" {
 
 variable "optimization_max_parallel" {
   type        = number
-  description = "Caps how many Cloud Run Job executions the server will have in flight at once, across whichever tier is active. Over-cap runs are queued (QUEUED), not rejected. Service only -- a job container runs one already-dispatched run and has no notion of siblings."
+  description = "Max concurrent Cloud Run Job executions this server instance has launched and not yet observed the completion of. Per instance, so with max_instance_count = 2 the effective ceiling is twice this. Over-cap runs queue durably and are recovered at the next instance start. Service only -- a job container runs one already-dispatched run and has no notion of siblings."
   default     = 2
 }
 

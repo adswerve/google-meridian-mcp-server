@@ -363,8 +363,14 @@ Images are built and tagged automatically (content hash) — there are no image 
 | `allow_unauthenticated` | `false` | Grant `roles/run.invoker` to `allUsers` (live tooling test only; gate behind auth for real clients). |
 | `result_cache_enabled` | `true` | Whether the server caches analysis results (sets `RESULT_CACHE_ENABLED`). Leave `true` for real client installs; set `false` only for verification work needing cold, uncached responses. |
 | `labels` | `{}` | Labels applied to created resources. |
-| `optimization_max_parallel` | `2` | Max concurrent optimization worker launches. |
+| `optimization_max_parallel` | `2` | Max concurrent Cloud Run Job executions this server instance has launched and not yet observed the completion of. Per instance, so with `max_instance_count = 2` the effective ceiling is twice this. Over-cap runs queue durably and are recovered at the next instance start. |
 | `analysis_worker_timeout` | `300` | Seconds an analysis worker may run before the request fails as `worker_timeout`. |
+
+**Breaking change:** Existing configurations with `optimization_tier = "cloud_gpu"` (or `"cloud_auto"`)
+and `enable_gpu_job = false` are now rejected at plan time. That combination
+previously applied cleanly and failed later as an opaque `worker_lost`. Set
+`enable_gpu_job = true` and ensure L4 quota, or switch to
+`optimization_tier = "cloud_cpu"`.
 
 The service's request `timeout` is derived as `analysis_worker_timeout + 30s`, so the two cannot
 drift and a worker timeout always reaches the client as an actionable `worker_timeout` envelope
