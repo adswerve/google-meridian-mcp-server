@@ -186,6 +186,12 @@ def main() -> int:
 # ---------------------------------------------------------------------------
 
 _QUEUE_POLL_INTERVAL = 10.0
+# These validation models optimize in about a minute, so the window in
+# which both runs are simultaneously RUNNING is short. Phases 2 and 2b
+# must restart INSIDE that window, so they detect the start on a much
+# tighter interval than the ordinary progress polling above -- ten
+# seconds of slop is a sixth of the window and risks a spurious VOID.
+_START_POLL_INTERVAL = 2.0
 
 
 def _queue_phase_timeout() -> float:
@@ -696,22 +702,32 @@ def _phase2(cfg, model_id: str, job: str) -> dict:
         run_ids.append(submit["run_id"])
     print(f"phase2: submitted {run_ids}")
 
+    # Wait for the first two runs to actually START, not merely for two
+    # executions to EXIST. A Cloud Run Job execution is created within
+    # milliseconds of dispatch but takes 2-3 minutes to boot a worker, so
+    # "two executions exist" is true almost immediately while both runs are
+    # still QUEUED. Breaking on that and then testing `status != running`
+    # made the phase void itself five seconds after submitting -- reporting
+    # "both runs completed before the restart" about runs that had not yet
+    # begun. The restart is only meaningful while work is genuinely in
+    # flight, so wait until neither run is queued any more.
     deadline = time.time() + _queue_phase_timeout()
     while True:
-        live = _executions_for_job(cfg, job) - baseline
-        if len(live) >= 2:
+        states = {r: registry.get_state(r).status.value for r in run_ids[:2]}
+        if all(state != "queued" for state in states.values()):
             break
         if time.time() > deadline:
-            raise AssertionError("phase2: never reached 2 concurrent executions")
-        time.sleep(_QUEUE_POLL_INTERVAL)
+            raise AssertionError(f"phase2: the first two runs never started: {states}")
+        time.sleep(_START_POLL_INTERVAL)
         executor.pump()
 
-    # Abort rather than pass if the first two complete before the restart --
-    # the phase is void, not green.
-    if all(registry.get_state(r).status.value != "running" for r in run_ids[:2]):
+    # Abort rather than pass if the first two finish before the restart --
+    # the phase is void, not green. Distinct from the wait above: these runs
+    # did start, they just did not last long enough to restart underneath.
+    if any(state != "running" for state in states.values()):
         sys.exit(
-            "VOID: both runs completed before the restart; use a larger model "
-            "or a longer constraint sweep"
+            f"VOID: the first two runs did not stay running until the restart "
+            f"({states}); use a larger model or a longer constraint sweep"
         )
 
     d1 = registry.get_dispatch(run_ids[0])
@@ -816,16 +832,19 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
             run_ids.append(submit["run_id"])
         print(f"phase2b: submitted {run_ids}")
 
+        # Same trap as Phase 2: wait for the runs to START, not for their
+        # executions to merely EXIST -- see the comment there.
         deadline = time.time() + _queue_phase_timeout()
         while True:
-            live = _executions_for_job(cfg, job) - baseline
-            if len(live) >= 2:
+            states_before = {r: registry.get_state(r).status.value for r in run_ids}
+            if all(states_before[r] != "queued" for r in run_ids[:2]):
                 break
             if time.time() > deadline:
-                raise AssertionError("phase2b: never reached 2 concurrent executions")
-            await asyncio.sleep(_QUEUE_POLL_INTERVAL)
+                raise AssertionError(
+                    f"phase2b: the first two runs never started: {states_before}"
+                )
+            await asyncio.sleep(_START_POLL_INTERVAL)
 
-        states_before = {r: registry.get_state(r).status.value for r in run_ids}
         if (
             states_before[run_ids[0]] != "running"
             or states_before[run_ids[1]] != "running"
