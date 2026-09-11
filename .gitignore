@@ -45,6 +45,9 @@ deploy/terraform/**/*.tfvars
 !deploy/terraform/**/*.tfvars.example
 deploy/terraform/**/backend.hcl
 !deploy/terraform/**/backend.hcl.example
+# Saved plan files: binary, and each one embeds a full tfstate snapshot.
+deploy/terraform/**/tfplan
+deploy/terraform/**/*.tfplan
 crash.log
 .claude/settings.json
 .mcp.json
