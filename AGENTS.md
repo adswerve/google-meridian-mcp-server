@@ -191,17 +191,23 @@ Markdown report. Kept after the upgrade: it is the cheapest way to prove a bump 
   so past roughly 1,000 runs a cold start is at risk. Bounding it needs an
   `index/queued/` prefix mirroring `index/by_fingerprint/` — deliberately
   deferred.
-- **Startup reconciliation is best-effort and unretried** (`server.py:68-71`): a
+- **Startup reconciliation is best-effort and unretried** (`server.py:67-70`): a
   single GCS hiccup skips it entirely with only a warning, and the queued runs
   wait for the next instance start. Deliberate — a retry loop in the ASGI
   lifespan would trade a stranded run for a failed boot.
-- **`cancel_optimization` still has two dishonest windows.** One: a run
+- **`cancel_optimization` still has three dishonest windows.** One: a run
   dispatched but whose execution name was not recorded (a transient write
   failure) cannot be terminated by name, even now that `cancel()` also checks
   `get_dispatch` for a name recorded by another instance. Two: `_terminate` is
   best-effort (`cloud_run_executor.py:223-228`), so a `cancel_execution` RPC
-  that itself fails still yields `canceled` while the execution bills on. Both
-  narrowed from "always after a restart", neither eliminated.
+  that itself fails still yields `canceled` while the execution bills on.
+  Three: adoption now gives a `RUNNING` run a recorded `execution_name`, and
+  when `_reconcile_stale` fails such a run on a stale heartbeat it pops the
+  handle (`base_executor.py:244`) without calling `_terminate` — the
+  execution keeps billing with nothing left that will ever cancel it. Before
+  adoption existed there was no name to terminate, so this is not a
+  regression, but the information to close it now exists. All three narrowed
+  from "always after a restart", none eliminated.
 
 ## The recurring defect shape — the most transferable lesson
 
