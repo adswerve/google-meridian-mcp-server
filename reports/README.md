@@ -61,7 +61,7 @@ then diffs two labels leaf-by-leaf with numeric tolerances. Each report is one s
   process boundary — not just an in-process fake. The script (Phases 0-3 plus two near-free
   checks) is implemented and gated behind `QUEUE_SMOKE=1`; it has not yet been run, because it
   needs interactive `gcloud` re-authentication this environment cannot perform, spends real
-  money (seven optimizer executions, 2-3 hours), and mutates a shared Cloud Run service's
+  money (13 real optimizer executions (3 each for Phases 0, 1, 2, 2b, plus 1 cancelled in Phase 3), roughly 4-6 hours wall-clock), and mutates a shared Cloud Run service's
   `--max-instances`. This report will be written from the script's real console output once an
   operator with live credentials runs it.
 
