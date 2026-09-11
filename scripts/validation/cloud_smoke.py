@@ -488,36 +488,39 @@ async def _phase0(cfg, service_url: str, service_name: str, model_id: str, job: 
     baseline = _executions_for_job(cfg, job)
     non_ascii_label = "予算最適化 \U0001f3af"  # "budget optimization" + dart target
 
-    async with build_client("http", service_url) as client:
-
-        async def submit(pct: float, label: str | None = None) -> str:
-            args: dict[str, Any] = {
-                "model_id": model_id,
-                "config": {
-                    "scenario": {"type": "fixed_budget"},
-                    "constraint": {"mode": "global", "pct": pct},
-                },
-                "compute_tier": "cloud_cpu",
-                "force_rerun": True,
-            }
-            if label is not None:
-                args["label"] = label
+    async def submit(pct: float, label: str | None = None) -> str:
+        args: dict[str, Any] = {
+            "model_id": model_id,
+            "config": {
+                "scenario": {"type": "fixed_budget"},
+                "constraint": {"mode": "global", "pct": pct},
+            },
+            "compute_tier": "cloud_cpu",
+            "force_rerun": True,
+        }
+        if label is not None:
+            args["label"] = label
+        # Each submit opens its OWN client. Two tool calls racing on one
+        # streamable-http session tear down each other's reply stream --
+        # Phase 2b died on a server-side anyio.ClosedResourceError doing
+        # exactly that, and Phase 0 survived the same race only by luck. A
+        # session per concurrent call is what a real client would do anyway.
+        async with build_client("http", service_url) as client:
             return extract(await client.call_tool("run_optimization", args))["run_id"]
 
-        # Dispatch the two slot holders TOGETHER, then submit the third.
-        # Submitting all three in sequence staggers the two by a whole submit
-        # round trip (~50s); a run lasts ~75s and Cloud Run boot times vary by
-        # over a minute, so their running windows can miss each other
-        # entirely. A live attempt saw run 1 finish at 18:51:58 and run 2
-        # start at 18:52:42 -- "2 running" was never true, and the phase
-        # failed having proven nothing about the queue. Never all three at
-        # once, though: that OOMs the 2 GiB service (see _phase2b).
-        first_two = list(
-            await asyncio.gather(submit(0.1, non_ascii_label), submit(0.2))
-        )
-        run_ids = [*first_two, await submit(0.3)]
-        print(f"phase0: submitted {run_ids} (first two concurrently)")
+    # Dispatch the two slot holders TOGETHER, then submit the third.
+    # Submitting all three in sequence staggers the two by a whole submit
+    # round trip (~50s); a run lasts ~75s and Cloud Run boot times vary by
+    # over a minute, so their running windows can miss each other entirely.
+    # A live attempt saw run 1 finish at 18:51:58 and run 2 start at
+    # 18:52:42 -- "2 running" was never true, and the phase failed having
+    # proven nothing about the queue. Never all three at once, though: that
+    # OOMs the 2 GiB service (see _phase2b).
+    first_two = list(await asyncio.gather(submit(0.1, non_ascii_label), submit(0.2)))
+    run_ids = [*first_two, await submit(0.3)]
+    print(f"phase0: submitted {run_ids} (first two concurrently)")
 
+    async with build_client("http", service_url) as client:
         deadline = time.time() + _queue_phase_timeout()
         statuses: dict[str, dict] = {}
         while True:
@@ -849,35 +852,37 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
     registry = build_registry(cfg)  # read-only observation of the shared GCS state
     baseline = _executions_for_job(cfg, job)
 
-    async with build_client("http", service_url) as client:
-
-        async def submit(pct: float) -> str:
-            args = {
-                "model_id": model_id,
-                "config": {
-                    "scenario": {"type": "fixed_budget"},
-                    "constraint": {"mode": "global", "pct": pct},
-                },
-                "compute_tier": "cloud_cpu",
-                "force_rerun": True,
-            }
+    async def submit(pct: float) -> str:
+        args = {
+            "model_id": model_id,
+            "config": {
+                "scenario": {"type": "fixed_budget"},
+                "constraint": {"mode": "global", "pct": pct},
+            },
+            "compute_tier": "cloud_cpu",
+            "force_rerun": True,
+        }
+        # Own client per submit -- see _phase0's submit for why sharing one
+        # session across concurrent calls is not safe.
+        async with build_client("http", service_url) as client:
             return extract(await client.call_tool("run_optimization", args))["run_id"]
 
-        # TWO concurrently, then the third -- never all three. Each
-        # run_optimization loads the model to fingerprint it, and three
-        # concurrent loads exceed the service's 2 GiB limit: a live attempt
-        # killed the instance outright ("Memory limit of 2048 MiB exceeded
-        # with 2078 MiB used"), failing the submit rather than the queue.
-        #
-        # Two is enough. Both slots are claimed by dispatched handles the
-        # moment those two submits return, so the third queues no matter how
-        # long its own submit takes, and the two start together roughly three
-        # minutes later -- a full run's worth of overlap to restart inside,
-        # instead of the ~10s that sequential submits leave.
-        first_two = list(await asyncio.gather(submit(0.12), submit(0.22)))
-        run_ids = [*first_two, await submit(0.32)]
-        print(f"phase2b: submitted {run_ids} (first two concurrently)")
+    # TWO concurrently, then the third -- never all three. Each
+    # run_optimization loads the model to fingerprint it, and three
+    # concurrent loads exceed the service's 2 GiB limit: a live attempt
+    # killed the instance outright ("Memory limit of 2048 MiB exceeded with
+    # 2078 MiB used"), failing the submit rather than the queue.
+    #
+    # Two is enough. Both slots are claimed by dispatched handles the moment
+    # those two submits return, so the third queues no matter how long its
+    # own submit takes, and the two start together roughly three minutes
+    # later -- a full run's worth of overlap to restart inside, instead of
+    # the ~10s that sequential submits leave.
+    first_two = list(await asyncio.gather(submit(0.12), submit(0.22)))
+    run_ids = [*first_two, await submit(0.32)]
+    print(f"phase2b: submitted {run_ids} (first two concurrently)")
 
+    async with build_client("http", service_url) as client:
         deadline = time.time() + _queue_phase_timeout()
         while True:
             states = {r: registry.get_state(r).status.value for r in run_ids}
