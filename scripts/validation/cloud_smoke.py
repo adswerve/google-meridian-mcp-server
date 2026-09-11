@@ -192,6 +192,7 @@ _QUEUE_POLL_INTERVAL = 10.0
 # tighter interval than the ordinary progress polling above -- ten
 # seconds of slop is a sixth of the window and risks a spurious VOID.
 _START_POLL_INTERVAL = 2.0
+_TERMINAL_STATES = ("completed", "failed", "canceled")
 
 
 def _queue_phase_timeout() -> float:
@@ -714,21 +715,22 @@ def _phase2(cfg, model_id: str, job: str) -> dict:
     deadline = time.time() + _queue_phase_timeout()
     while True:
         states = {r: registry.get_state(r).status.value for r in run_ids[:2]}
-        if all(state != "queued" for state in states.values()):
+        if all(state == "running" for state in states.values()):
             break
+        # "not queued" is not good enough: a run that already finished is not
+        # queued either, and restarting underneath a finished run proves
+        # nothing. Void as soon as overlap has become impossible.
+        if any(state in _TERMINAL_STATES for state in states.values()):
+            sys.exit(
+                f"VOID: a run reached a terminal state before both were "
+                f"concurrently running ({states}); the runs are too short to "
+                "restart underneath -- use a larger model or a longer "
+                "constraint sweep"
+            )
         if time.time() > deadline:
             raise AssertionError(f"phase2: the first two runs never started: {states}")
         time.sleep(_START_POLL_INTERVAL)
         executor.pump()
-
-    # Abort rather than pass if the first two finish before the restart --
-    # the phase is void, not green. Distinct from the wait above: these runs
-    # did start, they just did not last long enough to restart underneath.
-    if any(state != "running" for state in states.values()):
-        sys.exit(
-            f"VOID: the first two runs did not stay running until the restart "
-            f"({states}); use a larger model or a longer constraint sweep"
-        )
 
     d1 = registry.get_dispatch(run_ids[0])
     d2 = registry.get_dispatch(run_ids[1])
@@ -808,6 +810,17 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
     rebuild in Phase 2 proves the reconciliation logic; only a real revision
     swap proves nothing else in the deployment depends on process memory.
     Uses the same verified _force_new_revision as Phase 0.
+
+    Submits all three runs CONCURRENTLY, and discovers which two occupy the
+    slots rather than assuming submission order decides it. A single
+    run_optimization round trip takes the better part of a minute -- the
+    server loads the model to fingerprint it -- while a run itself lasts only
+    about one. Sequential submits therefore stagger the starts by roughly a
+    run's whole duration, leaving a few seconds in which two runs are
+    genuinely concurrent, and often none: a live attempt voided with run 1
+    already 'completed' while run 2 was still starting. Concurrent submits
+    put all three in flight together, and the cap then decides which one
+    queues -- so the queued run is identified by observation, not by index.
     """
     from google_meridian_mcp_server.bootstrap import build_registry
     from scripts.validation.capture_baseline import build_client
@@ -817,8 +830,8 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
     baseline = _executions_for_job(cfg, job)
 
     async with build_client("http", service_url) as client:
-        run_ids: list[str] = []
-        for pct in (0.12, 0.22, 0.32):
+
+        async def submit(pct: float) -> str:
             args = {
                 "model_id": model_id,
                 "config": {
@@ -828,36 +841,36 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
                 "compute_tier": "cloud_cpu",
                 "force_rerun": True,
             }
-            submit = extract(await client.call_tool("run_optimization", args))
-            run_ids.append(submit["run_id"])
-        print(f"phase2b: submitted {run_ids}")
+            return extract(await client.call_tool("run_optimization", args))["run_id"]
 
-        # Same trap as Phase 2: wait for the runs to START, not for their
-        # executions to merely EXIST -- see the comment there.
+        run_ids = list(await asyncio.gather(submit(0.12), submit(0.22), submit(0.32)))
+        print(f"phase2b: submitted {run_ids} concurrently")
+
         deadline = time.time() + _queue_phase_timeout()
         while True:
-            states_before = {r: registry.get_state(r).status.value for r in run_ids}
-            if all(states_before[r] != "queued" for r in run_ids[:2]):
+            states = {r: registry.get_state(r).status.value for r in run_ids}
+            running = [r for r, state in states.items() if state == "running"]
+            queued = [r for r, state in states.items() if state == "queued"]
+            if len(running) == 2 and len(queued) == 1:
                 break
+            if any(state in _TERMINAL_STATES for state in states.values()):
+                sys.exit(
+                    "VOID: a run reached a terminal state before two were ever "
+                    f"concurrently running ({states}); the runs are too short "
+                    "to restart underneath -- use a larger model or a longer "
+                    "constraint sweep"
+                )
             if time.time() > deadline:
                 raise AssertionError(
-                    f"phase2b: the first two runs never started: {states_before}"
+                    f"phase2b: never reached 2 running / 1 queued: {states}"
                 )
             await asyncio.sleep(_START_POLL_INTERVAL)
 
-        if (
-            states_before[run_ids[0]] != "running"
-            or states_before[run_ids[1]] != "running"
-        ):
-            sys.exit(
-                "VOID: expected the first two runs still running before the "
-                f"revision swap, got {states_before}"
-            )
-        queued_run_id = run_ids[2]
-        assert registry.get_state(queued_run_id).status.value == "queued"
+        queued_run_id = queued[0]
+        print(f"phase2b: slots held by {running}; {queued_run_id} is waiting")
 
-        d1 = registry.get_dispatch(run_ids[0])
-        d2 = registry.get_dispatch(run_ids[1])
+        d1 = registry.get_dispatch(running[0])
+        d2 = registry.get_dispatch(running[1])
         assert d1 and d1.execution_name and d2 and d2.execution_name, (
             f"expected both handles dispatched before the swap: {d1} {d2}"
         )
@@ -888,7 +901,7 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
                 )
             await asyncio.sleep(_QUEUE_POLL_INTERVAL)
 
-        for rid in run_ids[:2]:
+        for rid in running:
             status = extract(
                 await client.call_tool("get_optimization_status", {"run_id": rid})
             )
