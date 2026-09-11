@@ -54,16 +54,16 @@ then diffs two labels leaf-by-leaf with numeric tolerances. Each report is one s
 
 ## Optimization queue durability
 
-- `durable-queue-live-verification.md` — **pending live execution.** The durable-queue /
+- `durable-queue-live-verification.md` — **PASSED, 2026-09-11.** The durable-queue /
   restart / cancel acceptance gate (`QUEUE_SMOKE=1` in `scripts/validation/cloud_smoke.py`)
-  proves, against a real deployed Cloud Run stack, that the queue/claim/adoption/cancel
-  mechanisms from the 2026-09-10 optimization-durability-and-encoding plan survive an actual
-  process boundary — not just an in-process fake. The script (Phases 0-3 plus two near-free
-  checks) is implemented and gated behind `QUEUE_SMOKE=1`; it has not yet been run, because it
-  needs interactive `gcloud` re-authentication this environment cannot perform, spends real
-  money (13 real optimizer executions (3 each for Phases 0, 1, 2, 2b, plus 1 cancelled in Phase 3), roughly 4-6 hours wall-clock), and mutates a shared Cloud Run service's
-  `--max-instances`. This report will be written from the script's real console output once an
-  operator with live credentials runs it.
+  run against a real deployed Cloud Run stack in `as-dev-anze`/`us-central1`: Phases 0-3 plus
+  the two near-free checks, 13 optimizer executions, 37 minutes. Phase 2b is the headline —
+  two runs genuinely executing and one genuinely queued when the serving container was
+  replaced, all three recovered from GCS by the new revision with exactly three executions for
+  three runs. The report quotes real console output throughout and states its own limits: the
+  gate mutates the service's `--max-instances` (pinned to 1, restored to 2 afterwards), and
+  Phase 2 observed one adoption rather than two because `reconcile_orphans()` took ~70s over a
+  bucket of 80 runs.
 
 ## `verification-gaps.md`
 
