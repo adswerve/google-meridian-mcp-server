@@ -500,8 +500,16 @@ async def _phase0(cfg, service_url: str, service_name: str, model_id: str, job: 
         )
 
         queued_run_id = queued[0]
-        _force_new_revision(cfg, service_name, tag="PHASE0_SWAP")
 
+    # The MCP streamable-http session lives in the serving container's memory,
+    # so replacing the instance destroys it and every later call on this client
+    # returns "Session not found" -- which is the POINT of the phase, not a
+    # failure of it: the run's durability is in GCS, the session's is not.
+    # Reconnect afterwards exactly as a real client would, or the gate reports
+    # a session-lifetime artifact as a durability failure.
+    _force_new_revision(cfg, service_name, tag="PHASE0_SWAP")
+
+    async with build_client("http", service_url) as client:
         deadline = time.time() + _queue_phase_timeout()
         while True:
             status = extract(
@@ -792,8 +800,11 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
         )
         d1_name, d2_name = d1.execution_name, d2.execution_name
 
-        _force_new_revision(cfg, service_name, tag="PHASE2B_SWAP")
+    # Same session-lifetime caveat as Phase 0: the swap kills the server-side
+    # MCP session, so the post-swap assertions need a fresh connection.
+    _force_new_revision(cfg, service_name, tag="PHASE2B_SWAP")
 
+    async with build_client("http", service_url) as client:
         deadline = time.time() + _queue_phase_timeout()
         while True:
             status = extract(
