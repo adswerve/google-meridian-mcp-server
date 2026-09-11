@@ -192,6 +192,43 @@ def _queue_phase_timeout() -> float:
     return float(os.getenv("OPTIMIZATION_SMOKE_TIMEOUT", "1800"))
 
 
+# This gate polls the Cloud Run Admin API every few seconds for hours. Over
+# that many calls a transient failure is not a possibility but a certainty --
+# a live run died on `503 ... DNS query cancelled` resolving
+# run.googleapis.com, discarding six already-paid-for optimizer executions
+# because one lookup blipped. Retry the transient classes; let everything
+# else (PermissionDenied, NotFound, an expired credential) fail immediately,
+# since those do not improve by being asked again.
+_TRANSIENT_RETRIES = 5
+_TRANSIENT_BACKOFF_SECONDS = 4.0
+
+
+def _call_with_retries(what: str, fn, *args, **kwargs):
+    from google.api_core import exceptions as gexc
+
+    transient = (
+        gexc.ServiceUnavailable,
+        gexc.DeadlineExceeded,
+        gexc.InternalServerError,
+        gexc.TooManyRequests,
+        gexc.GatewayTimeout,
+    )
+    for attempt in range(1, _TRANSIENT_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except transient as exc:
+            if attempt == _TRANSIENT_RETRIES:
+                raise
+            delay = _TRANSIENT_BACKOFF_SECONDS * attempt
+            print(
+                f"WARNING: {what} failed transiently "
+                f"(attempt {attempt}/{_TRANSIENT_RETRIES}): {type(exc).__name__}: "
+                f"{exc}; retrying in {delay:.0f}s"
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def _executions_for_job(cfg, job_name: str) -> set[str]:
     """Live execution names, so assertions cannot be satisfied by our own
     bookkeeping. Cloud Run retains prior executions, so every phase diffs
@@ -204,7 +241,12 @@ def _executions_for_job(cfg, job_name: str) -> set[str]:
         f"projects/{cfg.cloud_run_project}/locations/{cfg.cloud_run_region}"
         f"/jobs/{job_name}"
     )
-    return {e.name for e in client.list_executions(parent=parent)}
+    return {
+        e.name
+        for e in _call_with_retries(
+            "list_executions", client.list_executions, parent=parent
+        )
+    }
 
 
 def _live_executions_for_job(cfg, job_name: str) -> set[str]:
@@ -227,7 +269,9 @@ def _live_executions_for_job(cfg, job_name: str) -> set[str]:
     )
     return {
         e.name
-        for e in client.list_executions(parent=parent)
+        for e in _call_with_retries(
+            "list_executions", client.list_executions, parent=parent
+        )
         if not getattr(e, "completion_time", None)
     }
 
@@ -240,7 +284,7 @@ def _get_service(cfg, service_name: str):
         f"projects/{cfg.cloud_run_project}/locations/{cfg.cloud_run_region}"
         f"/services/{service_name}"
     )
-    return client.get_service(name=name)
+    return _call_with_retries("get_service", client.get_service, name=name)
 
 
 def _read_max_instances(cfg, service_name: str) -> int:
