@@ -228,6 +228,24 @@ class BaseExecutor(abc.ABC):
             age = (datetime.now(timezone.utc) - last).total_seconds()
             if age > self._stale_seconds:
                 try:
+                    # Same guard as _fail_if_unfinished: the worker writes
+                    # result.json (worker.py:231) BEFORE its terminal
+                    # write_state (:243), so a container killed in between
+                    # leaves a completed result under a RUNNING state whose
+                    # heartbeat goes stale by construction once the server
+                    # that would have refreshed it is down. This branch is
+                    # reached from reconcile_orphans (every RUNNING run at
+                    # startup) and from CloudRunJobExecutor._on_alive (every
+                    # adopted handle on every pump()) -- exactly the paths
+                    # most likely to see a stale heartbeat next to a finished
+                    # result, so failing it here would destroy the run and
+                    # force an expensive re-run for no reason.
+                    self._registry.get_result(run_id)
+                except (ResultNotReadyError, RunNotFoundError):
+                    pass
+                else:
+                    return
+                try:
                     self._registry.write_state(
                         OptimizationRunState(
                             run_id=run_id,

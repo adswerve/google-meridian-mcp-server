@@ -232,20 +232,40 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
         _atomic_write(self._index / fingerprint, run_id)
 
     def claim_dispatch(self, dispatch: OptimizationRunDispatch) -> bool:
+        """Create-if-absent claim of dispatch.json, atomically.
+
+        A plain O_CREAT|O_EXCL open followed by a separate write is two
+        steps: a process killed between them leaves a zero-byte dispatch.json
+        that permanently loses every future claim (claim_dispatch always sees
+        the file already exists) and makes get_dispatch raise a
+        ValidationError out of reconcile_orphans and cancel forever after.
+        Instead: write the full content to a temp file in the same directory
+        (a single, complete write, so there is no partial-content window),
+        then os.link() it into place -- link() raises FileExistsError if the
+        target already exists, giving the same exclusivity atomically as a
+        rename of an existing name never would.
+        """
         d = self._run_dir(dispatch.run_id)
         if not d.is_dir():
             raise RunNotFoundError(dispatch.run_id)
-        try:
-            fd = os.open(
-                d / "dispatch.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
-            )
-        except FileExistsError:
-            return False
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        fd_closed = False
         try:
             os.write(fd, dispatch.model_dump_json(indent=2).encode())
             os.fsync(fd)
-        finally:
             os.close(fd)
+            fd_closed = True
+            try:
+                os.link(tmp, d / "dispatch.json")
+            except FileExistsError:
+                return False
+        finally:
+            if not fd_closed:
+                os.close(fd)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         return True
 
     def write_dispatch(self, dispatch: OptimizationRunDispatch) -> None:

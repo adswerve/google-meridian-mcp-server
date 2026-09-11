@@ -48,6 +48,12 @@ task brief):
   - ADC credentials (`gcloud auth application-default login`) for a principal
     with roles/run.developer and bucket read/write.
   - A `.binpb` model already uploaded to gs://$GCS_BUCKET/$GCS_MODELS_PREFIX/.
+  - MCP_AUTH_TOKEN set to an identity token (`gcloud auth print-identity-token`)
+    -- this project's org policy refused the allUsers invoker binding, so the
+    deployed service requires one even with allow_unauthenticated=true.
+  - No pre-existing QUEUED or RUNNING runs in the target bucket --
+    reconcile_orphans() scans the whole bucket prefix, so leftovers from a
+    prior (or still-broken) deployment would be re-enqueued and launched too.
 """
 
 from __future__ import annotations
@@ -197,6 +203,31 @@ def _executions_for_job(cfg, job_name: str) -> set[str]:
     return {e.name for e in client.list_executions(parent=parent)}
 
 
+def _live_executions_for_job(cfg, job_name: str) -> set[str]:
+    """Names of executions that are ACTUALLY still running right now, unlike
+    _executions_for_job above (which is deliberately cumulative -- see its
+    docstring -- and correct for the assertions that diff it against a
+    baseline). Cloud Run retains completed executions forever, so a bare
+    membership count only grows and can never be read as a live concurrency
+    level. This is for Phase 1's max_parallel invariant only, which polls
+    until all three runs are terminal: by the time the third dispatches, the
+    cumulative set already contains all three names even though at most two
+    are ever concurrently live, and treating that as a live count produces a
+    false "max_parallel breached" failure."""
+    from google.cloud import run_v2
+
+    client = run_v2.ExecutionsClient()
+    parent = (
+        f"projects/{cfg.cloud_run_project}/locations/{cfg.cloud_run_region}"
+        f"/jobs/{job_name}"
+    )
+    return {
+        e.name
+        for e in client.list_executions(parent=parent)
+        if not getattr(e, "completion_time", None)
+    }
+
+
 def _get_service(cfg, service_name: str):
     from google.cloud import run_v2
 
@@ -225,6 +256,54 @@ def _check_adc() -> None:
             "roles/run.developer (run.jobs.run, run.executions.{get,list,cancel}) "
             f"and read/write on the model bucket, then re-run. ({exc})"
         )
+
+
+def _check_mcp_auth_token() -> None:
+    """Phases 0 and 2b go through build_client("http", ...), which sends an
+    Authorization header only when MCP_AUTH_TOKEN is set. A domain-restricted
+    -sharing org policy on this project refused the allUsers invoker binding
+    (see capture_baseline.py's build_client), so the deployed service
+    requires an identity token even though Terraform sets
+    allow_unauthenticated=true. Failing here, before any submit, is cheap;
+    failing inside Phase 0 after the queue is already filled is not."""
+    if not os.environ.get("MCP_AUTH_TOKEN"):
+        sys.exit(
+            "PREREQUISITE MISSING: MCP_AUTH_TOKEN is not set. The deployed "
+            "service requires an identity token (an org policy on this "
+            "project refused the allUsers invoker binding, so "
+            "allow_unauthenticated=true alone is not enough). Set "
+            "MCP_AUTH_TOKEN=$(gcloud auth print-identity-token) and re-run."
+        )
+
+
+def _check_no_preexisting_queue_activity(cfg) -> None:
+    """CloudRunJobExecutor.reconcile_orphans scans the WHOLE bucket prefix,
+    not just this run's ids. Phase 2 calls it against the operator's real
+    bucket, and any pre-existing QUEUED or RUNNING run there gets re-enqueued
+    and (once a slot is free) actually launched -- unbudgeted GPU spend, and
+    a bucket that has been running the broken pre-fix code is *guaranteed* to
+    have stranded QUEUED runs, since that is the exact defect this branch
+    fixes. It also breaks Phase 2's `== {d1_name, d2_name}` and Phase 2b's
+    `len(all_new) == 3` assertions for a reason that reads as a code failure
+    rather than a dirty bucket."""
+    from google_meridian_mcp_server.bootstrap import build_registry
+    from google_meridian_mcp_server.domain.optimization import RunStatus
+
+    registry = build_registry(cfg)
+    queued = registry.list(status=RunStatus.QUEUED)
+    running = registry.list(status=RunStatus.RUNNING)
+    if queued or running:
+        found = ", ".join(f"{s.run_id} ({s.status.value})" for s in (*queued, *running))
+        sys.exit(
+            "PREREQUISITE MISSING: this bucket already has QUEUED or RUNNING "
+            f"optimization runs: {found}. reconcile_orphans() scans the whole "
+            "bucket prefix, not just this gate's own runs, so Phase 2's "
+            "restart would re-enqueue and launch these too -- unbudgeted "
+            "spend, and a false failure that reads as a code bug. Resolve or "
+            "cancel them (or point this gate at a clean bucket/prefix) "
+            "before running QUEUE_SMOKE."
+        )
+    print("prereq OK: no pre-existing QUEUED or RUNNING runs in this bucket")
 
 
 def _check_model_in_bucket(cfg, model_id: str) -> None:
@@ -496,7 +575,7 @@ def _phase1(cfg, model_id: str, job: str) -> dict:
     deadline = time.time() + _queue_phase_timeout()
     while True:
         states = {r: registry.get_state(r).status.value for r in run_ids}
-        live = _executions_for_job(cfg, job) - baseline
+        live = _live_executions_for_job(cfg, job) - baseline
         peak = max(peak, len(live))
         assert peak <= 2, f"max_parallel=2 breached: {len(live)} executions live"
         dispatch = registry.get_dispatch(run_ids[2])
@@ -702,8 +781,12 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
         queued_run_id = run_ids[2]
         assert registry.get_state(queued_run_id).status.value == "queued"
 
-        d1_name = registry.get_dispatch(run_ids[0]).execution_name
-        d2_name = registry.get_dispatch(run_ids[1]).execution_name
+        d1 = registry.get_dispatch(run_ids[0])
+        d2 = registry.get_dispatch(run_ids[1])
+        assert d1 and d1.execution_name and d2 and d2.execution_name, (
+            f"expected both handles dispatched before the swap: {d1} {d2}"
+        )
+        d1_name, d2_name = d1.execution_name, d2.execution_name
 
         _force_new_revision(cfg, service_name, tag="PHASE2B_SWAP")
 
@@ -977,7 +1060,9 @@ def _queue_smoke_main() -> int:
     print("=" * 78)
 
     _check_adc()
+    _check_mcp_auth_token()
     _check_model_in_bucket(cfg, model_id)
+    _check_no_preexisting_queue_activity(cfg)
     # One read serves both the pin check and the service URL -- avoid a
     # second round trip for what the very next line needs anyway.
     service = _get_service_or_exit(cfg, service_name)
@@ -1007,7 +1092,13 @@ def _queue_smoke_main() -> int:
         counts["cloud_job_not_found"] = _check_cloud_job_not_found(cfg, model_id)
     finally:
         finished_at = datetime.now(timezone.utc).isoformat()
-        max_instances_after = _read_max_instances(cfg, service_name)
+        try:
+            # A live GCP call inside `finally` must never replace a genuine
+            # phase exception already propagating (e.g. expired credentials
+            # partway through a 4-6 hour gate) with one of its own.
+            max_instances_after = _read_max_instances(cfg, service_name)
+        except Exception as exc:  # noqa: BLE001 - must not mask the real failure
+            max_instances_after = f"UNKNOWN (read failed: {exc})"
         print("=" * 78)
         print(
             f"max_instance_count: before={max_instances_before} after={max_instances_after}"

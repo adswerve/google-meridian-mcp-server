@@ -613,8 +613,20 @@ def test_a_young_claim_over_a_queued_run_is_left_alone(tmp_path):
 
 
 def test_a_stale_claim_over_a_live_run_is_not_failed(tmp_path):
-    """A crash after run_job() but before write_dispatch leaves a claim with no
-    execution name while the execution is live and billing."""
+    """A RUNNING run with a stale (unlaunched-looking) dispatch claim and a
+    fresh heartbeat is left alone by reconcile_orphans.
+
+    This does NOT exercise _fail_stale_dispatch: that is only called from the
+    QUEUED-run loop in reconcile_orphans, and this run is RUNNING, so it can
+    never reach it regardless of whether _fail_stale_dispatch exists at all.
+    What actually protects this run is that _reconcile_stale has nothing to
+    act on -- the heartbeat is fresh, so the RUNNING-run branch of
+    reconcile_orphans is a no-op. The real "don't fail a live run on a race"
+    guarantee is pinned by expected_generation semantics, covered by
+    test_reconcile_stale_precondition_guards_against_race in
+    test_subprocess_executor.py. This test only pins that reconcile_orphans
+    does not touch a RUNNING run just because a dispatch claim looks stale.
+    """
     from google_meridian_mcp_server.persistence.optimization_run_registry import (
         LocalOptimizationRunRegistry,
     )

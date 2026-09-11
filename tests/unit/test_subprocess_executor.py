@@ -251,6 +251,34 @@ def test_reconcile_stale_precondition_guards_against_race():
     assert run_id not in ex._handles
 
 
+def test_reconcile_orphans_does_not_fail_running_run_with_result(tmp_path):
+    """MUST FIX 1: a RUNNING run with a stale heartbeat AND a written result.json
+    must not be stamped FAILED by reconcile_orphans -> _reconcile_stale.
+
+    Mirrors the worker.py race: the worker writes result.json (worker.py:231)
+    before its terminal write_state (:243), so a container killed in between
+    leaves a complete result under a RUNNING state with a heartbeat that goes
+    stale by construction while the server that would refresh it is down.
+    reconcile_orphans (called at startup) must treat this as done, not crashed.
+    """
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+
+    reg.create(_run("a"))
+    reg.write_state(
+        OptimizationRunState(
+            run_id="a",
+            status=RunStatus.RUNNING,
+            heartbeat_at="1970-01-01T00:00:00+00:00",  # very stale
+        )
+    )
+    reg.write_result("a", {"ok": True})
+
+    ex.reconcile_orphans()
+
+    assert reg.get_state("a").status == RunStatus.RUNNING
+
+
 def test_reap_after_deleted_run_does_not_raise(tmp_path):
     """A completed run's handle may be reaped after the run is deleted (delete
     races the poll() lag). _fail_if_unfinished must treat a missing run as a
