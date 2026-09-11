@@ -755,12 +755,14 @@ def _phase2(cfg, model_id: str, job: str) -> dict:
         time.sleep(_START_POLL_INTERVAL)
         executor.pump()
 
-    d1 = registry.get_dispatch(run_ids[0])
-    d2 = registry.get_dispatch(run_ids[1])
-    assert d1 and d1.execution_name and d2 and d2.execution_name, (
-        f"expected both handles dispatched by restart time: {d1} {d2}"
+    dispatched_before = {
+        r: d.execution_name
+        for r in run_ids
+        if (d := registry.get_dispatch(r)) and d.execution_name
+    }
+    assert len(dispatched_before) >= 2, (
+        f"expected at least two handles dispatched by restart time: {dispatched_before}"
     )
-    d1_name, d2_name = d1.execution_name, d2.execution_name
 
     # Discard the executor and registry objects -- the process boundary this
     # whole task exists to prove state survives.
@@ -770,24 +772,47 @@ def _phase2(cfg, model_id: str, job: str) -> dict:
     new_executor = build_executor(cfg, new_registry)
     new_executor.reconcile_orphans()
 
-    assert set(new_executor._handles.values()) == {d1_name, d2_name}, (
-        "the two in-flight executions were not adopted; max_parallel is not "
-        f"enforced after a restart: {new_executor._handles}"
+    # Do NOT assert WHICH runs hold the slots. A run lasts about 75 seconds;
+    # rebuilding the object graph and reconciling takes long enough that a
+    # slot holder can finish and hand its slot to the waiter mid-restart. A
+    # live run failed here with runs 2 and 3 adopted instead of 1 and 2 --
+    # a correct system doing exactly what it should. What must hold is that
+    # every adopted handle is the execution name PERSISTED for that run
+    # (adoption by recorded identity, never a fresh launch), and that the cap
+    # is respected.
+    adopted = dict(new_executor._handles)
+    assert adopted, "reconciliation adopted nothing; the restart lost the queue"
+    assert len(adopted) <= cfg.optimization_max_parallel, (
+        f"reconciliation exceeded max_parallel={cfg.optimization_max_parallel}: "
+        f"{adopted}"
     )
-    assert _executions_for_job(cfg, job) - baseline == {d1_name, d2_name}, (
-        "a new execution was launched during reconciliation instead of adopting"
+    for run_id, handle in adopted.items():
+        persisted = new_registry.get_dispatch(run_id)
+        assert persisted and persisted.execution_name == handle, (
+            f"{run_id} was adopted as {handle!r}, which is not the execution "
+            f"name persisted for it ({persisted}); reconciliation relaunched "
+            "instead of adopting"
+        )
+    assert set(adopted.values()) <= (_executions_for_job(cfg, job) - baseline), (
+        f"adopted a handle that is not one of this phase's executions: {adopted}"
     )
-    assert new_registry.get_state(run_ids[2]).status.value == "queued", (
-        "the third run must stay QUEUED right after reconcile: both slots are "
-        "occupied by adopted handles"
+    waiting = [r for r in run_ids if r not in adopted]
+    for run_id in waiting:
+        state = new_registry.get_state(run_id).status.value
+        assert state in ("queued", *_TERMINAL_STATES), (
+            f"{run_id} holds no slot after reconcile but reports {state!r}"
+        )
+    print(
+        f"phase2: adoption confirmed by exact execution name for {sorted(adopted)}; "
+        f"not holding a slot: {waiting}"
     )
-    print("phase2: adoption confirmed by exact execution name; third run still queued")
 
     deadline = time.time() + _queue_phase_timeout()
-    while new_registry.get_state(run_ids[2]).status.value == "queued":
+    while any(new_registry.get_state(r).status.value == "queued" for r in run_ids):
         if time.time() > deadline:
             raise AssertionError(
-                "phase2: third run never dispatched after a slot freed"
+                "phase2: a run never dispatched after a slot freed: "
+                f"{ {r: new_registry.get_state(r).status.value for r in run_ids} }"
             )
         time.sleep(_QUEUE_POLL_INTERVAL)
         new_executor.pump()
