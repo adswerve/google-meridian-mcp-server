@@ -489,8 +489,8 @@ async def _phase0(cfg, service_url: str, service_name: str, model_id: str, job: 
     non_ascii_label = "予算最適化 \U0001f3af"  # "budget optimization" + dart target
 
     async with build_client("http", service_url) as client:
-        run_ids: list[str] = []
-        for i, pct in enumerate((0.1, 0.2, 0.3)):
+
+        async def submit(pct: float, label: str | None = None) -> str:
             args: dict[str, Any] = {
                 "model_id": model_id,
                 "config": {
@@ -500,11 +500,23 @@ async def _phase0(cfg, service_url: str, service_name: str, model_id: str, job: 
                 "compute_tier": "cloud_cpu",
                 "force_rerun": True,
             }
-            if i == 0:
-                args["label"] = non_ascii_label
-            submit = extract(await client.call_tool("run_optimization", args))
-            run_ids.append(submit["run_id"])
-        print(f"phase0: submitted {run_ids}")
+            if label is not None:
+                args["label"] = label
+            return extract(await client.call_tool("run_optimization", args))["run_id"]
+
+        # Dispatch the two slot holders TOGETHER, then submit the third.
+        # Submitting all three in sequence staggers the two by a whole submit
+        # round trip (~50s); a run lasts ~75s and Cloud Run boot times vary by
+        # over a minute, so their running windows can miss each other
+        # entirely. A live attempt saw run 1 finish at 18:51:58 and run 2
+        # start at 18:52:42 -- "2 running" was never true, and the phase
+        # failed having proven nothing about the queue. Never all three at
+        # once, though: that OOMs the 2 GiB service (see _phase2b).
+        first_two = list(
+            await asyncio.gather(submit(0.1, non_ascii_label), submit(0.2))
+        )
+        run_ids = [*first_two, await submit(0.3)]
+        print(f"phase0: submitted {run_ids} (first two concurrently)")
 
         deadline = time.time() + _queue_phase_timeout()
         statuses: dict[str, dict] = {}
@@ -520,6 +532,14 @@ async def _phase0(cfg, service_url: str, service_name: str, model_id: str, job: 
             print(f"phase0: running={len(running)} queued={len(queued)}")
             if len(running) == 2 and len(queued) == 1:
                 break
+            if any(s.get("status") in _TERMINAL_STATES for s in statuses.values()):
+                sys.exit(
+                    "VOID: a run reached a terminal state before two were ever "
+                    f"concurrently running with a third waiting ({statuses}); "
+                    "the runs are too short relative to Cloud Run boot "
+                    "variance -- use a larger model or a longer constraint "
+                    "sweep"
+                )
             if time.time() > deadline:
                 raise AssertionError(
                     f"phase0: never reached 2 running / 1 queued; statuses={statuses}"
