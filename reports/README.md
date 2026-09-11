@@ -52,6 +52,19 @@ then diffs two labels leaf-by-leaf with numeric tolerances. Each report is one s
 - `weekly-optimization-grid-measurements.md` — the measurements behind the compute-tier sizing
   grid in the README's "Which tier does `auto` pick?" section.
 
+## Optimization queue durability
+
+- `durable-queue-live-verification.md` — **pending live execution.** The durable-queue /
+  restart / cancel acceptance gate (`QUEUE_SMOKE=1` in `scripts/validation/cloud_smoke.py`)
+  proves, against a real deployed Cloud Run stack, that the queue/claim/adoption/cancel
+  mechanisms from the 2026-09-10 optimization-durability-and-encoding plan survive an actual
+  process boundary — not just an in-process fake. The script (Phases 0-3 plus two near-free
+  checks) is implemented and gated behind `QUEUE_SMOKE=1`; it has not yet been run, because it
+  needs interactive `gcloud` re-authentication this environment cannot perform, spends real
+  money (seven optimizer executions, 2-3 hours), and mutates a shared Cloud Run service's
+  `--max-instances`. This report will be written from the script's real console output once an
+  operator with live credentials runs it.
+
 ## `verification-gaps.md`
 
 The gaps in the evidence above: environment moves that were never drift-baselined, a config
