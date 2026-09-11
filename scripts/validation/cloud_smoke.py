@@ -843,8 +843,20 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
             }
             return extract(await client.call_tool("run_optimization", args))["run_id"]
 
-        run_ids = list(await asyncio.gather(submit(0.12), submit(0.22), submit(0.32)))
-        print(f"phase2b: submitted {run_ids} concurrently")
+        # TWO concurrently, then the third -- never all three. Each
+        # run_optimization loads the model to fingerprint it, and three
+        # concurrent loads exceed the service's 2 GiB limit: a live attempt
+        # killed the instance outright ("Memory limit of 2048 MiB exceeded
+        # with 2078 MiB used"), failing the submit rather than the queue.
+        #
+        # Two is enough. Both slots are claimed by dispatched handles the
+        # moment those two submits return, so the third queues no matter how
+        # long its own submit takes, and the two start together roughly three
+        # minutes later -- a full run's worth of overlap to restart inside,
+        # instead of the ~10s that sequential submits leave.
+        first_two = list(await asyncio.gather(submit(0.12), submit(0.22)))
+        run_ids = [*first_two, await submit(0.32)]
+        print(f"phase2b: submitted {run_ids} (first two concurrently)")
 
         deadline = time.time() + _queue_phase_timeout()
         while True:
