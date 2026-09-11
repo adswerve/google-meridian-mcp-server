@@ -770,7 +770,20 @@ def _phase2(cfg, model_id: str, job: str) -> dict:
 
     new_registry = build_registry(cfg)
     new_executor = build_executor(cfg, new_registry)
+    # Time it: reconcile_orphans scans the WHOLE bucket prefix, so its cost
+    # grows with every run ever recorded there, not with the work in flight.
+    # On a bucket holding 80 runs it took long enough that both slot holders
+    # finished mid-reconcile, which is why the assertions below no longer
+    # name specific runs. An operator reading this number against their own
+    # bucket size is reading their server's startup latency.
+    reconcile_started = time.time()
     new_executor.reconcile_orphans()
+    reconcile_seconds = time.time() - reconcile_started
+    run_count = len(list(new_registry.list()))
+    print(
+        f"phase2: reconcile_orphans took {reconcile_seconds:.1f}s over "
+        f"{run_count} runs in the bucket prefix"
+    )
 
     # Do NOT assert WHICH runs hold the slots. A run lasts about 75 seconds;
     # rebuilding the object graph and reconciling takes long enough that a
