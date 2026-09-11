@@ -14,12 +14,23 @@ To smoke-test cloud_gpu instead:
 
 QUEUE_SMOKE=1 is a SEPARATE, more expensive, opt-in mode: the durable-queue /
 restart / cancel acceptance gate against a real deployed stack (Task 10 of the
-2026-09-10 optimization-durability-and-encoding plan). It costs real money
-(seven real optimizer executions, 2-3 hours) and MUTATES a shared Cloud Run
-service's --max-instances, so it is never run unless QUEUE_SMOKE=1 is set
-explicitly -- CLOUD_SMOKE=1 alone does not trigger it, and neither flag
-implies the other. See the docstrings on _queue_smoke_main and each _phaseN
-function below for what each phase proves and which commit it exercises. Run:
+2026-09-10 optimization-durability-and-encoding plan). It costs real money --
+13 real optimizer executions (3 each for Phases 0, 1, 2, 2b, plus 1 cancelled
+in Phase 3), roughly DOUBLE the 7 executions a naive reading of the plan's
+budget note suggests, because Phases 0, 1, 2, and 2b are each independent
+scenarios with their own fresh triplet of submissions rather than one triplet
+shared across all of them. That is deliberate: sharing would couple Phase 1's
+completion timing to Phase 2's viability, and Phase 2 voids itself if both
+runs finish before the restart -- so a slow Phase 1 would silently void Phase
+2 and the operator would pay for a run proving nothing. Independent phases
+cost more but are honest about what each one actually measured. Budget
+roughly 4-6 hours wall-clock (up to 2 executions run concurrently at a time)
+and set OPTIMIZATION_SMOKE_TIMEOUT accordingly. It also MUTATES a shared
+Cloud Run service's --max-instances, so it is never run unless QUEUE_SMOKE=1
+is set explicitly -- CLOUD_SMOKE=1 alone does not trigger it, and neither
+flag implies the other. See the docstrings on _queue_smoke_main and each
+_phaseN function below for what each phase proves and which commit it
+exercises. Run:
 
   QUEUE_SMOKE=1 CLOUD_RUN_PROJECT=your-gcp-project CLOUD_RUN_REGION=us-central1 \\
   CLOUD_RUN_SERVICE=meridian-mcp-server CLOUD_RUN_JOB_CPU=meridian-opt-cpu \\
@@ -201,10 +212,6 @@ def _read_max_instances(cfg, service_name: str) -> int:
     return _get_service(cfg, service_name).template.scaling.max_instance_count
 
 
-def _service_url(cfg, service_name: str) -> str:
-    return _get_service(cfg, service_name).uri
-
-
 def _check_adc() -> None:
     import google.auth
     from google.auth.exceptions import DefaultCredentialsError
@@ -239,9 +246,9 @@ def _check_model_in_bucket(cfg, model_id: str) -> None:
     print(f"prereq OK: {model_id} has a .binpb model at gs://{cfg.gcs_bucket}/{prefix}")
 
 
-def _check_pinned_single_instance(cfg, service_name: str) -> int:
+def _get_service_or_exit(cfg, service_name: str):
     try:
-        service = _get_service(cfg, service_name)
+        return _get_service(cfg, service_name)
     except Exception as exc:  # noqa: BLE001 - surfaced as an actionable prerequisite failure
         sys.exit(
             f"PREREQUISITE MISSING: could not read Cloud Run service "
@@ -249,6 +256,9 @@ def _check_pinned_single_instance(cfg, service_name: str) -> int:
             f"region={cfg.cloud_run_region}: {exc}. Check CLOUD_RUN_SERVICE / "
             "CLOUD_RUN_PROJECT / CLOUD_RUN_REGION and ADC."
         )
+
+
+def _check_pinned_single_instance(cfg, service_name: str, service) -> int:
     max_instances = service.template.scaling.max_instance_count
     if max_instances != 1:
         sys.exit(
@@ -267,54 +277,68 @@ def _check_pinned_single_instance(cfg, service_name: str) -> int:
     return max_instances
 
 
-def _force_revision_swap(cfg, service_name: str) -> None:
-    """Replace the running instance via a label update, discarding any
-    in-memory executor state (the queue deque, `_handles`) -- the mechanism
-    Phase 0 needs to prove the durable queue (6b28b6e/eab662a/54ea6fd)
-    survives a real process boundary, not a rebuilt Python object graph."""
-    label_value = str(int(time.time()))
+def _force_new_revision(cfg, service_name: str, *, tag: str) -> None:
+    """Force an ACTUAL new Cloud Run revision and VERIFY it, rather than
+    assume it.
+
+    Per Cloud Run's revision model, a service-level LABEL update alone is
+    metadata-only and does not reliably create a new revision or replace the
+    running container instance -- only a change to the revision TEMPLATE
+    (image, env vars, resources, concurrency, ...) does. Using a label update
+    here (the plan brief's literal Step 3 sketch) risks a gate that polls the
+    *same still-running process* and never exercises the cross-process
+    durability it exists to prove -- a PASS that measured nothing. So this
+    bumps an env var (a template change) instead, and then reads the
+    service's serving revision back to confirm it actually changed, failing
+    loudly rather than discovering "it measured nothing" only after a live,
+    paid run.
+    """
+    before = _get_service(cfg, service_name).latest_ready_revision
+    value = str(int(time.time()))
     cmd = [
         "gcloud",
         "run",
         "services",
         "update",
         service_name,
-        f"--update-labels=queue-smoke={label_value}",
+        f"--update-env-vars=QUEUE_SMOKE_{tag}={value}",
         f"--project={cfg.cloud_run_project}",
         f"--region={cfg.cloud_run_region}",
         "--quiet",
     ]
-    print(f"forcing a revision swap: {' '.join(cmd)}")
+    print(f"forcing a real revision swap (env-var/template change): {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
-
-def _real_revision_swap(cfg, service_name: str) -> None:
-    """Force an ACTUAL new Cloud Run revision through an env-var bump (or
-    `terraform apply`, if the deployment is tracked there and the operator
-    prefers to go through it) -- the deployment path an operator would
-    actually use for a real release, as opposed to Phase 0's plain label
-    update. Either way this replaces the running container instance."""
-    label_value = str(int(time.time()))
-    cmd = [
-        "gcloud",
-        "run",
-        "services",
-        "update",
-        service_name,
-        f"--update-env-vars=QUEUE_SMOKE_REVISION_SWAP={label_value}",
-        f"--project={cfg.cloud_run_project}",
-        f"--region={cfg.cloud_run_region}",
-        "--quiet",
-    ]
-    print(f"forcing a REAL revision swap (env-var bump): {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
+    deadline = time.time() + 300
+    after = before
+    while time.time() < deadline:
+        after = _get_service(cfg, service_name).latest_ready_revision
+        if after and after != before:
+            break
+        time.sleep(5)
+    if not after or after == before:
+        raise AssertionError(
+            f"revision did not change after the swap (still {before!r}) -- "
+            "this phase would have measured the same still-running process, "
+            "never the cross-process durability it exists to prove. Aborting "
+            "rather than reporting a false PASS."
+        )
+    print(f"revision confirmed swapped: {before!r} -> {after!r}")
 
 
 async def _phase0(cfg, service_url: str, service_name: str, model_id: str, job: str):
     """Phase 0: the queue on the deployed service, over HTTP, through a
-    forced revision swap. Answers the requirement literally: a live
-    deployment, real Cloud Run Job runs, the queue filled (two running, one
-    waiting), surviving an instance replacement.
+    forced (and VERIFIED) revision swap. Answers the requirement literally:
+    a live deployment, real Cloud Run Job runs, the queue filled (two
+    running, one waiting), surviving an instance replacement.
+
+    The swap goes through _force_new_revision's env-var/template change,
+    not a service-level label update: a label update is metadata-only and
+    does not reliably replace the running container, which would make this
+    phase pass without ever exercising cross-process durability -- this
+    deviates from the plan brief's literal Step 3 sketch deliberately,
+    because the spec's requirement (prove durability across a real instance
+    replacement) is the binding authority, not the sketch's exact command.
 
     Exercises 6b28b6e + eab662a (dispatch.json / atomic claim / recorded
     execution name) and 54ea6fd (startup reconciliation on the deployed
@@ -380,7 +404,10 @@ async def _phase0(cfg, service_url: str, service_name: str, model_id: str, job: 
         listing = extract(
             await client.call_tool("list_optimizations", {"model_id": model_id})
         )
-        entry = next(r for r in listing["runs"] if r["run_id"] == run_ids[0])
+        entry = next((r for r in listing["runs"] if r["run_id"] == run_ids[0]), None)
+        assert entry is not None, (
+            f"phase0: run {run_ids[0]} missing from list_optimizations: {listing}"
+        )
         assert entry["label"] == non_ascii_label, (
             f"non-ASCII label did not round-trip byte-identical: "
             f"{entry['label']!r} != {non_ascii_label!r}"
@@ -390,7 +417,7 @@ async def _phase0(cfg, service_url: str, service_name: str, model_id: str, job: 
         )
 
         queued_run_id = queued[0]
-        _force_revision_swap(cfg, service_name)
+        _force_new_revision(cfg, service_name, tag="PHASE0_SWAP")
 
         deadline = time.time() + _queue_phase_timeout()
         while True:
@@ -490,7 +517,7 @@ def _phase1(cfg, model_id: str, job: str) -> dict:
         "no queueing occurred"
     )
     print(f"phase1: PASSED peak={peak} third_dispatched_while={third_dispatched_while}")
-    return {"submitted": 3, "peak_concurrent": peak}
+    return {"submitted": 3, "peak_concurrent": peak, "run_ids": run_ids}
 
 
 def _phase2(cfg, model_id: str, job: str) -> dict:
@@ -629,6 +656,7 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
     redeployed revision rather than a rebuilt object graph. The in-process
     rebuild in Phase 2 proves the reconciliation logic; only a real revision
     swap proves nothing else in the deployment depends on process memory.
+    Uses the same verified _force_new_revision as Phase 0.
     """
     from google_meridian_mcp_server.bootstrap import build_registry
     from scripts.validation.capture_baseline import build_client
@@ -677,7 +705,7 @@ async def _phase2b(cfg, service_url: str, service_name: str, model_id: str, job:
         d1_name = registry.get_dispatch(run_ids[0]).execution_name
         d2_name = registry.get_dispatch(run_ids[1]).execution_name
 
-        _real_revision_swap(cfg, service_name)
+        _force_new_revision(cfg, service_name, tag="PHASE2B_SWAP")
 
         deadline = time.time() + _queue_phase_timeout()
         while True:
@@ -806,47 +834,37 @@ def _phase3(cfg, model_id: str, job: str) -> dict:
     return {"submitted": 1, "canceled": 1}
 
 
-def _check_dispatch_json_deletion(cfg, model_id: str) -> bool:
+def _check_dispatch_json_deletion(cfg, run_id: str) -> bool:
     """Near-free addition: dispatch.json deletion against a REAL bucket.
     Task 8's only other proof is FakeGcsClient, and the local-vs-GCS delete
-    asymmetry is the trap. Runs one small submission to completion, deletes
-    it, and asserts a real list_blobs for its prefix returns nothing."""
+    asymmetry is the trap.
+
+    "Near-free" means it must cost NO extra execution: this REUSES a run_id
+    an earlier phase already submitted and paid for (Phase 1's, which runs
+    every submission to completion), rather than submitting a fresh one --
+    submitting here would be a full extra paid Cloud Run Job execution and
+    contradict the whole point of calling this addition free.
+    """
     from google.cloud import storage
 
     from google_meridian_mcp_server.bootstrap import build_executor, build_registry
-    from google_meridian_mcp_server.execution.worker import build_worker_catalog
     from google_meridian_mcp_server.services.optimization_service import (
         OptimizationService,
     )
 
     registry = build_registry(cfg)
     executor = build_executor(cfg, registry)
-    catalog = build_worker_catalog(cfg)
+    # No runner/catalog needed: delete() only touches the registry/executor.
     service = OptimizationService(
-        runner=_InProcessCatalogRunner(catalog),
-        registry=registry,
-        executor=executor,
-        cfg=cfg,
+        runner=None, registry=registry, executor=executor, cfg=cfg
     )
-
-    config = {
-        "scenario": {"type": "fixed_budget"},
-        "constraint": {"mode": "global", "pct": 0.05},
-    }
-    submit = asyncio.run(
-        service.run_optimization(
-            model_id, config, compute_tier="cloud_cpu", force_rerun=True
-        )
-    )
-    run_id = submit["run_id"]
 
     terminal = {"completed", "failed", "canceled"}
-    deadline = time.time() + _queue_phase_timeout()
-    while registry.get_state(run_id).status.value not in terminal:
-        if time.time() > deadline:
-            raise AssertionError(f"near-free: {run_id} never reached terminal")
-        time.sleep(_QUEUE_POLL_INTERVAL)
-        executor.pump()
+    state = registry.get_state(run_id).status.value
+    assert state in terminal, (
+        f"near-free: expected {run_id} to already be terminal (reused from an "
+        f"earlier phase), got {state}"
+    )
 
     service.delete(run_id)
 
@@ -858,7 +876,8 @@ def _check_dispatch_json_deletion(cfg, model_id: str) -> bool:
         f"{[b.name for b in remaining]}"
     )
     print(
-        f"near-free: every blob for {run_id} (incl. dispatch.json) confirmed deleted from GCS"
+        f"near-free: every blob for reused run {run_id} (incl. dispatch.json) "
+        "confirmed deleted from GCS"
     )
     return True
 
@@ -949,12 +968,21 @@ def _queue_smoke_main() -> int:
         f"service={service_name} job={job} model_id={model_id}"
     )
     print(f"started_at={started_at}")
+    print(
+        "budget: 13 real optimizer executions across 5 independent phases "
+        "(Phases 0/1/2/2b submit their own fresh triplet each, Phase 3 "
+        "submits and cancels 1); expect roughly 4-6 hours wall-clock -- see "
+        "the module docstring."
+    )
     print("=" * 78)
 
     _check_adc()
     _check_model_in_bucket(cfg, model_id)
-    max_instances_before = _check_pinned_single_instance(cfg, service_name)
-    service_url = _service_url(cfg, service_name)
+    # One read serves both the pin check and the service URL -- avoid a
+    # second round trip for what the very next line needs anyway.
+    service = _get_service_or_exit(cfg, service_name)
+    max_instances_before = _check_pinned_single_instance(cfg, service_name, service)
+    service_url = service.uri
     print(f"service_url={service_url}")
 
     counts: dict[str, Any] = {}
@@ -962,13 +990,20 @@ def _queue_smoke_main() -> int:
         counts["phase0"] = asyncio.run(
             _phase0(cfg, service_url, service_name, model_id, job)
         )
-        counts["phase1"] = _phase1(cfg, model_id, job)
+        phase1_result = _phase1(cfg, model_id, job)
+        counts["phase1"] = phase1_result
         counts["phase2"] = _phase2(cfg, model_id, job)
         counts["phase2b"] = asyncio.run(
             _phase2b(cfg, service_url, service_name, model_id, job)
         )
         counts["phase3"] = _phase3(cfg, model_id, job)
-        counts["dispatch_json_deletion"] = _check_dispatch_json_deletion(cfg, model_id)
+        # Reuse a run Phase 1 already paid for and completed -- see
+        # _check_dispatch_json_deletion's docstring for why this must not
+        # submit a fresh execution.
+        reused_run_id = phase1_result["run_ids"][-1]
+        counts["dispatch_json_deletion"] = _check_dispatch_json_deletion(
+            cfg, reused_run_id
+        )
         counts["cloud_job_not_found"] = _check_cloud_job_not_found(cfg, model_id)
     finally:
         finished_at = datetime.now(timezone.utc).isoformat()
