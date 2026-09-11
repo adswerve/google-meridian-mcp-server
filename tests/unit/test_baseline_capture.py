@@ -5,6 +5,7 @@ import os
 import time
 import types
 
+import httpx2
 import pytest
 
 from scripts.validation import capture_baseline as cb
@@ -1572,3 +1573,62 @@ async def test_capture_preflight_summary_notes_force_executes_everything(
         "Pre-flight: 1 current, 0 stale, 0 missing -> 1 case(s) will be executed "
         "(--force: every case, regardless of currency)" in out
     )
+
+
+class TestRefreshingBearerAuth:
+    """Google-signed identity tokens expire after an hour; QUEUE_SMOKE budgets
+    4-6 and opens its second HTTP client past that mark. These tests pin the
+    three behaviors that keep a multi-hour gate alive."""
+
+    @staticmethod
+    def _header(auth):
+        request = httpx2.Request("POST", "https://example.invalid/mcp")
+        return next(auth.auth_flow(request)).headers["Authorization"]
+
+    def test_fresh_token_is_sent_without_reminting(self):
+        auth = cb.RefreshingBearerAuth(
+            "initial", ttl_seconds=10_000, refresh_command="printf refreshed"
+        )
+        assert self._header(auth) == "Bearer initial"
+
+    def test_stale_token_is_reminted_from_the_refresh_command(self):
+        auth = cb.RefreshingBearerAuth(
+            "initial", ttl_seconds=0, refresh_command="printf refreshed"
+        )
+        assert self._header(auth) == "Bearer refreshed"
+
+    def test_failed_refresh_keeps_the_existing_token(self, capsys):
+        auth = cb.RefreshingBearerAuth(
+            "initial", ttl_seconds=0, refresh_command="exit 3"
+        )
+        assert self._header(auth) == "Bearer initial"
+        assert "auth token refresh failed" in capsys.readouterr().out
+
+    def test_empty_refresh_output_keeps_the_existing_token(self, capsys):
+        auth = cb.RefreshingBearerAuth("initial", ttl_seconds=0, refresh_command="true")
+        assert self._header(auth) == "Bearer initial"
+        assert "produced no token" in capsys.readouterr().out
+
+    def test_failed_refresh_does_not_reshell_on_every_request(self, monkeypatch):
+        calls = []
+        real_run = cb.subprocess.run
+
+        def counting_run(*args, **kwargs):
+            calls.append(args)
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(cb.subprocess, "run", counting_run)
+        auth = cb.RefreshingBearerAuth(
+            "initial", ttl_seconds=10_000, refresh_command="exit 3"
+        )
+        auth._minted_at = time.monotonic() - 20_000
+        assert self._header(auth) == "Bearer initial"
+        assert self._header(auth) == "Bearer initial"
+        assert len(calls) == 1
+
+    def test_http_client_uses_refreshing_auth_not_a_static_header(self, monkeypatch):
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "initial")
+        client = cb.build_client("http", "https://example.invalid")
+        transport = client.transport
+        assert isinstance(transport.auth, cb.RefreshingBearerAuth)
+        assert "Authorization" not in (transport.headers or {})

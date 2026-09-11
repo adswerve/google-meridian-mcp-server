@@ -109,11 +109,14 @@ import json
 import math
 import os
 import platform
+import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+import httpx2
 
 from scripts.generate_validation_models import DEFAULT_OUT_ROOT
 from scripts.validation import matrix
@@ -829,6 +832,72 @@ async def execute_case(
     return await call_tool(client, case.tool, case.args)
 
 
+# Google-signed identity tokens live one hour. A static Authorization header
+# is therefore fine for a capture run of a few minutes and WRONG for the
+# QUEUE_SMOKE gate, which budgets 4-6 hours and opens its second HTTP client
+# (Phase 2b) well past the hour mark -- the gate would die on a 401 after
+# paying for nine real optimizer executions. Re-mint a little before expiry
+# instead of at expiry, so a request never races the boundary.
+DEFAULT_AUTH_TOKEN_TTL_SECONDS = 2700
+DEFAULT_AUTH_TOKEN_REFRESH_CMD = "gcloud auth print-identity-token"
+
+
+class RefreshingBearerAuth(httpx2.Auth):
+    """Attaches `Authorization: Bearer <token>`, re-minting when the token is
+    older than *ttl_seconds*.
+
+    The refresh command is the same one the operator ran to produce the
+    initial MCP_AUTH_TOKEN, so a refreshed token is indistinguishable from
+    the one it replaces. A failing refresh keeps the existing token rather
+    than raising: the current token may still be valid (we refresh early),
+    and a transient `gcloud` failure must not abort a multi-hour gate on the
+    request that happened to cross the TTL.
+    """
+
+    def __init__(
+        self,
+        token: str,
+        *,
+        ttl_seconds: float = DEFAULT_AUTH_TOKEN_TTL_SECONDS,
+        refresh_command: str | None = None,
+    ) -> None:
+        self._token = token
+        self._ttl = ttl_seconds
+        self._command = refresh_command or os.environ.get(
+            "MCP_AUTH_TOKEN_REFRESH_CMD", DEFAULT_AUTH_TOKEN_REFRESH_CMD
+        )
+        self._minted_at = time.monotonic()
+
+    def _maybe_refresh(self) -> None:
+        if time.monotonic() - self._minted_at < self._ttl:
+            return
+        # Reset the clock even on failure, or every subsequent request
+        # re-shells out to a command that is currently broken.
+        self._minted_at = time.monotonic()
+        try:
+            out = subprocess.run(
+                self._command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(f"WARNING: auth token refresh failed, keeping existing token: {exc}")
+            return
+        token = out.stdout.strip()
+        if not token:
+            print("WARNING: auth token refresh produced no token, keeping existing one")
+            return
+        self._token = token
+
+    def auth_flow(self, request):
+        self._maybe_refresh()
+        request.headers["Authorization"] = f"Bearer {self._token}"
+        yield request
+
+
 def build_client(transport: str, url: str | None):
     from fastmcp import Client
 
@@ -847,9 +916,7 @@ def build_client(transport: str, url: str | None):
             from fastmcp.client.transports import StreamableHttpTransport
 
             return Client(
-                StreamableHttpTransport(
-                    endpoint, headers={"Authorization": f"Bearer {token}"}
-                )
+                StreamableHttpTransport(endpoint, auth=RefreshingBearerAuth(token))
             )
         return Client(endpoint)
     from google_meridian_mcp_server.server import mcp

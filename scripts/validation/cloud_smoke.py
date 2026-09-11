@@ -50,7 +50,11 @@ task brief):
   - A `.binpb` model already uploaded to gs://$GCS_BUCKET/$GCS_MODELS_PREFIX/.
   - MCP_AUTH_TOKEN set to an identity token (`gcloud auth print-identity-token`)
     -- this project's org policy refused the allUsers invoker binding, so the
-    deployed service requires one even with allow_unauthenticated=true.
+    deployed service requires one even with allow_unauthenticated=true. The
+    token itself lives only an hour, far short of this gate; build_client
+    re-mints it via MCP_AUTH_TOKEN_REFRESH_CMD (default `gcloud auth
+    print-identity-token`) before it expires, so that command must keep
+    working for the whole run.
   - No pre-existing QUEUED or RUNNING runs in the target bucket --
     reconcile_orphans() scans the whole bucket prefix, so leftovers from a
     prior (or still-broken) deployment would be re-enqueued and launched too.
