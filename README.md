@@ -418,6 +418,12 @@ The optimization tools submit and track long-running Meridian `BudgetOptimizer` 
 | `cloud_cpu` | Cloud Run Job (CPU) | Production runs; requires `PERSISTENCE_BACKEND=gcs`. |
 | `cloud_gpu` | Cloud Run Job (NVIDIA L4) | Large or fast runs; requires `PERSISTENCE_BACKEND=gcs`, `enable_gpu_job = true`, and L4 quota. |
 
+On the cloud tiers a submitted run survives a server restart or an instance
+scale-down: queued runs are recorded durably and recovered when an instance next
+starts, and executions already in flight are re-adopted rather than relaunched.
+`OPTIMIZATION_MAX_PARALLEL` bounds concurrent job launches per instance, so a
+submission over the cap waits rather than failing.
+
 Every tier runs Meridian on the **JAX** backend with 64-bit precision. There is
 no per-tier engine choice: `OPTIMIZATION_BACKEND_LOCAL` /
 `OPTIMIZATION_BACKEND_CLOUD_CPU` / `OPTIMIZATION_BACKEND_CLOUD_GPU` were

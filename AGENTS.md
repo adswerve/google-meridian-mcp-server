@@ -61,7 +61,7 @@ pickle saved under TensorFlow — that is the reason, not tidiness. See
 
 ```
 uv run python -m google_meridian_mcp_server.server
-uv run pytest                                    # 803 passed, 1 skipped on this branch
+uv run pytest                                    # 832 passed, 1 skipped on this branch
 uv run ruff check src scripts tests              # and `ruff format`
 uv run python -m scripts.validation.live_validate            # integration gate; --force rebuilds fixtures
 OPTIMIZATION_TIER=local uv run python scripts/qa/future_optimization_qa.py
@@ -91,6 +91,11 @@ PASS / EXPECTED-ERR / FAIL matrix and ends with `LIVE VALIDATION PASSED` or `N f
   verify-gone, plus future adversarial submits. A **local cloud-executor gate** (faked
   `jobs.run`, real worker) covers the cloud launch/liveness/cancel contract with no GCP
   project; an opt-in **Cloud Run smoke** (`cloud_smoke`, `CLOUD_SMOKE=1`) covers a live one.
+  The cloud gate prints its own summary line, `cloud gate: 3/3 checks passed` — the 2
+  `run_optimization[cloud_cpu]` checks (`national-revenue`, `geo-revenue`) plus the
+  restart-recovery check added when durability landed. This count is separate from the 146
+  assertions above: that figure is only `Report.ok()` calls from `run_matrix(client)`, which
+  never counted the cloud gate's checks, before or after.
 - The **cross-backend JAX gate is deleted** — with one engine there is nothing to cross-check.
   That is a real coverage loss: no gate now proves a model fitted under one engine optimizes
   correctly under another. See `reports/cross-backend-gate-removed.md`.
@@ -157,6 +162,46 @@ Markdown report. Kept after the upgrade: it is the cheapest way to prove a bump 
   edge rather than return a clean error. Still pass a dataset or date filter: the unfiltered
   payload is megabytes and will overflow an agent's context.
   (`reports/drift/04-cloud-vs-local.md`)
+- **The optimization queue drains on request arrival, not in the background.** A
+  cloud run recovered at startup is re-enqueued and pumped once; after that,
+  `pump()` runs only from `submit` and `get_optimization_status`. Nothing
+  schedules it, so a queued run whose instance goes idle waits for the next
+  request or the next instance start. Durable, but not self-driving.
+- **`OPTIMIZATION_MAX_PARALLEL` is per instance, and counts launches this
+  instance has not yet observed completing** — not concurrent executions. With
+  `max_instance_count = 2` the effective ceiling is twice the value, and a slot
+  is released only when a `pump()` reaps the handle. After a restart, adopted
+  handles occupy slots, so a recovered queued run waits for an adopted run to
+  finish *and* for a later request.
+- **A dispatch claim whose process died before `run_job()` is resolved at the
+  next instance start**, not immediately: `reconcile_orphans` is startup-only,
+  and a claim younger than `DEFAULT_DISPATCH_STALE_SECONDS` (1800s) is left
+  alone because a peer may still be inside `run_job()` or cold-starting.
+- **Startup reconciliation costs roughly nine GCS RPCs per run in the bucket**,
+  regardless of status: `list()` downloads every `record.json` plus a
+  `get_state` — itself an `exists()` check plus a download
+  (`optimization_run_registry.py:315-321`) — for every run on every call
+  (`:330-358`), `limit` is applied after the scan (`:358`) so it cannot help,
+  and the cloud override scans the bucket **three times, not two**:
+  `list(status=RUNNING)` inside the base class's `reconcile_orphans`, an
+  unremoved duplicate `list(status=RUNNING)` call at `cloud_run_executor.py:79`,
+  then `list(status=QUEUED)` at `:87` — plus a `get_dispatch` per RUNNING/QUEUED
+  candidate. Order 1,800 RPCs at 200 runs, 9,000 at 1,000. It runs inside the
+  ASGI lifespan before `$PORT` binds, against Cloud Run's ~240s startup budget,
+  so past roughly 1,000 runs a cold start is at risk. Bounding it needs an
+  `index/queued/` prefix mirroring `index/by_fingerprint/` — deliberately
+  deferred.
+- **Startup reconciliation is best-effort and unretried** (`server.py:68-71`): a
+  single GCS hiccup skips it entirely with only a warning, and the queued runs
+  wait for the next instance start. Deliberate — a retry loop in the ASGI
+  lifespan would trade a stranded run for a failed boot.
+- **`cancel_optimization` still has two dishonest windows.** One: a run
+  dispatched but whose execution name was not recorded (a transient write
+  failure) cannot be terminated by name, even now that `cancel()` also checks
+  `get_dispatch` for a name recorded by another instance. Two: `_terminate` is
+  best-effort (`cloud_run_executor.py:223-228`), so a `cancel_execution` RPC
+  that itself fails still yields `canceled` while the execution bills on. Both
+  narrowed from "always after a restart", neither eliminated.
 
 ## The recurring defect shape — the most transferable lesson
 
