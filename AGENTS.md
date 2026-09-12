@@ -61,7 +61,7 @@ pickle saved under TensorFlow — that is the reason, not tidiness. See
 
 ```
 uv run python -m google_meridian_mcp_server.server
-uv run pytest                                    # 832 passed, 1 skipped on this branch
+uv run pytest
 uv run ruff check src scripts tests              # and `ruff format`
 uv run python -m scripts.validation.live_validate            # integration gate; --force rebuilds fixtures
 OPTIMIZATION_TIER=local uv run python scripts/qa/future_optimization_qa.py
@@ -96,6 +96,17 @@ PASS / EXPECTED-ERR / FAIL matrix and ends with `LIVE VALIDATION PASSED` or `N f
   restart-recovery check added when durability landed. This count is separate from the 146
   assertions above: that figure is only `Report.ok()` calls from `run_matrix(client)`, which
   never counted the cloud gate's checks, before or after.
+- **Against a DEPLOYED server**, `scripts/validation/remote_smoke.py --url ...` is the only
+  driver that speaks HTTP to the Cloud Run service. `cloud_smoke` builds the service
+  in-process and launches real Cloud Run Jobs, so it proves the worker containers and the
+  GCS registry — not the deployed server. Both are needed to cover a deployment. Set
+  `MCP_AUTH_TOKEN` (see Deployment). Pass `--compute-tier`, and **always `--force-rerun` when
+  smoking a second tier**: `config_fingerprint` excludes `compute_tier` (see Known issues),
+  so the second tier is otherwise served the first tier's run and reports PASS with its Job
+  never executing. `remote_smoke` asserts `compute_tier_resolved` and `reused` to make that
+  failure loud — it did not before 2026-09-11, so any GPU pass reported by this script before
+  that date proves nothing. Corroborate a tier claim against
+  `gcloud run jobs executions list`: the execution count is the evidence a run was real.
 - The **cross-backend JAX gate is deleted** — with one engine there is nothing to cross-check.
   That is a real coverage loss: no gate now proves a model fitted under one engine optimizes
   correctly under another. See `reports/cross-backend-gate-removed.md`.
@@ -249,6 +260,14 @@ identity: the compute engine default SA, or a dedicated least-privilege SA when
 `service_account_id` is set. Per-client `terraform.tfvars` and `backend.hcl` are uncommitted
 (`.example` committed); `.env` is local-dev only. Runbook:
 [README.md](README.md#deploy-to-google-cloud-terraform).
+
+A **value for an undeclared variable in `terraform.tfvars` is a warning, not an error**, so a
+renamed variable fails silently and the setting simply never applies. Check names against
+`variables.tf` when a deployment ignores a tier or GPU setting. On a project whose
+domain-restricted-sharing org policy refuses the `allUsers` invoker binding, `terraform
+apply` fails that one resource and completes the other 12; the service then requires
+`MCP_AUTH_TOKEN=$(gcloud auth print-identity-token)` even with `allow_unauthenticated = true`
+— expected there, not a regression, but it means apply is not clean-exit on such a project.
 
 ## Further reading
 
