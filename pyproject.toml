@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,7 @@ name = "google-meridian-mcp-server"
 version = "0.3.2"
 description = "FastMCP server exposing Google Meridian MMM analysis to agents"
 readme = "README.md"
+license = "BSD-3-Clause"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "fastmcp>=4,<5",
