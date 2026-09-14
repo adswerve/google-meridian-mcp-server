@@ -231,7 +231,6 @@ class OptimizationRun(BaseModel):
     config_fingerprint: str
     compute_tier_requested: str
     compute_tier_resolved: str
-    backend: str
     size_score: int
     created_at: str
     meridian_version: str
@@ -250,6 +249,20 @@ class OptimizationRunState(BaseModel):
     headline: str | None = None
 
 
+class OptimizationRunDispatch(BaseModel):
+    """Executor-owned record of a dispatch attempt.
+
+    Deliberately separate from OptimizationRunState: the worker writes
+    state.json independently and write_state is a full-document overwrite, so
+    an executor write there can clobber a live RUNNING status. Only the
+    executor ever writes this document.
+    """
+
+    run_id: str
+    claimed_at: str
+    execution_name: str | None = None
+
+
 class OptimizationRunSummary(BaseModel):
     run_id: str
     label: str
@@ -261,12 +274,29 @@ class OptimizationRunSummary(BaseModel):
     headline: str | None = None
 
 
-def config_fingerprint(model_id: str, config: OptimizationConfig) -> str:
-    """Stable, order-insensitive fingerprint of (model_id, config)."""
+def config_fingerprint(
+    model_id: str, config: BaseOptimizationConfig, *, meridian_version: str
+) -> str:
+    """Stable, order-insensitive fingerprint of (model_id, config, engine).
+
+    D10: the Meridian version enters as a third KEYWORD parameter rather than
+    being read here. `importlib.metadata` in `domain/` would violate the layer
+    boundary AGENTS.md sets out, so the service layer supplies it.
+
+    Without it, a run computed by Meridian 1.7 would be silently reused after
+    the upgrade to 2.0.
+    """
     payload = config.model_dump(mode="json")
     if payload.get("selected_geos"):
         payload["selected_geos"] = sorted(payload["selected_geos"])
-    raw = json.dumps({"model_id": model_id, "config": payload}, sort_keys=True)
+    raw = json.dumps(
+        {
+            "model_id": model_id,
+            "config": payload,
+            "meridian_version": meridian_version,
+        },
+        sort_keys=True,
+    )
     return hashlib.sha256(raw.encode()).hexdigest()
 
 

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import pytest
 
 from google_meridian_mcp_server.domain.optimization import (
     FutureOptimizationConfig,
     OptimizationConfig,
     OptimizationRun,
+    OptimizationRunDispatch,
     OptimizationRunState,
     RunStatus,
 )
@@ -27,7 +32,6 @@ def _run(run_id="m-1-abc", model_id="m", fp="fp1"):
         config_fingerprint=fp,
         compute_tier_requested="auto",
         compute_tier_resolved="local",
-        backend="tensorflow",
         size_score=10,
         created_at="2026-06-29T00:00:00+00:00",
         meridian_version="1.7.0",
@@ -55,7 +59,6 @@ def _make_run(config: dict | None = None) -> OptimizationRun:
         config_fingerprint="test-fp",
         compute_tier_requested="auto",
         compute_tier_resolved="local",
-        backend="tensorflow",
         size_score=10,
         created_at="2026-06-29T00:00:00+00:00",
         meridian_version="1.7.0",
@@ -134,3 +137,120 @@ def test_build_config_summary_future():
     summary = build_config_summary(run)
     assert "future" in summary and "fixed_budget" in summary
     assert "2026-10-01" in summary and "13" in summary
+
+
+_HOSTILE_LOCALE_SCRIPT = """
+import codecs
+import locale
+import sys
+
+from google_meridian_mcp_server.domain.optimization import (
+    OptimizationConfig,
+    OptimizationRun,
+)
+from google_meridian_mcp_server.persistence.optimization_run_registry import (
+    LocalOptimizationRunRegistry,
+)
+
+# codecs.lookup canonicalises codec aliases, so macOS's "US-ASCII" and
+# Linux's "ANSI_X3.4-1968" both normalise to "ascii" -- while a coerced
+# UTF-8 locale still reports "utf-8" and fails the assertion below.
+print("ENC=" + codecs.lookup(locale.getencoding()).name)
+
+label = "M\\u00fcnchen caf\\u00e9"
+reg = LocalOptimizationRunRegistry(sys.argv[1])
+reg.create(
+    OptimizationRun(
+        run_id="r1",
+        label=label,
+        model_id="m",
+        config=OptimizationConfig.model_validate({"scenario": {"type": "fixed_budget"}}),
+        config_fingerprint="fp",
+        compute_tier_requested="auto",
+        compute_tier_resolved="local",
+        size_score=10,
+        created_at="2026-09-10T00:00:00+00:00",
+        meridian_version="2.0.0",
+        server_version="0.3.2",
+    )
+)
+got = reg.get_record("r1").label
+assert got == label, "mojibake: %r != %r" % (got, label)
+print("ROUNDTRIP_OK")
+"""
+
+
+def test_registry_reads_are_utf8_under_a_non_utf8_locale(tmp_path):
+    """A non-ASCII label must survive a write/read cycle even when the child
+    interpreter's locale encoding is ASCII.
+
+    Reverting _read_text to a bare path.read_text() makes the child die with
+    UnicodeDecodeError. This has to be a subprocess: the default encoding is
+    decided at interpreter startup, so on a UTF-8 CI runner an in-process
+    round-trip passes with or without the fix.
+    """
+    script = tmp_path / "probe.py"
+    script.write_text(_HOSTILE_LOCALE_SCRIPT, encoding="ascii")
+    env = {
+        **os.environ,
+        "LC_ALL": "C",
+        "LANG": "C",
+        "PYTHONUTF8": "0",
+        # Without this, PEP 538 coerces C -> C.UTF-8 and the child gets a UTF-8
+        # locale, making this test pass under the reverted code too.
+        "PYTHONCOERCECLOCALE": "0",
+        "PYTHONIOENCODING": "utf-8",  # so the child's own print/traceback survive
+    }
+    proc = subprocess.run(
+        [sys.executable, str(script), str(tmp_path / "runs-root")],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert "ENC=ascii" in proc.stdout, (
+        "the hostile locale did not take effect, so this test cannot prove its "
+        f"rule: stdout={proc.stdout!r}"
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert "ROUNDTRIP_OK" in proc.stdout
+
+
+def test_claim_dispatch_is_create_if_absent(tmp_path):
+    """The claim is how two server instances avoid double-launching one run."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run())
+    d = OptimizationRunDispatch(
+        run_id="m-1-abc", claimed_at="2026-09-10T00:00:00+00:00"
+    )
+
+    assert reg.claim_dispatch(d) is True
+    assert reg.claim_dispatch(d) is False  # second caller loses
+
+    got = reg.get_dispatch("m-1-abc")
+    assert got.claimed_at == "2026-09-10T00:00:00+00:00"
+    assert got.execution_name is None
+
+
+def test_write_dispatch_records_the_execution_name(tmp_path):
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run())
+    d = OptimizationRunDispatch(
+        run_id="m-1-abc", claimed_at="2026-09-10T00:00:00+00:00"
+    )
+    reg.claim_dispatch(d)
+
+    reg.write_dispatch(
+        d.model_copy(
+            update={"execution_name": "projects/p/locations/r/jobs/j/executions/e1"}
+        )
+    )
+
+    got = reg.get_dispatch("m-1-abc")
+    assert got.execution_name == "projects/p/locations/r/jobs/j/executions/e1"
+    assert got.claimed_at == "2026-09-10T00:00:00+00:00"  # preserved, not reset
+
+
+def test_get_dispatch_is_none_when_never_claimed(tmp_path):
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run())
+    assert reg.get_dispatch("m-1-abc") is None

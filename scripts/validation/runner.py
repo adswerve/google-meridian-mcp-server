@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 
 from scripts.validation import matrix
+from scripts.validation.payloads import extract
 
 
 @dataclasses.dataclass
@@ -22,28 +22,9 @@ class Report:
         print(f"  FAIL {label}: {reason}")
 
 
-def _content_to_obj(result):
-    if getattr(result, "structured_content", None) is not None:
-        return result.structured_content
-    if getattr(result, "data", None) is not None:
-        return result.data
-    block = result.content[0]
-    text = getattr(block, "text", block)
-    try:
-        return json.loads(text)
-    except (TypeError, ValueError):
-        return text
-
-
-def _unwrap(obj):
-    if isinstance(obj, dict) and set(obj.keys()) == {"result"}:
-        return obj["result"]
-    return obj
-
-
 async def call(client, name, args):
     res = await client.call_tool(name, args)
-    return _unwrap(_content_to_obj(res))
+    return extract(res)
 
 
 def assert_columnar(payload, label: str) -> None:
@@ -552,19 +533,6 @@ async def run_matrix(client) -> Report:
             client, "get_model_overview", {"model_id": "does-not-exist"}
         )
         assert_error(payload, None, label)
-        report.ok(label)
-    except AssertionError as exc:
-        report.fail(label, str(exc))
-
-    # Loader smoke: the .pkl fixture must load through the pickle branch.
-    label = "GLOBAL/loader-pkl/national-revenue-pkl"
-    try:
-        overview = await call(
-            client, "get_model_overview", {"model_id": "national-revenue-pkl"}
-        )
-        assert "available_tool_options" in overview, (
-            f"{label}: pkl model failed to load"
-        )
         report.ok(label)
     except AssertionError as exc:
         report.fail(label, str(exc))

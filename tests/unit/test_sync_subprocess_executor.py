@@ -39,10 +39,7 @@ INTERNAL_ERROR_RC1 = textwrap.dedent("""
 
 def mk(tmp, script, **o):
     kw = dict(
-        semaphore=asyncio.Semaphore(2),
         run_timeout=10.0,
-        queue_wait_timeout=5.0,
-        max_response_bytes=10_000_000,
         workdir_root=str(tmp),
         worker_argv_prefix=[sys.executable, "-c", script],
     )
@@ -76,12 +73,6 @@ async def test_unparseable_response(tmp_path):
     assert e.value.error_code == "worker_failed"
 
 
-async def test_response_too_large(tmp_path):
-    big = "import sys,os,json; resp=sys.argv[-1]; open(resp,'w').write('{\"ok\":true,\"result\":\"'+ 'x'*20 +'\"}')"
-    with pytest.raises(MeridianMcpError):
-        await mk(tmp_path, big, max_response_bytes=8).run("op", "m1", {})
-
-
 async def test_timeout_kills_fast(tmp_path):
     t0 = time.time()
     with pytest.raises(MeridianMcpError) as e:
@@ -89,14 +80,6 @@ async def test_timeout_kills_fast(tmp_path):
             "op", "m1", {}
         )
     assert e.value.error_code == "worker_timeout" and time.time() - t0 < 30
-
-
-async def test_server_busy_when_no_slot(tmp_path):
-    sem = asyncio.Semaphore(0)  # no slots
-    r = mk(tmp_path, OK, semaphore=sem, queue_wait_timeout=0.2)
-    with pytest.raises(MeridianMcpError) as e:
-        await r.run("op", "m1", {})
-    assert e.value.error_code == "server_busy"
 
 
 async def test_cancellation_kills_child(tmp_path):
@@ -245,23 +228,6 @@ async def test_internal_error_rc1_retains_workdir_and_log(tmp_path):
     assert "some traceback text" in log_text
 
 
-async def test_response_too_large_unlinks_resp_but_keeps_workdir(tmp_path):
-    """Fable finding 4: the too-large response is itself the disk-fill risk
-    the size ceiling exists to prevent, so resp.json must be unlinked even
-    though the workdir (with the log) is retained for postmortem."""
-    root = tmp_path / "too_large"
-    big = "import sys,os,json; resp=sys.argv[-1]; open(resp,'w').write('{\"ok\":true,\"result\":\"'+ 'x'*20 +'\"}')"
-    with pytest.raises(MeridianMcpError) as exc_info:
-        await mk(root, big, max_response_bytes=8).run("op", "m1", {})
-    assert exc_info.value.error_code == "worker_failed"
-
-    entries = _entries(root)
-    assert len(entries) == 1, "workdir must still be retained"
-    workdir = root / entries[0]
-    assert not (workdir / "resp.json").exists(), "oversized resp.json must be unlinked"
-    assert (workdir / "log").exists()
-
-
 async def test_workdir_retention_semantics(tmp_path):
     # success -> workdir removed
     ok_root = tmp_path / "ok"
@@ -302,7 +268,7 @@ async def test_workdir_retention_semantics(tmp_path):
 
 async def test_workdir_setup_failure_translates_to_worker_failed(tmp_path, monkeypatch):
     """F4(a): self._root.mkdir/tempfile.mkdtemp must be INSIDE the wrapped
-    try in _run_locked (not before it) so ENOSPC/EMFILE/permission failures
+    try in run (not before it) so ENOSPC/EMFILE/permission failures
     at workdir setup translate to a clean WorkerFailedError envelope, same as
     a spawn failure -- not escape as a raw OSError past the tool handlers'
     `except MeridianMcpError`."""
@@ -426,3 +392,13 @@ def test_sweep_stale_entries_ignores_per_entry_errors(tmp_path, monkeypatch):
 
     assert old_dir.exists()  # the "bad" entry survives
     assert not good_file.exists()  # the good entry is still swept
+
+
+def test_workdir_defaults_are_module_constants():
+    """Demoted from ANALYSIS_WORKDIR_ROOT / ANALYSIS_WORKDIR_TTL_SECONDS."""
+    from google_meridian_mcp_server.execution import sync_subprocess_executor as sse
+
+    assert sse.DEFAULT_WORKDIR_ROOT == "/tmp/mmm-analysis"
+    assert sse.DEFAULT_WORKDIR_TTL_SECONDS == 604800  # 7 days
+    ex = sse.SyncSubprocessExecutor(run_timeout=1.0)
+    assert str(ex._root) == "/tmp/mmm-analysis"

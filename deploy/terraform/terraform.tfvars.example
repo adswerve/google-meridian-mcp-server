@@ -11,9 +11,20 @@ gcs_bucket = "your-client-meridian"
 # optimization_gcs_prefix = "optimizations/"
 
 # artifact_registry_repo = "meridian"
-# enable_gpu_job = true              # default false; to enable GPU: set true AND add cloud_gpu to optimization_allowed_tiers AND ensure L4 quota in the region
+# enable_gpu_job = true              # default false; to enable GPU: set true AND set optimization_tier to cloud_gpu (or cloud_auto) AND ensure L4 quota in the region
 
 # service_account_id = "meridian-mcp"   # blank = project compute engine default SA (nothing created; relies on its Editor grant). Set a name to create/adopt a dedicated SA and bind least-privilege roles.
 
-# optimization_allowed_tiers = "cloud_cpu"   # add cloud_gpu when GPU job is enabled
+# optimization_tier          = "cloud_cpu"   # or cloud_gpu / cloud_auto when the GPU job is enabled
+# Max concurrent Cloud Run Job executions this server instance has launched and
+# not yet observed the completion of. Per instance, so with max_instance_count = 2
+# the effective ceiling is twice this. Over-cap runs queue durably and are
+# recovered at the next instance start.
+# optimization_max_parallel  = 2
 # allow_unauthenticated      = false          # true only for the live tooling test
+
+# analysis_worker_timeout      = 300      # seconds; the service request timeout is derived from this
+
+# result_cache_enabled = true    # default true (production-correct). Set false only for a
+#                                # baseline-capture verification deployment, so captures are
+#                                # not served from a warm cache.

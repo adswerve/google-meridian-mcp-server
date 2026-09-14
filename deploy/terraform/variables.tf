@@ -36,17 +36,25 @@ variable "enable_gpu_job" {
   default = false
 }
 
-variable "optimization_allowed_tiers" {
+variable "optimization_tier" {
   type    = string
   default = "cloud_cpu"
 }
-variable "optimization_default_tier" {
-  type    = string
-  default = "auto"
+variable "optimization_max_parallel" {
+  type    = number
+  default = 2
+}
+variable "analysis_worker_timeout" {
+  type    = number
+  default = 300
 }
 variable "allow_unauthenticated" {
   type    = bool
   default = false
+}
+variable "result_cache_enabled" {
+  type    = bool
+  default = true
 }
 variable "labels" {
   type    = map(string)

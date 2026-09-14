@@ -79,11 +79,11 @@ class AnalysisFilters(BaseModel):
     )
     aggregate_times: bool = Field(
         default=True,
-        description="If true (default), aggregate results across the full time range. Set to false to get per-period rows. Only meaningful for tools that support time breakdowns (e.g. get_contribution with 'contribution_metrics_by_time').",
+        description="If true (default), aggregate results across the full time range. Set to false to get per-period rows. Only meaningful for tools that support time breakdowns (e.g. get_contribution with 'contribution_metrics').",
     )
     include_non_paid: bool | None = Field(
         default=None,
-        description="If true, include organic media and non-media treatment channels in the output. Only supported by get_contribution and selected get_channel_summary output types. Omit or null to use the tool default.",
+        description="If true, include organic media and non-media treatment channels in the output. Only supported by get_contribution. Omit or null to use the tool default.",
     )
     use_kpi: bool | None = Field(
         default=None,

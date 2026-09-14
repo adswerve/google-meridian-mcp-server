@@ -100,6 +100,10 @@ def test_optimization_run_roundtrips_legacy_json_without_kind():
     }
     run = OptimizationRun.model_validate_json(json.dumps(legacy))
     assert run.config.kind == "historical"
+    # The `backend` key above is deliberately left in place: pydantic's default
+    # extra="ignore" is what lets run JSON written before spec 6.3 removed the
+    # field still deserialize off disk.
+    assert not hasattr(run, "backend")
 
 
 def test_future_block_rejects_nonpositive_multiplier():

@@ -7,13 +7,13 @@
   },
   "environment": {
     "type": "uv",
-    "python": ">=3.12,<3.15",
+    "python": ">=3.13,<3.14",
     "project": ".",
     "editable": [
       "."
     ],
     "dependencies": [
-      "google-meridian[schema]==1.7.0"
+      "google-meridian[schema,geox]>=2.0,<3"
     ]
   },
   "deployment": {

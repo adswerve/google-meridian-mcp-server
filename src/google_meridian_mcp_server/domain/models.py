@@ -26,9 +26,24 @@ class ComputeTier(str, Enum):
     CLOUD_GPU = "cloud_gpu"
 
 
+class OptimizationMode(str, Enum):
+    """Where THIS DEPLOYMENT runs optimizations -- a deployment mode, not a tier.
+
+    Distinct from ComputeTier on purpose: every ComputeTier member must be
+    dispatchable (cloud_run_job_for_tier maps them to Job names), and CLOUD_AUTO
+    is not -- it resolves to CLOUD_CPU or CLOUD_GPU before anything dispatches.
+    Declared here rather than in execution/routing.py because RuntimeConfig._check
+    validates against it, and domain/ must never import from execution/.
+    """
+
+    LOCAL = "local"
+    CLOUD_CPU = "cloud_cpu"
+    CLOUD_GPU = "cloud_gpu"
+    CLOUD_AUTO = "cloud_auto"
+
+
 class ModelFormat(str, Enum):
     BINPB = "binpb"
-    PKL = "pkl"
 
 
 class ModelStatus(str, Enum):
@@ -45,45 +60,22 @@ class RuntimeConfig(BaseModel):
     local_models_root: str | None = None
     gcs_bucket: str | None = None
     gcs_models_prefix: str | None = None
-    discovery_ttl_seconds: int = 7200
     model_cache_root: str = "/tmp/mmm-models"
     result_cache_enabled: bool = True
     result_cache_ttl_seconds: int | None = None
 
     # Optimization module
-    registry_backend: str | None = None  # None → follows persistence_backend
     optimization_runs_root: str = "./optimizations"
     optimization_gcs_prefix: str = "optimizations/"
-    optimization_allowed_tiers: tuple[str, ...] = ("local",)
-    optimization_default_tier: str = "auto"
+    optimization_tier: str = OptimizationMode.LOCAL.value
     optimization_max_parallel: int = 2
-    optimization_size_thresholds: tuple[int, int] = (10_000_000, 100_000_000)
-    optimization_heartbeat_stale_seconds: int = 60
-    optimization_backend_local: str = "tensorflow"
-    optimization_backend_cloud_cpu: str = "jax"
-    optimization_backend_cloud_gpu: str = "jax"
     cloud_run_project: str | None = None
     cloud_run_region: str | None = None
     cloud_run_job_cpu: str | None = None
     cloud_run_job_gpu: str | None = None
 
     # Analysis subprocess runner
-    analysis_max_parallel: int = 2
     analysis_worker_timeout: float = 300.0
-    analysis_queue_wait_timeout: float = 30.0
-    analysis_max_response_bytes: int = 64 * 1024 * 1024
-    analysis_workdir_root: str = "/tmp/mmm-analysis"
-    # F10b: retained analysis workdirs (timeout/spawn-failure/oversized/rc!=0
-    # keep one each) and optimization worker log files (one per run, forever)
-    # accumulate unboundedly with no sweep. This bounds their age at startup.
-    analysis_workdir_ttl_seconds: int = 604800  # 7 days
-
-    @model_validator(mode="before")
-    @classmethod
-    def _set_registry_backend_default(cls, values: Any) -> Any:
-        if isinstance(values, dict) and values.get("registry_backend") is None:
-            values["registry_backend"] = values.get("persistence_backend", "local")
-        return values
 
     @field_validator("transport")
     @classmethod
@@ -114,74 +106,48 @@ class RuntimeConfig(BaseModel):
                 f"Unsupported PERSISTENCE_BACKEND '{self.persistence_backend}'"
             )
 
-        if self.discovery_ttl_seconds <= 0:
-            raise ValueError("DISCOVERY_TTL_SECONDS must be positive")
-        if self.analysis_workdir_ttl_seconds <= 0:
-            raise ValueError("ANALYSIS_WORKDIR_TTL_SECONDS must be positive")
         if (
             self.result_cache_ttl_seconds is not None
             and self.result_cache_ttl_seconds <= 0
         ):
             raise ValueError("RESULT_CACHE_TTL_SECONDS must be positive")
 
-        valid_tiers = {t.value for t in ComputeTier}
-        for tier in self.optimization_allowed_tiers:
-            if tier not in valid_tiers:
-                raise ValueError(
-                    f"Unknown optimization tier '{tier}'. Valid: {sorted(valid_tiers)}"
-                )
-        if not self.optimization_allowed_tiers:
-            raise ValueError("OPTIMIZATION_ALLOWED_TIERS must list at least one tier")
-        if self.optimization_default_tier != "auto" and (
-            self.optimization_default_tier not in self.optimization_allowed_tiers
-        ):
+        valid_modes = {m.value for m in OptimizationMode}
+        if self.optimization_tier not in valid_modes:
             raise ValueError(
-                f"OPTIMIZATION_DEFAULT_TIER '{self.optimization_default_tier}' not in allowed tiers "
-                f"{list(self.optimization_allowed_tiers)}"
+                f"Unknown OPTIMIZATION_TIER '{self.optimization_tier}'. "
+                f"Valid: {sorted(valid_modes)}"
             )
         if self.optimization_max_parallel <= 0:
             raise ValueError("OPTIMIZATION_MAX_PARALLEL must be positive")
-        lo, hi = self.optimization_size_thresholds
-        if not (0 < lo < hi):
-            raise ValueError(
-                "OPTIMIZATION_SIZE_THRESHOLDS must be two ascending positive ints"
-            )
 
-        cloud_tiers = {ComputeTier.CLOUD_CPU.value, ComputeTier.CLOUD_GPU.value}
-        allowed_cloud = cloud_tiers & set(self.optimization_allowed_tiers)
-        if allowed_cloud:
-            if self.resolved_registry_backend != PersistenceBackend.GCS.value:
+        if self.optimization_tier != OptimizationMode.LOCAL.value:
+            if self.persistence_backend != PersistenceBackend.GCS.value:
                 raise ValueError(
-                    "cloud tiers require a gcs registry (set REGISTRY_BACKEND=gcs)"
+                    "cloud optimization tiers require PERSISTENCE_BACKEND=gcs: a "
+                    "Cloud Run Job worker cannot read the server's local disk"
                 )
-            if not self.gcs_bucket:
-                raise ValueError("cloud tiers require GCS_BUCKET")
             if not self.cloud_run_project or not self.cloud_run_region:
                 raise ValueError(
                     "cloud tiers require CLOUD_RUN_PROJECT and CLOUD_RUN_REGION"
                 )
-            if (
-                ComputeTier.CLOUD_CPU.value in allowed_cloud
-                and not self.cloud_run_job_cpu
-            ):
-                raise ValueError("cloud_cpu tier requires CLOUD_RUN_JOB_CPU")
-            if (
-                ComputeTier.CLOUD_GPU.value in allowed_cloud
-                and not self.cloud_run_job_gpu
-            ):
-                raise ValueError("cloud_gpu tier requires CLOUD_RUN_JOB_GPU")
+            needs_cpu = {
+                OptimizationMode.CLOUD_CPU.value,
+                OptimizationMode.CLOUD_AUTO.value,
+            }
+            needs_gpu = {
+                OptimizationMode.CLOUD_GPU.value,
+                OptimizationMode.CLOUD_AUTO.value,
+            }
+            if self.optimization_tier in needs_cpu and not self.cloud_run_job_cpu:
+                raise ValueError(
+                    f"OPTIMIZATION_TIER={self.optimization_tier} requires CLOUD_RUN_JOB_CPU"
+                )
+            if self.optimization_tier in needs_gpu and not self.cloud_run_job_gpu:
+                raise ValueError(
+                    f"OPTIMIZATION_TIER={self.optimization_tier} requires CLOUD_RUN_JOB_GPU"
+                )
         return self
-
-    @property
-    def resolved_registry_backend(self) -> str:
-        return self.registry_backend or self.persistence_backend
-
-    def backend_for_tier(self, tier: str) -> str:
-        return {
-            ComputeTier.LOCAL.value: self.optimization_backend_local,
-            ComputeTier.CLOUD_CPU.value: self.optimization_backend_cloud_cpu,
-            ComputeTier.CLOUD_GPU.value: self.optimization_backend_cloud_gpu,
-        }[tier]
 
     def cloud_run_job_for_tier(self, tier: str) -> str | None:
         return {

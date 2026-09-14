@@ -419,6 +419,17 @@ async def test_get_training_data_invalid_dataset_no_spawn():
     assert r.calls == []
 
 
+async def test_get_training_data_normalizes_filters_before_resolving_datasets():
+    """Filter normalization runs before dataset-selection validation, so a
+    request with both malformed filters and an unknown dataset must fail on
+    the filters (ValidationError), not the dataset (DatasetNotAvailableError)."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+    with pytest.raises(ValidationError):
+        await svc.get_training_data("m1", "not_a_dataset", {"start_date": "nonsense"})
+    assert r.calls == []
+
+
 async def test_cache_hit_no_spawn():
     cache = ResultCache(enabled=True, ttl_seconds=None)
     r = FakeRunner()
@@ -566,3 +577,234 @@ class TestBuildSpendScenario:
         )
         assert set(result.keys()) == expected_keys
         assert len(result) == 15
+
+
+# --- filter applicability narrowing (Task 4) ---------------------------------
+
+
+async def test_adstock_strips_date_and_geo_from_the_worker_payload():
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    await svc.get_adstock_decay(
+        "m1",
+        "adstock_decay",
+        {
+            "start_date": "2024-07-01",
+            "end_date": "2024-09-30",
+            "geos": ["US-CA"],
+            "channels": ["tv"],
+        },
+    )
+
+    _, _, params = r.calls[0]
+    assert params["filters"] == {**DEFAULT_FILTERS, "channels": ["tv"]}
+
+
+async def test_adstock_response_carries_scope_and_ignored_filters():
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    out = await svc.get_adstock_decay(
+        "m1",
+        "adstock_decay",
+        {"start_date": "2024-07-01", "end_date": "2024-09-30", "geos": ["US-CA"]},
+    )
+
+    assert out["scope"] == "national, full training window"
+    assert set(out["ignored_filters"]) == {"start_date", "end_date", "geos"}
+
+
+async def test_model_fit_use_kpi_reaches_the_worker():
+    """Regression guard: an over-strict entry here would collapse
+    use_kpi=True/False onto one cache key and serve wrong-denomination rows."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    await svc.get_model_fit("m1", {"use_kpi": True})
+
+    _, _, params = r.calls[0]
+    assert params["filters"]["use_kpi"] is True
+
+
+async def test_spend_scenario_reports_channels_and_keeps_its_own_args():
+    r = FakeRunner(
+        result_factory=lambda op, mid, p: {
+            "model_id": mid,
+            "channel": p["channel"],
+            "channel_type": "paid_media",
+            "outcome_mode": "revenue",
+        }
+    )
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    out = await svc.get_spend_scenario(
+        "m1", "search", 100.0, None, {"channels": ["tv"]}
+    )
+
+    _, _, params = r.calls[0]
+    assert params["channel"] == "search" and params["spend_increase"] == 100.0
+    assert params["filters"]["channels"] == []
+    assert set(out["ignored_filters"]) == {"channels"}
+
+
+# See test_invalid_output_type_no_spawn: it already covers all four dispatch
+# tools and guards that the applicability lookup never pre-empts
+# InvalidOutputTypeError.
+
+
+# --- Task 5: service-wiring coverage for all nine methods --------------------
+
+# (service method, kwargs, an INAPPLICABLE filter for that surface, its value)
+WIRING_CASES = [
+    (
+        "get_channel_summary",
+        {"output_type": "baseline_summary_metrics"},
+        "channels",
+        ["tv"],
+    ),
+    ("get_channel_summary", {"output_type": "roi"}, "include_non_paid", False),
+    (
+        "get_contribution",
+        {"output_type": "contribution_metrics_by_time"},
+        "aggregate_times",
+        False,
+    ),
+    ("get_adstock_decay", {"output_type": "adstock_decay"}, "geos", ["US-CA"]),
+    (
+        "get_response_curves",
+        {"output_type": "response_curves"},
+        "include_non_paid",
+        True,
+    ),
+    ("get_reach_frequency", {}, "aggregate_times", False),
+    ("get_model_fit", {}, "channels", ["tv"]),
+    ("get_channel_data", {}, "use_kpi", True),
+    ("get_training_data", {"dataset": "kpi"}, "use_kpi", True),
+    (
+        "get_spend_scenario",
+        {"channel": "search", "spend_increase": 100.0, "base_spend": None},
+        "channels",
+        ["tv"],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("method", "kwargs", "field", "value"),
+    WIRING_CASES,
+    ids=[f"{m}-{f}" for m, _, f, _ in WIRING_CASES],
+)
+async def test_every_service_method_narrows_and_reports(method, kwargs, field, value):
+    """Fails if ANY method loses its narrowing or its note."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    out = await getattr(svc, method)("m1", filters={field: value}, **kwargs)
+
+    _, _, params = r.calls[0]
+    assert params["filters"][field] == DEFAULT_FILTERS[field], (
+        f"{method} did not strip {field} from the worker payload"
+    )
+    assert field in out.get("ignored_filters", {}), (
+        f"{method} did not report {field} in ignored_filters"
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "kwargs"),
+    [(m, k) for m, k, _, _ in WIRING_CASES],
+    ids=[m + str(sorted(k.items())) for m, k, _, _ in WIRING_CASES],
+)
+async def test_no_method_emits_a_note_when_nothing_was_supplied(method, kwargs):
+    """scope is the only key allowed to appear unprompted, and only on adstock."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    out = await getattr(svc, method)("m1", filters=None, **kwargs)
+
+    assert "ignored_filters" not in out
+    if method != "get_adstock_decay":
+        assert "scope" not in out
+
+
+# --- Task 7: Cache behaviour (narrowing, per-call notes, no poisoning) -------
+
+
+async def test_windowed_and_unfiltered_adstock_share_one_cache_entry():
+    """Narrowing happens before _filter_key, so filters that cannot change
+    the rows must not fragment the cache."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=ResultCache(enabled=True))
+
+    await svc.get_adstock_decay("m1", "adstock_decay", None)
+    await svc.get_adstock_decay(
+        "m1", "adstock_decay", {"start_date": "2024-07-01", "geos": ["US-CA"]}
+    )
+
+    assert len(r.calls) == 1, "second call should have hit the cache"
+
+
+async def test_cached_call_still_gets_its_own_note():
+    """The note is applied AFTER the cache returns, so a cache hit must not
+    inherit the note from whichever call populated the entry."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=ResultCache(enabled=True))
+
+    first = await svc.get_adstock_decay("m1", "adstock_decay", None)
+    second = await svc.get_adstock_decay("m1", "adstock_decay", {"geos": ["US-CA"]})
+
+    assert "ignored_filters" not in first
+    assert set(second["ignored_filters"]) == {"geos"}
+
+
+async def test_decorating_a_result_does_not_poison_the_cache_entry():
+    """ResultCache.get returns the stored dict by reference."""
+    cache = ResultCache(enabled=True)
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=cache)
+
+    await svc.get_adstock_decay("m1", "adstock_decay", {"geos": ["US-CA"]})
+    plain = await svc.get_adstock_decay("m1", "adstock_decay", None)
+
+    assert "ignored_filters" not in plain
+
+
+async def test_applicable_filters_still_produce_distinct_cache_keys():
+    """The direct guard against an over-strict entry serving wrong rows."""
+    r = FakeRunner()
+    svc = AnalysisService(runner=r, result_cache=ResultCache(enabled=True))
+
+    await svc.get_model_fit("m1", {"use_kpi": True})
+    await svc.get_model_fit("m1", {"use_kpi": False})
+
+    assert len(r.calls) == 2, "use_kpi must not collapse onto one cache key"
+
+
+async def test_regression_windowed_adstock_returns_national_rows_and_says_so():
+    """The reported bug: get_adstock_decay accepted date and geo filters,
+    applied only channels, and gave no sign the rest were dropped."""
+    rows = [["search", 0.0, 1.0], ["search", 1.0, 0.5]]
+    r = FakeRunner(
+        result_factory=lambda op, mid, p: {
+            "model_id": mid,
+            "output_type": p["output_type"],
+            "columns": ["channel", "time_units", "mean"],
+            "rows": rows,
+            "row_count": len(rows),
+        }
+    )
+    svc = AnalysisService(runner=r, result_cache=None)
+
+    windowed = await svc.get_adstock_decay(
+        "m1",
+        "adstock_decay",
+        {"start_date": "2024-07-01", "end_date": "2024-09-30", "geos": ["US-CA"]},
+    )
+
+    # Rows are unchanged -- they were always correct national estimates.
+    assert windowed["rows"] == rows
+    # What changed: the response now says so.
+    assert windowed["scope"] == "national, full training window"
+    assert set(windowed["ignored_filters"]) == {"start_date", "end_date", "geos"}
+    assert "time-invariant" in windowed["ignored_filters"]["end_date"]

@@ -106,6 +106,43 @@ class MetricNotSupportedError(MeridianMcpError):
         )
 
 
+class UnsupportedModelFormatError(MeridianMcpError):
+    """Raised when a model file cannot be loaded because of its extension.
+
+    Meridian 2.0 deprecated the pickle persistence API (``save_mmm`` /
+    ``load_mmm``) with no backward-compatibility guarantee, and a pickle
+    checkpoint saved under the TensorFlow backend restores raw TF
+    ``EagerTensor``s regardless of the active backend -- which crashes with
+    a ``TracerArrayConversionError`` under JAX. This server therefore only
+    loads Meridian's proto format (``.binpb``); a ``.pkl`` model must be
+    re-exported to ``.binpb`` before it can be loaded here.
+    """
+
+    def __init__(self, path: str, extension: str):
+        if extension == ".pkl":
+            message = (
+                f"Model file '{path}' is a pickle (.pkl) checkpoint. Pickle "
+                "models are no longer supported: Meridian 2.0 deprecated "
+                "save_mmm/load_mmm, and loading a pickle checkpoint under the "
+                "JAX backend fails at inference time. Re-export this model to "
+                "Meridian's proto format (.binpb) and load that file instead."
+            )
+        else:
+            message = (
+                f"Unsupported model format '{extension}' for '{path}'. Only "
+                "Meridian's proto format (.binpb) is supported."
+            )
+        super().__init__(
+            error_code="unsupported_model_format",
+            message=message,
+            details={
+                "path": path,
+                "extension": extension,
+                "expected_extension": ".binpb",
+            },
+        )
+
+
 class WorkerFailedError(MeridianMcpError):
     def __init__(
         self, message: str = "worker process failed", details: dict | None = None
@@ -118,11 +155,6 @@ class WorkerTimeoutError(MeridianMcpError):
         self, message: str = "worker process timed out", details: dict | None = None
     ):
         super().__init__("worker_timeout", message, details)
-
-
-class ServerBusyError(MeridianMcpError):
-    def __init__(self, message: str = "server is busy", details: dict | None = None):
-        super().__init__("server_busy", message, details)
 
 
 class InternalError(MeridianMcpError):

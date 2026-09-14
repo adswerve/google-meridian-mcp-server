@@ -3,8 +3,9 @@
 Builds 7 fixtures: the 2x3 (national|geo) x (revenue|kpi_rpk|kpi_only) matrix
 (all with reach & frequency channels) plus one media-only geo-revenue model so
 the no-RF graceful-error path is exercised. Each model is built from synthetic
-data, fitted with a tiny real posterior, and serialized to .binpb (one variant
-also to .pkl to exercise the loader's pickle path).
+data, fitted with a tiny real posterior, and serialized to .binpb. Pickle
+(.pkl) models are no longer supported by this server -- see
+reports/pkl-format-removed.md -- so no .pkl fixture is produced here.
 
 Usage:
   uv run python scripts/generate_validation_models.py            # build if missing
@@ -105,14 +106,6 @@ def build_variant(
     mmm = _fit(_build_input_data(variant))
     meridian_serde.save_meridian(mmm, str(target))
     print(f"  built {variant.key} -> {target}")
-    # Exercise the loader's pickle branch with one extra .pkl fixture.
-    if variant.key == "national-revenue":
-        from meridian.model import model as model_mod
-
-        pkl_dir = out_root / "national-revenue-pkl"
-        pkl_dir.mkdir(parents=True, exist_ok=True)
-        model_mod.save_mmm(mmm, str(pkl_dir / "model.pkl"))
-        print(f"  built national-revenue-pkl -> {pkl_dir / 'model.pkl'}")
     return target
 
 

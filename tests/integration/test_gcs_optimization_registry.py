@@ -3,6 +3,7 @@ import pytest
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationConfig,
     OptimizationRun,
+    OptimizationRunDispatch,
     OptimizationRunState,
     RunStatus,
 )
@@ -24,7 +25,6 @@ def _run(run_id="m-1"):
         config_fingerprint="fp1",
         compute_tier_requested="auto",
         compute_tier_resolved="cloud_cpu",
-        backend="jax",
         size_score=1,
         created_at="2026-06-30T00:00:00+00:00",
         meridian_version="1.7.0",
@@ -82,3 +82,35 @@ def test_write_state_generation_precondition(registry):
             OptimizationRunState(run_id="m-1", status=RunStatus.FAILED),
             expected_generation=gen,
         )
+
+
+def test_gcs_claim_dispatch_is_create_if_absent(registry):
+    """GCS uses a different primitive (if_generation_match=0) from the local
+    provider's O_CREAT|O_EXCL, so it needs its own proof."""
+    registry.create(_run())
+    d = OptimizationRunDispatch(run_id="m-1", claimed_at="2026-09-10T00:00:00+00:00")
+
+    assert registry.claim_dispatch(d) is True
+    assert registry.claim_dispatch(d) is False
+    assert registry.get_dispatch("m-1").execution_name is None
+
+
+def test_gcs_delete_removes_the_dispatch_document():
+    """The GCS provider deletes a hardcoded blob list, so a new artifact leaks
+    unless it is added. The local provider deletes by directory, which is the
+    trap: live_validate's delete-verify-gone step would pass while the only
+    backend cloud tiers can use leaked the document forever."""
+    client = FakeGcsClient()
+    registry = GcsOptimizationRunRegistry(
+        "bucket", "optimizations/", client_factory=lambda: client
+    )
+    registry.create(_run())
+    registry.write_state(OptimizationRunState(run_id="m-1", status=RunStatus.QUEUED))
+    registry.claim_dispatch(
+        OptimizationRunDispatch(run_id="m-1", claimed_at="2026-09-10T00:00:00+00:00")
+    )
+
+    registry.delete("m-1")
+
+    leftover = [n for n in client._store if "runs/m-1" in n]
+    assert leftover == []

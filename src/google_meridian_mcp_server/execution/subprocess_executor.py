@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from google_meridian_mcp_server.domain.optimization import OptimizationRun, RunStatus
-from google_meridian_mcp_server.execution.base_executor import BaseExecutor
+from google_meridian_mcp_server.execution.base_executor import (
+    DEFAULT_HEARTBEAT_STALE_SECONDS,
+    BaseExecutor,
+)
 from google_meridian_mcp_server.execution.base_subprocess import BaseSubprocessExecutor
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
@@ -26,8 +29,7 @@ class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
         registry: OptimizationRunRegistry,
         *,
         max_parallel: int,
-        heartbeat_stale_seconds: int,
-        backend: str,
+        heartbeat_stale_seconds: int = DEFAULT_HEARTBEAT_STALE_SECONDS,
         log_root: str | Path = DEFAULT_LOG_ROOT,
         python_executable: str | None = None,
     ) -> None:
@@ -42,9 +44,8 @@ class AsyncSubprocessExecutor(BaseExecutor, BaseSubprocessExecutor):
             if python_executable
             else None
         )
-        BaseSubprocessExecutor.__init__(
-            self, worker_argv_prefix=prefix, env_base={"MERIDIAN_BACKEND": backend}
-        )
+        # child_env() supplies MERIDIAN_BACKEND and MERIDIAN_ENABLE_JAX_X64.
+        BaseSubprocessExecutor.__init__(self, worker_argv_prefix=prefix)
         self._log_root = Path(log_root)
 
     def _launch(self, run: OptimizationRun) -> Any:

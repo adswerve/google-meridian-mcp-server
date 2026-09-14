@@ -15,6 +15,5 @@ def sample_runtime_config():
         persistence_backend="local",
         local_models_root="./test-models",
         model_cache_root="/tmp/mmm-models-test",
-        discovery_ttl_seconds=60,
         result_cache_enabled=False,
     )

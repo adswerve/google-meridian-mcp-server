@@ -8,7 +8,6 @@ execution-boundary refactor. Slow (seconds per call) -- marked `integration`.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import tempfile
 from pathlib import Path
@@ -46,13 +45,9 @@ async def real_runner():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp)
         runner = SyncSubprocessExecutor(
-            semaphore=asyncio.Semaphore(2),
             run_timeout=300,
-            queue_wait_timeout=30,
-            max_response_bytes=64 * 1024 * 1024,
             workdir_root=tmp_root / "workdirs",
             env_base={
-                "MERIDIAN_BACKEND": "tensorflow",
                 "PERSISTENCE_BACKEND": "local",
                 "LOCAL_MODELS_ROOT": "models/_validation",
                 "MODEL_CACHE_ROOT": str(tmp_root / "model_cache"),

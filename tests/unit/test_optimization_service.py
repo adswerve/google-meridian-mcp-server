@@ -306,7 +306,7 @@ async def test_disallowed_compute_tier_raises_typed_error(tmp_path):
         await svc.run_optimization(
             "m",
             {"scenario": {"type": "fixed_budget"}},
-            compute_tier="cloud_gpu",  # not in allowed tiers (default: local only)
+            compute_tier="cloud_gpu",  # OPTIMIZATION_TIER=local does not run cloud_gpu
         )
 
 
@@ -351,35 +351,34 @@ async def test_identical_config_reuses_completed_run_reports_completed(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_cloud_tier_run_records_jax_backend(tmp_path):
-    """FIX 1: a run resolved to cloud_cpu records backend == 'jax'."""
-    cfg = RuntimeConfig(
-        persistence_backend="local",
-        local_models_root=str(tmp_path),
-        optimization_runs_root=str(tmp_path / "runs"),
-        registry_backend="gcs",
-        gcs_bucket="b",
-        optimization_allowed_tiers=("cloud_cpu",),
-        cloud_run_project="proj",
-        cloud_run_region="us-central1",
-        cloud_run_job_cpu="meridian-opt-cpu",
-    )
-    reg = LocalOptimizationRunRegistry(str(tmp_path / "runs"))
-    svc = OptimizationService(FakeRunner(), reg, _Executor(), cfg)
-    out = await svc.run_optimization(
-        "m", {"scenario": {"type": "fixed_budget"}}, compute_tier="cloud_cpu"
-    )
-    assert out["backend"] == "jax"
-    assert reg.get_record(out["run_id"]).backend == "jax"
+async def test_submit_envelope_reports_meridian_version_not_backend(tmp_path):
+    """Spec 6.3: `backend` carried no information once JAX became the only
+    backend, and `meridian_version` was written to the manifest and returned by
+    nothing. Both envelopes swap one for the other."""
+    import importlib.metadata
+
+    svc, reg = _svc(tmp_path)
+    out = await svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
+    assert "backend" not in out
+    assert out["meridian_version"] == importlib.metadata.version("google-meridian")
+    assert reg.get_record(out["run_id"]).meridian_version == out["meridian_version"]
 
 
 @pytest.mark.asyncio
-async def test_local_tier_run_records_local_backend(tmp_path):
-    """FIX 1: a local run still records the local (tensorflow) backend."""
+async def test_get_status_reports_meridian_version_not_backend(tmp_path):
     svc, reg = _svc(tmp_path)
     out = await svc.run_optimization("m", {"scenario": {"type": "fixed_budget"}})
-    assert out["backend"] == "tensorflow"
-    assert reg.get_record(out["run_id"]).backend == "tensorflow"
+    status = svc.get_status(out["run_id"])
+    assert "backend" not in status
+    assert status["meridian_version"] == out["meridian_version"]
+
+
+def test_server_version_is_read_from_package_metadata():
+    """It was hardcoded '0.1.0', already stale against pyproject's 0.3.1, on the
+    line below the one this change edits."""
+    from google_meridian_mcp_server.services import optimization_service
+
+    assert optimization_service._SERVER_VERSION != "0.1.0"
 
 
 def test_cancel_unknown_run_raises_run_not_found(tmp_path):

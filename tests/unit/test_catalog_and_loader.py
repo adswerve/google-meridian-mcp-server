@@ -8,6 +8,9 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
+import pytest
+
+from google_meridian_mcp_server.domain.errors import UnsupportedModelFormatError
 from google_meridian_mcp_server.domain.models import ModelCatalogEntry
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.meridian.loader import load_meridian_model
@@ -60,35 +63,46 @@ class TestMeridianLoader:
         assert result == "proto-model"
         fake_serde.load_meridian.assert_called_once_with("/tmp/model.binpb")
 
-    def test_loads_pickle_models_via_meridian_model_module(self):
-        fake_model_module = SimpleNamespace(
-            load_mmm=mock.Mock(return_value="pickle-model")
-        )
-        model_package = ModuleType("meridian.model")
-        model_package.model = fake_model_module
-        meridian_module = ModuleType("meridian")
+    def test_rejects_pkl_models_with_an_actionable_error(self, tmp_path):
+        """.pkl is no longer supported (Meridian 2.0 dropped save_mmm/load_mmm).
 
-        with mock.patch.dict(
-            sys.modules,
-            {
-                "meridian": meridian_module,
-                "meridian.model": model_package,
-            },
-        ):
-            result = load_meridian_model(Path("/tmp/model.pkl"))
+        Uses a dummy path in a temp dir rather than any fixture under
+        models/ -- this must fail if the rejection is ever removed, e.g. by
+        someone reinstating a pickle-loading branch in the loader.
+        """
+        dummy_path = tmp_path / "model.pkl"
 
-        assert result == "pickle-model"
-        fake_model_module.load_mmm.assert_called_once_with("/tmp/model.pkl")
+        with pytest.raises(UnsupportedModelFormatError) as exc_info:
+            load_meridian_model(dummy_path)
 
-    def test_rejects_unsupported_model_extensions(self):
-        try:
-            load_meridian_model(Path("/tmp/model.json"))
-        except ValueError as exc:
-            assert "Unsupported model format" in str(exc)
-        else:
-            raise AssertionError(
-                "Expected unsupported model format to raise ValueError"
-            )
+        error = exc_info.value
+        payload = error.to_payload()
+        assert payload["error_code"] == "unsupported_model_format"
+        assert ".binpb" in payload["message"]
+        assert "pickle" in payload["message"].lower()
+        assert payload["details"]["extension"] == ".pkl"
+        assert payload["details"]["expected_extension"] == ".binpb"
+
+    def test_rejects_other_unsupported_model_extensions(self, tmp_path):
+        dummy_path = tmp_path / "model.json"
+
+        with pytest.raises(UnsupportedModelFormatError) as exc_info:
+            load_meridian_model(dummy_path)
+
+        payload = exc_info.value.to_payload()
+        assert payload["error_code"] == "unsupported_model_format"
+        assert ".binpb" in payload["message"]
+
+
+def test_discovery_cache_defaults_to_the_two_hour_catalog_ttl():
+    """Demoted from DISCOVERY_TTL_SECONDS. The VALUE is the contract now."""
+    from google_meridian_mcp_server.persistence.cache import (
+        DEFAULT_DISCOVERY_TTL_SECONDS,
+        DiscoveryCache,
+    )
+
+    assert DEFAULT_DISCOVERY_TTL_SECONDS == 7200
+    assert DiscoveryCache(object())._ttl == 7200
 
 
 class TestModelCatalogCaching:

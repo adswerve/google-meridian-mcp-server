@@ -12,7 +12,12 @@ from google_meridian_mcp_server.persistence.local_provider import LocalModelProv
 
 
 class TestLocalModelProvider:
-    def test_discovers_binpb_files(self, tmp_path: Path):
+    def test_discovers_binpb_files_and_skips_unsupported_extensions(
+        self, tmp_path: Path
+    ):
+        """.pkl is unsupported (Meridian 2.0 dropped pickle models): it is
+        skipped during discovery exactly like any other unrecognized
+        extension, e.g. notes.txt."""
         (tmp_path / "model_a.binpb").write_bytes(b"fake")
         (tmp_path / "model_b.pkl").write_bytes(b"fake")
         (tmp_path / "notes.txt").write_text("ignore me")
@@ -20,9 +25,9 @@ class TestLocalModelProvider:
         provider = LocalModelProvider(str(tmp_path))
         entries = provider.discover()
 
-        assert len(entries) == 2
+        assert len(entries) == 1
         ids = {e.model_id for e in entries}
-        assert ids == {"model_a", "model_b"}
+        assert ids == {"model_a"}
 
     def test_discovers_nested_model_layout(self, tmp_path: Path):
         model_dir = tmp_path / "geo-revenue"

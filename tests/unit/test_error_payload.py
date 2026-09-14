@@ -7,7 +7,6 @@ from google_meridian_mcp_server.domain.errors import (
     MeridianMcpError,
     MissingModelDataError,
     OptimizationFailedError,
-    ServerBusyError,
     WorkerFailedError,
     WorkerLostError,
     WorkerTimeoutError,
@@ -33,7 +32,6 @@ def test_from_payload_defaults():
     [
         (WorkerFailedError, "worker_failed"),
         (WorkerTimeoutError, "worker_timeout"),
-        (ServerBusyError, "server_busy"),
         (InternalError, "internal_error"),
     ],
 )

@@ -11,6 +11,7 @@ from pathlib import Path
 from google_meridian_mcp_server.domain.errors import MeridianMcpError
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationRun,
+    OptimizationRunDispatch,
     OptimizationRunState,
     OptimizationRunSummary,
     RunStatus,
@@ -86,6 +87,12 @@ class OptimizationRunRegistry(abc.ABC):
     def find_by_fingerprint(self, fingerprint: str) -> str | None: ...
     @abc.abstractmethod
     def put_fingerprint(self, fingerprint: str, run_id: str) -> None: ...
+    @abc.abstractmethod
+    def claim_dispatch(self, dispatch: OptimizationRunDispatch) -> bool: ...
+    @abc.abstractmethod
+    def write_dispatch(self, dispatch: OptimizationRunDispatch) -> None: ...
+    @abc.abstractmethod
+    def get_dispatch(self, run_id: str) -> OptimizationRunDispatch | None: ...
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -106,6 +113,17 @@ def _atomic_write(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _read_text(path: Path) -> str:
+    """Read *path* as UTF-8 regardless of the interpreter's locale encoding.
+
+    Pydantic's model_dump_json() emits raw non-ASCII, and _atomic_write
+    persists it with str.encode(), which is always UTF-8. A bare read_text()
+    would decode with the locale's preferred encoding and silently mojibake a
+    non-ASCII run label under a non-UTF-8 locale.
+    """
+    return path.read_text(encoding="utf-8")
 
 
 class LocalOptimizationRunRegistry(OptimizationRunRegistry):
@@ -143,7 +161,7 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
         path = self._run_dir(run_id) / "record.json"
         if not path.is_file():
             raise RunNotFoundError(run_id)
-        return OptimizationRun.model_validate_json(path.read_text())
+        return OptimizationRun.model_validate_json(_read_text(path))
 
     def get_state(self, run_id: str) -> OptimizationRunState:
         path = self._run_dir(run_id) / "state.json"
@@ -151,14 +169,14 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
             if not self._run_dir(run_id).is_dir():
                 raise RunNotFoundError(run_id)
             return OptimizationRunState(run_id=run_id, status=RunStatus.QUEUED)
-        return OptimizationRunState.model_validate_json(path.read_text())
+        return OptimizationRunState.model_validate_json(_read_text(path))
 
     def get_result(self, run_id: str) -> dict:
         state = self.get_state(run_id)
         path = self._run_dir(run_id) / "result.json"
         if not path.is_file():
             raise ResultNotReadyError(run_id, state.status.value)
-        return json.loads(path.read_text())
+        return json.loads(_read_text(path))
 
     def list(self, *, model_id=None, status=None, limit=None):
         if not self._runs.is_dir():
@@ -168,7 +186,7 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
             record_path = d / "record.json"
             if not record_path.is_file():
                 continue
-            run = OptimizationRun.model_validate_json(record_path.read_text())
+            run = OptimizationRun.model_validate_json(_read_text(record_path))
             if model_id is not None and run.model_id != model_id:
                 continue
             state = self.get_state(run.run_id)
@@ -196,10 +214,10 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
         record_path = d / "record.json"
         if record_path.is_file():
             fp = OptimizationRun.model_validate_json(
-                record_path.read_text()
+                _read_text(record_path)
             ).config_fingerprint
             pointer = self._index / fp
-            if pointer.is_file() and pointer.read_text().strip() == run_id:
+            if pointer.is_file() and _read_text(pointer).strip() == run_id:
                 pointer.unlink()
         for child in d.iterdir():
             child.unlink()
@@ -207,11 +225,60 @@ class LocalOptimizationRunRegistry(OptimizationRunRegistry):
 
     def find_by_fingerprint(self, fingerprint: str) -> str | None:
         pointer = self._index / fingerprint
-        return pointer.read_text().strip() if pointer.is_file() else None
+        return _read_text(pointer).strip() if pointer.is_file() else None
 
     def put_fingerprint(self, fingerprint: str, run_id: str) -> None:
         self._index.mkdir(parents=True, exist_ok=True)
         _atomic_write(self._index / fingerprint, run_id)
+
+    def claim_dispatch(self, dispatch: OptimizationRunDispatch) -> bool:
+        """Create-if-absent claim of dispatch.json, atomically.
+
+        A plain O_CREAT|O_EXCL open followed by a separate write is two
+        steps: a process killed between them leaves a zero-byte dispatch.json
+        that permanently loses every future claim (claim_dispatch always sees
+        the file already exists) and makes get_dispatch raise a
+        ValidationError out of reconcile_orphans and cancel forever after.
+        Instead: write the full content to a temp file in the same directory
+        (a single, complete write, so there is no partial-content window),
+        then os.link() it into place -- link() raises FileExistsError if the
+        target already exists, giving the same exclusivity atomically as a
+        rename of an existing name never would.
+        """
+        d = self._run_dir(dispatch.run_id)
+        if not d.is_dir():
+            raise RunNotFoundError(dispatch.run_id)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        fd_closed = False
+        try:
+            os.write(fd, dispatch.model_dump_json(indent=2).encode())
+            os.fsync(fd)
+            os.close(fd)
+            fd_closed = True
+            try:
+                os.link(tmp, d / "dispatch.json")
+            except FileExistsError:
+                return False
+        finally:
+            if not fd_closed:
+                os.close(fd)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        return True
+
+    def write_dispatch(self, dispatch: OptimizationRunDispatch) -> None:
+        d = self._run_dir(dispatch.run_id)
+        if not d.is_dir():
+            raise RunNotFoundError(dispatch.run_id)
+        _atomic_write(d / "dispatch.json", dispatch.model_dump_json(indent=2))
+
+    def get_dispatch(self, run_id: str) -> OptimizationRunDispatch | None:
+        path = self._run_dir(run_id) / "dispatch.json"
+        if not path.is_file():
+            return None
+        return OptimizationRunDispatch.model_validate_json(_read_text(path))
 
 
 class GcsOptimizationRunRegistry(OptimizationRunRegistry):
@@ -325,6 +392,7 @@ class GcsOptimizationRunRegistry(OptimizationRunRegistry):
             f"{prefix}/record.json",
             f"{prefix}/state.json",
             f"{prefix}/result.json",
+            f"{prefix}/dispatch.json",
         ):
             blob = self._blob(name)
             if blob.exists():
@@ -338,3 +406,26 @@ class GcsOptimizationRunRegistry(OptimizationRunRegistry):
         self._blob(
             f"{self._prefix}/index/by_fingerprint/{fingerprint}"
         ).upload_from_string(run_id)
+
+    def claim_dispatch(self, dispatch: OptimizationRunDispatch) -> bool:
+        from google.api_core.exceptions import PreconditionFailed
+
+        blob = self._blob(f"{self._run_prefix(dispatch.run_id)}/dispatch.json")
+        try:
+            blob.upload_from_string(
+                dispatch.model_dump_json(indent=2), if_generation_match=0
+            )
+        except PreconditionFailed:
+            return False  # another instance claimed this run first
+        return True
+
+    def write_dispatch(self, dispatch: OptimizationRunDispatch) -> None:
+        self._blob(
+            f"{self._run_prefix(dispatch.run_id)}/dispatch.json"
+        ).upload_from_string(dispatch.model_dump_json(indent=2))
+
+    def get_dispatch(self, run_id: str) -> OptimizationRunDispatch | None:
+        blob = self._blob(f"{self._run_prefix(run_id)}/dispatch.json")
+        if not blob.exists():
+            return None
+        return OptimizationRunDispatch.model_validate_json(blob.download_as_text())

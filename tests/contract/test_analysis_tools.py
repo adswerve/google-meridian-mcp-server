@@ -88,6 +88,48 @@ class TestAnalysisToolContracts:
         err = MissingModelDataError("m1", "no inference data")
         assert err.error_code == "missing_model_data"
 
+    def test_every_filter_taking_tool_surface_has_an_applicability_entry(self):
+        """Enumerate mechanically -- a hand-written list is what originally
+        lost get_spend_scenario."""
+        import inspect
+        import typing
+
+        from google_meridian_mcp_server.domain import applicability as ap
+        from google_meridian_mcp_server.domain.filters import (
+            ChannelSummaryType,
+            ContributionType,
+            ResponseCurveType,
+            ResponseDynamicsType,
+        )
+        from google_meridian_mcp_server.services.analysis_service import (
+            AnalysisService,
+        )
+
+        expected = set()
+        for tool, alias in (
+            ("get_channel_summary", ChannelSummaryType),
+            ("get_contribution", ContributionType),
+            ("get_adstock_decay", ResponseDynamicsType),
+            ("get_response_curves", ResponseCurveType),
+        ):
+            for output_type in typing.get_args(alias):
+                expected.add((tool, output_type))
+
+        filter_taking = {
+            name
+            for name, member in inspect.getmembers(AnalysisService, inspect.isfunction)
+            if not name.startswith("_")
+            and "filters" in inspect.signature(member).parameters
+        }
+        for tool in filter_taking - {tool for tool, _ in expected}:
+            expected.add((tool, None))
+
+        assert set(ap.FILTER_APPLICABILITY) == expected
+        # Surface-size canary, not arithmetic: bump this deliberately when a
+        # tool or output type is added or removed, alongside its
+        # FILTER_APPLICABILITY / IGNORED_REASONS entries.
+        assert len(expected) == 17
+
     # test_spend_scenario_summary_contract (the "get_spend_scenario returns
     # exactly the 15 documented summary keys" contract) moved to
     # tests/unit/test_analysis_ops.py::test_get_spend_scenario_summary_contract

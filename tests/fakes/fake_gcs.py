@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-
-class _PreconditionFailed(Exception):
-    pass
+from google.api_core.exceptions import PreconditionFailed
 
 
 class FakeBlob:
@@ -25,7 +23,7 @@ class FakeBlob:
         cur = self._store.get(self.name)
         cur_gen = cur[1] if cur else 0
         if if_generation_match is not None and if_generation_match != cur_gen:
-            raise _PreconditionFailed(self.name)
+            raise PreconditionFailed(self.name)
         self._store[self.name] = (text, cur_gen + 1)
 
     def download_as_text(self):

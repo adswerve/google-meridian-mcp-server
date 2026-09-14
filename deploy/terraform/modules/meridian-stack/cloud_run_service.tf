@@ -13,6 +13,14 @@ resource "google_cloud_run_v2_service" "server" {
       max_instance_count = 2
     }
 
+    # Cloud Run's unset default is 300s, which happens to equal today's
+    # ANALYSIS_WORKER_TIMEOUT. At equality the request is severed at the same
+    # instant sync_subprocess_executor kills the worker and starts building the
+    # worker_timeout envelope, so the client gets a dropped connection instead
+    # of the actionable error. Derived from the same variable, plus a margin to
+    # serialize and deliver that envelope, so the two cannot drift.
+    timeout = "${var.analysis_worker_timeout + 30}s"
+
     containers {
       image = local.image_ref["server"]
 
@@ -33,16 +41,26 @@ resource "google_cloud_run_v2_service" "server" {
         value = "gcs"
       }
       env {
-        name  = "REGISTRY_BACKEND"
-        value = "gcs"
-      }
-      env {
         name  = "MCP_TRANSPORT"
         value = "streamable-http"
       }
       env {
         name  = "MCP_HOST"
         value = "0.0.0.0"
+      }
+      env {
+        name  = "MERIDIAN_ENABLE_JAX_X64"
+        value = "true"
+      }
+      # Result cache: ON by default (production-correct). A deployment doing
+      # baseline-capture verification needs it OFF -- the harness sets
+      # RESULT_CACHE_ENABLED=false in the CLIENT process, which a deployed
+      # server never sees, so without mirroring it here cloud captures would
+      # be served from a warm cache and diffed against cold local ones.
+      # Set result_cache_enabled=false for that case only.
+      env {
+        name  = "RESULT_CACHE_ENABLED"
+        value = tostring(var.result_cache_enabled)
       }
       # Genuine inputs
       env {
@@ -58,12 +76,16 @@ resource "google_cloud_run_v2_service" "server" {
         value = var.optimization_gcs_prefix
       }
       env {
-        name  = "OPTIMIZATION_ALLOWED_TIERS"
-        value = var.optimization_allowed_tiers
+        name  = "OPTIMIZATION_TIER"
+        value = var.optimization_tier
       }
       env {
-        name  = "OPTIMIZATION_DEFAULT_TIER"
-        value = var.optimization_default_tier
+        name  = "OPTIMIZATION_MAX_PARALLEL"
+        value = tostring(var.optimization_max_parallel)
+      }
+      env {
+        name  = "ANALYSIS_WORKER_TIMEOUT"
+        value = tostring(var.analysis_worker_timeout)
       }
       # Auto-wired from resources / config
       env {
@@ -78,10 +100,26 @@ resource "google_cloud_run_v2_service" "server" {
         name  = "CLOUD_RUN_JOB_CPU"
         value = var.cpu_job_name
       }
-      env {
-        name  = "CLOUD_RUN_JOB_GPU"
-        value = var.gpu_job_name
+      dynamic "env" {
+        for_each = var.enable_gpu_job ? { CLOUD_RUN_JOB_GPU = var.gpu_job_name } : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !(contains(["cloud_gpu", "cloud_auto"], var.optimization_tier) && !var.enable_gpu_job)
+      error_message = <<-EOT
+        optimization_tier = "${var.optimization_tier}" requires enable_gpu_job = true.
+        Both cloud_gpu and cloud_auto need the GPU Cloud Run Job to exist: the server
+        validates CLOUD_RUN_JOB_GPU at startup for either tier, and cloud_auto routes
+        large models to GPU. Set enable_gpu_job = true (and ensure L4 quota), or set
+        optimization_tier = "cloud_cpu".
+      EOT
     }
   }
 

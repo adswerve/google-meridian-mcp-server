@@ -8,6 +8,9 @@ from unittest import mock
 import pytest
 
 from google_meridian_mcp_server import server
+from google_meridian_mcp_server.persistence.optimization_run_registry import (
+    GcsOptimizationRunRegistry,
+)
 
 
 class _FakeFastMCP:
@@ -28,21 +31,14 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         local_models_root="/models",
         gcs_bucket="bucket",
         gcs_models_prefix="models",
-        discovery_ttl_seconds=60,
         model_cache_root="/tmp/cache",
         result_cache_enabled=True,
         result_cache_ttl_seconds=30,
-        resolved_registry_backend="local",
         optimization_runs_root="/tmp/optimizations",
+        optimization_gcs_prefix="optimizations/",
         optimization_max_parallel=2,
-        optimization_heartbeat_stale_seconds=120,
-        optimization_backend_local="subprocess",
-        optimization_allowed_tiers=("local",),
-        analysis_max_parallel=2,
+        optimization_tier="local",
         analysis_worker_timeout=300.0,
-        analysis_queue_wait_timeout=30.0,
-        analysis_max_response_bytes=64 * 1024 * 1024,
-        analysis_workdir_root="/tmp/mmm-analysis",
     )
 
 
@@ -74,6 +70,11 @@ async def test_lifespan_selects_expected_provider(
         server, "build_discovery_cache", mock.Mock(return_value=discovery_cache)
     )
     monkeypatch.setattr(server, "ResultCache", mock.Mock(return_value=result_cache))
+    monkeypatch.setattr(
+        GcsOptimizationRunRegistry,
+        "_default_client",
+        staticmethod(lambda: object()),
+    )
 
     async with server._lifespan(SimpleNamespace()) as state:
         assert state["discovery_cache"] is discovery_cache
@@ -82,6 +83,12 @@ async def test_lifespan_selects_expected_provider(
         # subprocess runner is the only thing that ever touches Meridian.
         analysis_runner = state["analysis_runner"]
         assert isinstance(analysis_runner, server.SyncSubprocessExecutor)
+        expected = (
+            "GcsOptimizationRunRegistry"
+            if backend == "gcs"
+            else "LocalOptimizationRunRegistry"
+        )
+        assert type(state["optimization_registry"]).__name__ == expected
 
     server.build_discovery_cache.assert_called_once()
     server.ResultCache.assert_called_once_with(enabled=True, ttl_seconds=30)
@@ -130,8 +137,9 @@ def test_run_server_uses_http_transport_and_env_host_port(
     monkeypatch.setattr(server.mcp, "run", run)
     monkeypatch.setenv("MCP_HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "9000")
-    monkeypatch.delenv("MCP_PORT", raising=False)
 
     server.run_server()
 
-    run.assert_called_once_with(transport="http", host="127.0.0.1", port=9000)
+    run.assert_called_once_with(
+        transport="http", host="127.0.0.1", port=9000, json_response=True
+    )

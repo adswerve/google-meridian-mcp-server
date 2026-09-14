@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "google-meridian-mcp-server"
-version = "0.3.1"
+version = "0.3.2"
 description = "FastMCP server exposing Google Meridian MMM analysis to agents"
 readme = "README.md"
-requires-python = ">=3.12,<3.15"
+requires-python = ">=3.13,<3.14"
 dependencies = [
-    "fastmcp>=3.4.3,<4",
-    "google-meridian[schema]==1.7.0",
+    "fastmcp>=4,<5",
+    "google-meridian[schema,geox]>=2.0,<3",
     "google-cloud-storage>=3.12,<4",
     "google-cloud-run>=0.16.1,<1",
     "pydantic>=2.13.4,<3",
@@ -23,9 +23,6 @@ dev = [
     "pytest-asyncio>=1.4",
     "ruff>=0.15.20,<1",
 ]
-jax = [
-    "jax>=0.10.2",
-]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -37,7 +34,7 @@ pythonpath = ["."]
 markers = ["integration: exercises a real fitted Meridian model (slow; builds fixtures)"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 88
 include = ["pyproject.toml", "src/**/*.py", "tests/**/*.py", "scripts/**/*.py"]
 extend-exclude = [

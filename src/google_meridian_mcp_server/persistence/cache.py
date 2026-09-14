@@ -18,11 +18,18 @@ log = logging.getLogger(__name__)
 
 DEFAULT_RESULT_CACHE_MAX_ENTRIES = 256
 
+# Catalog discovery TTL. Was DISCOVERY_TTL_SECONDS; nothing ever set it outside
+# .env.example, and 2h is the right answer for a model catalog that changes when
+# somebody uploads a file.
+DEFAULT_DISCOVERY_TTL_SECONDS = 7200
+
 
 class DiscoveryCache:
     """TTL-based cache for model catalog discovery results."""
 
-    def __init__(self, provider: ModelProvider, ttl_seconds: int) -> None:
+    def __init__(
+        self, provider: ModelProvider, ttl_seconds: int = DEFAULT_DISCOVERY_TTL_SECONDS
+    ) -> None:
         self._provider = provider
         self._ttl = ttl_seconds
         self._entries: list[ModelCatalogEntry] = []

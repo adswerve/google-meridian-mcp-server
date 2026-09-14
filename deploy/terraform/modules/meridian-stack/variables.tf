@@ -61,7 +61,7 @@ variable "build_context" {
 
 variable "enable_gpu_job" {
   type        = bool
-  description = "Provision the GPU (L4) worker job. Disabled by default: the default optimization_allowed_tiers (cloud_cpu) never invokes it and L4 quota is not guaranteed. To enable: set to true AND add cloud_gpu to optimization_allowed_tiers AND ensure L4 quota in the region."
+  description = "Provision the GPU (L4) worker job. Disabled by default: the default optimization_tier (cloud_cpu) never invokes it and L4 quota is not guaranteed. To enable: set to true AND set optimization_tier to cloud_gpu (or cloud_auto) AND ensure L4 quota in the region."
   default     = false
 }
 
@@ -123,15 +123,30 @@ variable "gpu_job_timeout" {
 }
 
 # --- Optimization tiers (server env) ---
-variable "optimization_allowed_tiers" {
+variable "optimization_tier" {
   type        = string
-  description = "Comma-separated tiers the hosted server permits, e.g. cloud_cpu,cloud_gpu."
+  description = "Where this deployment runs optimizations: local | cloud_cpu | cloud_gpu | cloud_auto. cloud_auto picks CPU or GPU by problem size. Defaults to cloud_cpu, not the code default of local -- Terraform describes a cloud deployment, and mirroring the code default here would silently move every existing deployment to the local tier on apply."
   default     = "cloud_cpu"
 }
 
-variable "optimization_default_tier" {
-  type    = string
-  default = "auto"
+variable "optimization_max_parallel" {
+  type        = number
+  description = "Max concurrent Cloud Run Job executions this server instance has launched and not yet observed the completion of. Per instance, so with max_instance_count = 2 the effective ceiling is twice this. Over-cap runs queue durably and are recovered at the next instance start. Service only -- a job container runs one already-dispatched run and has no notion of siblings."
+  default     = 2
+}
+
+# --- Analysis worker (server env) ---
+variable "analysis_worker_timeout" {
+  type        = number
+  description = "Seconds the server waits for a synchronous analysis worker before killing it and returning a worker_timeout envelope. The service request timeout is derived from this (plus a delivery margin), so raising it here also raises the request timeout."
+  default     = 300
+}
+
+# --- Caching ---
+variable "result_cache_enabled" {
+  type        = bool
+  description = "Whether the server caches analysis results (sets RESULT_CACHE_ENABLED). Leave true -- the production-correct default. Set false only for a deployment doing baseline-capture verification, where the harness's client-side RESULT_CACHE_ENABLED=false must be mirrored on the server, so cloud captures are not served from a warm cache and diffed against cold local ones."
+  default     = true
 }
 
 # --- Access ---

@@ -1,14 +1,20 @@
 # tests/unit/test_optimization_worker.py
+import os
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
+import google_meridian_mcp_server.bootstrap as bootstrap_mod
+import google_meridian_mcp_server.config as config_mod
+import google_meridian_mcp_server.execution.worker as worker_mod
 from google_meridian_mcp_server.domain.models import RuntimeConfig
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationConfig,
     OptimizationRun,
     RunStatus,
 )
+from google_meridian_mcp_server.execution.base_subprocess import MERIDIAN_BACKEND
 from google_meridian_mcp_server.execution.worker import (
     _expected_parent_pid,
     _is_orphaned,
@@ -62,7 +68,6 @@ def _seed_run(reg, run_id="m-1"):
             config_fingerprint="fp",
             compute_tier_requested="auto",
             compute_tier_resolved="local",
-            backend="tensorflow",
             size_score=1,
             created_at="2026-06-29T00:00:00+00:00",
             meridian_version="1.7.0",
@@ -128,9 +133,7 @@ def test_build_worker_catalog(tmp_path):
 def test_worker_happy_path_writes_result_and_completed(tmp_path):
     reg = LocalOptimizationRunRegistry(str(tmp_path))
     _seed_run(reg)
-    code = run_worker(
-        "m-1", registry=reg, catalog=_FakeCatalog(_FakeFacade()), backend="tensorflow"
-    )
+    code = run_worker("m-1", registry=reg, catalog=_FakeCatalog(_FakeFacade()))
     assert code == 0
     assert reg.get_state("m-1").status == RunStatus.COMPLETED
     assert reg.get_state("m-1").headline is not None
@@ -144,7 +147,6 @@ def test_worker_failure_writes_failed_state(tmp_path):
         "m-1",
         registry=reg,
         catalog=_FakeCatalog(_FakeFacade(boom=True)),
-        backend="tensorflow",
     )
     assert code == 1
     state = reg.get_state("m-1")
@@ -191,7 +193,6 @@ def test_worker_emits_heartbeats_during_optimize(tmp_path):
         config_fingerprint="fp",
         compute_tier_requested="auto",
         compute_tier_resolved="local",
-        backend="tensorflow",
         size_score=1,
         created_at="2026-06-29T00:00:00+00:00",
         meridian_version="1.7.0",
@@ -202,7 +203,6 @@ def test_worker_emits_heartbeats_during_optimize(tmp_path):
         record.run_id,
         registry=registry,
         catalog=_Catalog(),
-        backend="tensorflow",
         heartbeat_interval=0.2,
     )
     assert rc == 0
@@ -238,7 +238,6 @@ def test_worker_uses_execute_for_dispatch(tmp_path):
         config_fingerprint="fp",
         compute_tier_requested="auto",
         compute_tier_resolved="local",
-        backend="tensorflow",
         size_score=1,
         created_at="2026-06-29T00:00:00+00:00",
         meridian_version="1.7.0",
@@ -249,7 +248,6 @@ def test_worker_uses_execute_for_dispatch(tmp_path):
         record.run_id,
         registry=registry,
         catalog=FakeCatalogForDispatch(),
-        backend="tensorflow",
     )
     assert rc == 0
     assert "execute" in calls
@@ -304,7 +302,6 @@ def test_f8_heartbeat_join_waits_for_in_flight_write_before_terminal_state(tmp_p
         config_fingerprint="fp",
         compute_tier_requested="auto",
         compute_tier_resolved="local",
-        backend="tensorflow",
         size_score=1,
         created_at="2026-06-29T00:00:00+00:00",
         meridian_version="1.7.0",
@@ -325,7 +322,6 @@ def test_f8_heartbeat_join_waits_for_in_flight_write_before_terminal_state(tmp_p
         record.run_id,
         registry=registry,
         catalog=_Catalog(),
-        backend="tensorflow",
         heartbeat_interval=0.05,
     )
 
@@ -358,3 +354,52 @@ def test_catalog_get_optimizer_facade_returns_and_caches(monkeypatch):
     assert isinstance(facade1, OptimizerFacade)
     # Same cached instance
     assert facade1 is facade2
+
+
+def test_main_optimization_path_forces_x64_even_if_ambient_env_says_false(
+    monkeypatch,
+):
+    """D3: precision must be explicit everywhere, never inherited.
+
+    A worker started WITHOUT the executor's own env overrides (a manual
+    ``gcloud run jobs execute``, or a job-level env set outside this
+    process) must still compute in float64. If ``main()`` ever reverts to
+    ``os.environ.setdefault("MERIDIAN_ENABLE_JAX_X64", "true")``, an ambient
+    "false" would win and the worker would silently run float32 JAX while
+    every log and doc claims x64 -- this test fails the instant that
+    regresses.
+    """
+    monkeypatch.setenv("OPTIMIZATION_RUN_ID", "run-1")
+    monkeypatch.setenv("MERIDIAN_ENABLE_JAX_X64", "false")
+
+    monkeypatch.setattr(worker_mod, "build_worker_catalog", lambda cfg: object())
+    monkeypatch.setattr(
+        worker_mod, "run_worker", lambda run_id, *, registry, catalog: 0
+    )
+    monkeypatch.setattr(bootstrap_mod, "build_registry", lambda cfg: object())
+    monkeypatch.setattr(config_mod, "load_config", lambda: object())
+
+    rc = worker_mod.main(["worker.py"])
+
+    assert rc == 0
+    assert os.environ["MERIDIAN_ENABLE_JAX_X64"] == "true"
+    assert os.environ["MERIDIAN_BACKEND"] == MERIDIAN_BACKEND
+
+
+def test_main_analysis_path_forces_x64_even_if_ambient_env_says_false(monkeypatch):
+    """Same guarantee as above, for the ``analysis`` subcommand branch."""
+    monkeypatch.setenv("MERIDIAN_ENABLE_JAX_X64", "false")
+
+    monkeypatch.setattr(worker_mod, "build_worker_catalog", lambda cfg: object())
+    monkeypatch.setattr(worker_mod, "run_analysis", lambda req, resp, *, catalog: 0)
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: SimpleNamespace(),
+    )
+
+    rc = worker_mod.main(["worker.py", "analysis", "req.json", "resp.json"])
+
+    assert rc == 0
+    assert os.environ["MERIDIAN_ENABLE_JAX_X64"] == "true"
+    assert os.environ["MERIDIAN_BACKEND"] == MERIDIAN_BACKEND

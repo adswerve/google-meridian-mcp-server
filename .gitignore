@@ -19,13 +19,18 @@ Thumbs.db
 /tmp/
 
 .github/
-references/
+# references/ is local working material. Three synthesis documents are published;
+# the vendored Meridian clone, an unattributed export script, and the local
+# AGENTS.md overflow notes stay out.
+references/*
+!references/module-map.md
+!references/skills-research.md
+!references/research-deferred-work.md
 docs/
 # Skill references are served as MCP resources and must be tracked.
 !skills/meridian-analyst/references/
 !skills/meridian-analyst/references/**
 .superpowers/
-uv.lock
 .vscode/
 models/
 .claude/settings.local.json
@@ -40,4 +45,9 @@ deploy/terraform/**/*.tfvars
 !deploy/terraform/**/*.tfvars.example
 deploy/terraform/**/backend.hcl
 !deploy/terraform/**/backend.hcl.example
+# Saved plan files: binary, and each one embeds a full tfstate snapshot.
+deploy/terraform/**/tfplan
+deploy/terraform/**/*.tfplan
 crash.log
+.claude/settings.json
+.mcp.json

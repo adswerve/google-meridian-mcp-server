@@ -16,6 +16,7 @@ from google_meridian_mcp_server.domain.optimization import (
     RunPhase,
     RunStatus,
 )
+from google_meridian_mcp_server.execution.base_subprocess import MERIDIAN_BACKEND
 from google_meridian_mcp_server.meridian.catalog import ModelCatalog
 from google_meridian_mcp_server.persistence.cache import (
     DiscoveryCache,
@@ -39,7 +40,7 @@ def build_worker_catalog(cfg: RuntimeConfig) -> ModelCatalog:
     (see TID251 per-file-ignores in pyproject.toml).
     """
     provider = build_provider(cfg)
-    discovery = DiscoveryCache(provider, cfg.discovery_ttl_seconds)
+    discovery = DiscoveryCache(provider)
     materialization = MaterializationCache(provider, cfg.model_cache_root)
     return ModelCatalog(discovery, materialization)
 
@@ -106,7 +107,7 @@ def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
     from google_meridian_mcp_server.domain.errors import MeridianMcpError
     from google_meridian_mcp_server.execution import analysis_ops
 
-    with open(request_path) as f:
+    with open(request_path, encoding="utf-8") as f:
         req = json.load(f)
 
     rc = 0
@@ -134,8 +135,11 @@ def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
         payload = analysis_ops.sanitize_nan(
             payload
         )  # whole payload, incl. error details
-        with open(tmp, "w") as f:
-            json.dump(payload, f, allow_nan=False)
+        body = json.dumps(
+            payload, separators=(",", ":"), allow_nan=False, ensure_ascii=False
+        )
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(body)
     except Exception as exc:  # noqa: BLE001 - serialization must never leave "no response"
         # sanitize_nan/json.dump raised (e.g. an object type sanitize_nan
         # doesn't know about yet): fall back to a minimal, ALWAYS-serializable
@@ -151,7 +155,7 @@ def run_analysis(request_path: str, response_path: str, *, catalog: Any) -> int:
                 "details": {},
             },
         }
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(fallback, f, allow_nan=False)
         rc = 1
     os.replace(tmp, response_path)
@@ -173,11 +177,10 @@ def run_worker(
     *,
     registry: OptimizationRunRegistry,
     catalog: Any,
-    backend: str,
     heartbeat_interval: float = 8.0,
 ) -> int:
-    # NOTE: `backend` is applied via MERIDIAN_BACKEND before the meridian import
-    # in main(); kept in the signature for provenance/symmetry.
+    # The backend is no longer a parameter: main() pins MERIDIAN_BACKEND to the
+    # module constant before any meridian import (D2).
     record = registry.get_record(run_id)
     started = _now()
     registry.write_state(
@@ -281,19 +284,22 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv
     if argv[1:2] == ["analysis"]:
         _start_parent_death_guard()
-        os.environ.setdefault("MERIDIAN_BACKEND", "tensorflow")  # not self-referential
+        os.environ["MERIDIAN_BACKEND"] = MERIDIAN_BACKEND  # before any meridian import
+        os.environ["MERIDIAN_ENABLE_JAX_X64"] = "true"
         from google_meridian_mcp_server.config import load_config
 
+        cfg = load_config()
         return run_analysis(
-            argv[2], argv[3], catalog=build_worker_catalog(load_config())
+            argv[2],
+            argv[3],
+            catalog=build_worker_catalog(cfg),
         )
 
     _start_parent_death_guard()
     run_id = os.environ["OPTIMIZATION_RUN_ID"]
-    backend = os.environ.get("MERIDIAN_BACKEND", "tensorflow")
-    os.environ["MERIDIAN_BACKEND"] = (
-        backend  # set before importing meridian (catalog does)
-    )
+    # Set before importing meridian (build_worker_catalog does).
+    os.environ["MERIDIAN_BACKEND"] = MERIDIAN_BACKEND
+    os.environ["MERIDIAN_ENABLE_JAX_X64"] = "true"
 
     from google_meridian_mcp_server.bootstrap import build_registry
     from google_meridian_mcp_server.config import load_config
@@ -303,7 +309,6 @@ def main(argv: list[str] | None = None) -> int:
         run_id,
         registry=build_registry(cfg),
         catalog=build_worker_catalog(cfg),
-        backend=backend,
     )
 
 

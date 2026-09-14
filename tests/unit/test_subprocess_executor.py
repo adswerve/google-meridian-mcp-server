@@ -28,7 +28,6 @@ def _run(run_id):
         config_fingerprint="fp",
         compute_tier_requested="auto",
         compute_tier_resolved="local",
-        backend="tensorflow",
         size_score=1,
         created_at="2026-06-29T00:00:00+00:00",
         meridian_version="1.7.0",
@@ -209,7 +208,6 @@ def test_reconcile_stale_precondition_guards_against_race():
         config_fingerprint="fp",
         compute_tier_requested="auto",
         compute_tier_resolved="cloud_cpu",
-        backend="jax",
         size_score=1,
         created_at="2026-06-29T00:00:00+00:00",
         meridian_version="1.7.0",
@@ -253,6 +251,34 @@ def test_reconcile_stale_precondition_guards_against_race():
     assert run_id not in ex._handles
 
 
+def test_reconcile_orphans_does_not_fail_running_run_with_result(tmp_path):
+    """MUST FIX 1: a RUNNING run with a stale heartbeat AND a written result.json
+    must not be stamped FAILED by reconcile_orphans -> _reconcile_stale.
+
+    Mirrors the worker.py race: the worker writes result.json (worker.py:231)
+    before its terminal write_state (:243), so a container killed in between
+    leaves a complete result under a RUNNING state with a heartbeat that goes
+    stale by construction while the server that would refresh it is down.
+    reconcile_orphans (called at startup) must treat this as done, not crashed.
+    """
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+
+    reg.create(_run("a"))
+    reg.write_state(
+        OptimizationRunState(
+            run_id="a",
+            status=RunStatus.RUNNING,
+            heartbeat_at="1970-01-01T00:00:00+00:00",  # very stale
+        )
+    )
+    reg.write_result("a", {"ok": True})
+
+    ex.reconcile_orphans()
+
+    assert reg.get_state("a").status == RunStatus.RUNNING
+
+
 def test_reap_after_deleted_run_does_not_raise(tmp_path):
     """A completed run's handle may be reaped after the run is deleted (delete
     races the poll() lag). _fail_if_unfinished must treat a missing run as a
@@ -285,13 +311,14 @@ def test_subprocess_executor_builds_worker_command(tmp_path, monkeypatch):
         reg,
         max_parallel=2,
         heartbeat_stale_seconds=60,
-        backend="jax",
         log_root=tmp_path / "logs",
     )
     reg.create(_run("a"))
     ex.submit(_run("a"))
     assert "google_meridian_mcp_server.execution.worker" in captured["cmd"]
     assert captured["env"]["OPTIMIZATION_RUN_ID"] == "a"
+    # MERIDIAN_BACKEND comes from the module constant in base_subprocess.py,
+    # not a per-executor parameter.
     assert captured["env"]["MERIDIAN_BACKEND"] == "jax"
 
 
@@ -312,7 +339,6 @@ def test_launch_redirects_and_new_session(monkeypatch, tmp_path):
         reg,
         max_parallel=1,
         heartbeat_stale_seconds=60,
-        backend="tensorflow",
         log_root=tmp_path,
     )
     ex._launch(_run("r1"))
@@ -340,9 +366,7 @@ def test_reconcile_orphans_fails_running_and_queued_unconditionally(tmp_path):
     reg.create(_run("queued-run"))
     reg.write_state(OptimizationRunState(run_id="queued-run", status=RunStatus.QUEUED))
 
-    ex = AsyncSubprocessExecutor(
-        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="tensorflow"
-    )
+    ex = AsyncSubprocessExecutor(reg, max_parallel=2, heartbeat_stale_seconds=60)
     ex.reconcile_orphans()
 
     for run_id in ("running-run", "queued-run"):
@@ -358,9 +382,7 @@ def test_reconcile_orphans_does_not_touch_terminal_runs(tmp_path):
     reg.create(_run("done-run"))
     reg.write_state(OptimizationRunState(run_id="done-run", status=RunStatus.COMPLETED))
 
-    ex = AsyncSubprocessExecutor(
-        reg, max_parallel=2, heartbeat_stale_seconds=60, backend="tensorflow"
-    )
+    ex = AsyncSubprocessExecutor(reg, max_parallel=2, heartbeat_stale_seconds=60)
     ex.reconcile_orphans()
 
     assert reg.get_state("done-run").status == RunStatus.COMPLETED
@@ -412,9 +434,7 @@ def test_terminate_reaps_child_after_kill(monkeypatch, tmp_path):
     """F9: _terminate reaps the child after SIGKILL so it doesn't linger as
     a zombie."""
     reg = LocalOptimizationRunRegistry(str(tmp_path))
-    ex = AsyncSubprocessExecutor(
-        reg, max_parallel=1, heartbeat_stale_seconds=60, backend="tensorflow"
-    )
+    ex = AsyncSubprocessExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
     monkeypatch.setattr(ex, "kill_group", lambda pid: None)
 
     waited = {}
@@ -434,9 +454,7 @@ def test_terminate_suppresses_wait_exceptions(monkeypatch, tmp_path):
     """F9 regression: a wait() failure (e.g. TimeoutExpired) must not escape
     _terminate -- it's best-effort zombie reaping, not a hard requirement."""
     reg = LocalOptimizationRunRegistry(str(tmp_path))
-    ex = AsyncSubprocessExecutor(
-        reg, max_parallel=1, heartbeat_stale_seconds=60, backend="tensorflow"
-    )
+    ex = AsyncSubprocessExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
     monkeypatch.setattr(ex, "kill_group", lambda pid: None)
 
     class _Handle:
@@ -496,3 +514,16 @@ async def test_concurrent_pump_calls_do_not_raise_or_duplicate_launches(tmp_path
     # Exactly one run_id was ever launched per call to _launch -- no duplicates.
     assert len(ex.launched) == len(set(ex.launched))
     assert len(ex._handles) == 2  # gate still honored after the free slot backfilled
+
+
+def test_heartbeat_stale_default_is_sixty_seconds(tmp_path):
+    """Demoted from OPTIMIZATION_HEARTBEAT_STALE_SECONDS."""
+    from google_meridian_mcp_server.execution.base_executor import (
+        DEFAULT_HEARTBEAT_STALE_SECONDS,
+    )
+
+    assert DEFAULT_HEARTBEAT_STALE_SECONDS == 60
+    ex = AsyncSubprocessExecutor(
+        LocalOptimizationRunRegistry(str(tmp_path)), max_parallel=1
+    )
+    assert ex._stale_seconds == 60

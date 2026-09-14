@@ -14,7 +14,6 @@ from pathlib import Path
 
 from google_meridian_mcp_server.domain.errors import (
     MeridianMcpError,
-    ServerBusyError,
     WorkerFailedError,
     WorkerTimeoutError,
 )
@@ -22,14 +21,22 @@ from google_meridian_mcp_server.execution.base_subprocess import BaseSubprocessE
 
 _LOG_TAIL = 4096
 
+DEFAULT_WORKDIR_ROOT = "/tmp/mmm-analysis"
+# F10b: retained analysis workdirs (timeout / spawn failure / non-domain rc!=0)
+# and optimization worker log files accumulate unboundedly; the startup sweep
+# bounds their age at 7 days. Was ANALYSIS_WORKDIR_TTL_SECONDS.
+DEFAULT_WORKDIR_TTL_SECONDS = 604800
+
 log = logging.getLogger(__name__)
 
 
-def sweep_stale_entries(root: str | Path, ttl_seconds: float) -> None:
+def sweep_stale_entries(
+    root: str | Path, ttl_seconds: float = DEFAULT_WORKDIR_TTL_SECONDS
+) -> None:
     """Remove files/dirs directly under *root* whose mtime is older than *ttl_seconds*.
 
-    F10b: retained analysis workdirs (one per timeout/spawn-failure/oversized-
-    response/non-domain-rc!=0 run) and optimization worker log files (one per
+    F10b: retained analysis workdirs (one per timeout/spawn-failure/
+    non-domain-rc!=0 run) and optimization worker log files (one per
     run, forever) otherwise accumulate unboundedly on disk. Called once at
     server startup -- NOT on every spawn -- so this is a bounded, best-effort
     hygiene pass: a missing root is a no-op, and a failure removing any single
@@ -59,19 +66,13 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
     def __init__(
         self,
         *,
-        semaphore,
         run_timeout,
-        queue_wait_timeout,
-        max_response_bytes,
-        workdir_root,
+        workdir_root=DEFAULT_WORKDIR_ROOT,
         worker_argv_prefix=None,
         env_base=None,
     ):
         super().__init__(worker_argv_prefix=worker_argv_prefix, env_base=env_base)
-        self._sem = semaphore
         self._run_timeout = run_timeout
-        self._queue_wait_timeout = queue_wait_timeout
-        self._max_bytes = max_response_bytes
         self._root = Path(workdir_root)
         self._live: set[int] = set()
         self._cleanup_tasks: set = set()
@@ -84,18 +85,6 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         self._pending_spawns: set = set()
 
     async def run(self, operation, model_id, params) -> dict:
-        try:
-            await asyncio.wait_for(
-                self._sem.acquire(), timeout=self._queue_wait_timeout
-            )
-        except asyncio.TimeoutError:
-            raise ServerBusyError() from None
-        try:
-            return await self._run_locked(operation, model_id, params)
-        finally:
-            self._sem.release()
-
-    async def _run_locked(self, operation, model_id, params) -> dict:
         proc, keep, deferred_cleanup = None, False, False
         log_file = None
         workdir: Path | None = None
@@ -113,7 +102,8 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
                 req.write_text(
                     json.dumps(
                         {"operation": operation, "model_id": model_id, "params": params}
-                    )
+                    ),
+                    encoding="utf-8",
                 )
                 log_file = open(logp, "w")  # noqa: SIM115
                 # Shield the spawn itself: create_subprocess_exec can fork+exec the
@@ -201,18 +191,8 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
             raise WorkerFailedError(
                 f"no response (exit {rc})", {"log_tail": self._tail(logp)}
             )
-        if resp.stat().st_size > self._max_bytes:
-            size = resp.stat().st_size
-            # Unlink the oversized file itself before raising: the workdir is
-            # retained for postmortem (WorkerFailedError -> keep=True), but
-            # retaining the exact multi-hundred-MiB file the size ceiling was
-            # meant to guard against would defeat the point. The log tail is
-            # what matters for debugging; that stays.
-            with contextlib.suppress(OSError):
-                resp.unlink()
-            raise WorkerFailedError("response too large", {"bytes": size})
         try:
-            payload = json.loads(resp.read_text())
+            payload = json.loads(resp.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             raise WorkerFailedError(
                 f"bad response (exit {rc})", {"log_tail": self._tail(logp)}
@@ -271,7 +251,7 @@ class SyncSubprocessExecutor(BaseSubprocessExecutor):
         # `_live` yet and its teardown isn't in `_cleanup_tasks` yet either --
         # nothing above would find or kill it. Cancelling the tracked spawn
         # task directly (not just the caller's shielded await) forces it to
-        # resolve now; `_run_locked`'s own `except CancelledError` branch then
+        # resolve now; `run`'s own `except CancelledError` branch then
         # registers the existing deferred-teardown path exactly as it does for
         # a caller-cancelled run, so the same kill+reap+rmtree logic applies
         # with no new code path and no risk of double-kill/double-rmtree.
