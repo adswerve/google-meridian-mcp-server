@@ -595,7 +595,7 @@ def register_tools(mcp: FastMCP) -> None:
         ],
         ctx: Context,
     ) -> dict[str, Any]:
-        """Fetch the full structured result of a completed optimization: optimized-vs-current spend per channel, expected outcome lift, and per-channel efficiency (ROI/ROAS for revenue models, CPIK otherwise). Raises optimization_not_ready until get_optimization_status reports 'completed'. Answers 'what is the recommended budget allocation?'. Future-optimization results also carry an `assumptions` echo (budget, budget_source, reference_mode, excluded_channels) so an auto-derived budget is never silent."""
+        """Fetch the full structured result of a completed optimization: optimized-vs-current spend per channel, expected outcome lift, and per-channel efficiency (ROI/ROAS for revenue models, CPIK otherwise). Raises optimization_not_ready until get_optimization_status reports 'completed'. Answers 'what is the recommended budget allocation?'. Future-optimization results also carry an `assumptions` echo (budget, budget_source, reference_mode, excluded_channels, cost_multipliers, revenue_per_kpi_multiplier, planned_allocation_submitted -- the raw dict as submitted, before normalization) so an auto-derived budget is never silent and a submitted future input is never dropped. A field not submitted is echoed as null, never omitted."""
         # F6: registry read is synchronous (GCS on that backend); offload.
         service = _optimization_service(ctx)
         return await asyncio.to_thread(service.get_result, run_id)

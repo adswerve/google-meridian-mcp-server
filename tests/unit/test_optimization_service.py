@@ -5,10 +5,17 @@ import threading
 import pytest
 
 from google_meridian_mcp_server.domain.models import RuntimeConfig
-from google_meridian_mcp_server.domain.optimization import RunStatus
+from google_meridian_mcp_server.domain.optimization import (
+    FutureOptimizationConfig,
+    OptimizationConfig,
+    OptimizationRun,
+    OptimizationRunState,
+    RunStatus,
+)
 from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     LocalOptimizationRunRegistry,
+    RunNotFoundError,
 )
 from google_meridian_mcp_server.services.optimization_service import (
     InvalidOptimizationConfigError,
@@ -630,3 +637,141 @@ async def test_run_future_validate_future_error_becomes_invalid_config(tmp_path)
                 },
             },
         )
+
+
+def _seed_completed_run(
+    reg,
+    *,
+    run_id: str,
+    config: dict,
+    result: dict,
+) -> None:
+    """Create a run record, mark it COMPLETED and write its result -- the
+    minimal durable state get_result() reads from."""
+    kind = config.get("kind", "historical")
+    cfg = (
+        FutureOptimizationConfig.model_validate(config)
+        if kind == "future"
+        else OptimizationConfig.model_validate(config)
+    )
+    reg.create(
+        OptimizationRun(
+            run_id=run_id,
+            label="label",
+            model_id="m",
+            config=cfg,
+            config_fingerprint=f"fp-{run_id}",
+            compute_tier_requested="auto",
+            compute_tier_resolved="local",
+            size_score=10,
+            created_at="2026-06-29T00:00:00+00:00",
+            meridian_version="1.7.0",
+            server_version="0.1.0",
+        )
+    )
+    reg.write_state(OptimizationRunState(run_id=run_id, status=RunStatus.COMPLETED))
+    reg.write_result(run_id, result)
+
+
+def test_get_result_echoes_all_three_submitted_future_inputs(tmp_path):
+    """T176: a forward run that submitted cost_multipliers,
+    revenue_per_kpi_multiplier and planned_allocation must see all three
+    echoed back in `assumptions` -- the capability gap the audit found."""
+    svc, reg = _svc(tmp_path)
+    _seed_completed_run(
+        reg,
+        run_id="fwd-1",
+        config={
+            "kind": "future",
+            "scenario": {"type": "fixed_budget"},
+            "future": {
+                "start_date": "2099-01-01",
+                "horizon": 4,
+                "cost_multipliers": {"tv": 1.2},
+                "revenue_per_kpi_multiplier": 1.1,
+                "planned_allocation": {"tv": 0.6},
+            },
+        },
+        result={
+            "outcome_mode": "revenue",
+            "assumptions": {
+                "budget": None,
+                "budget_source": "determined_by_target",
+                "reference_mode": "trailing",
+                "excluded_channels": [],
+            },
+        },
+    )
+
+    out = svc.get_result("fwd-1")
+
+    assert out["assumptions"]["cost_multipliers"] == {"tv": 1.2}
+    assert out["assumptions"]["revenue_per_kpi_multiplier"] == 1.1
+    assert out["assumptions"]["planned_allocation_submitted"] == {"tv": 0.6}
+
+
+def test_get_result_echoes_explicit_nulls_when_future_inputs_not_submitted(tmp_path):
+    """Decision (b): a field the caller did not submit is echoed as an
+    explicit null, not omitted -- matching the existing `budget` field's
+    precedent in this same dict, and keeping the dashboard's frozen,
+    extra='forbid' parser unambiguous."""
+    svc, reg = _svc(tmp_path)
+    _seed_completed_run(
+        reg,
+        run_id="fwd-2",
+        config={
+            "kind": "future",
+            "scenario": {"type": "fixed_budget"},
+            "future": {"start_date": "2099-01-01", "horizon": 4},
+        },
+        result={
+            "outcome_mode": "revenue",
+            "assumptions": {
+                "budget": None,
+                "budget_source": "determined_by_target",
+                "reference_mode": "trailing",
+                "excluded_channels": [],
+            },
+        },
+    )
+
+    out = svc.get_result("fwd-2")
+
+    assert "cost_multipliers" in out["assumptions"]
+    assert out["assumptions"]["cost_multipliers"] is None
+    assert "planned_allocation_submitted" in out["assumptions"]
+    assert out["assumptions"]["planned_allocation_submitted"] is None
+    # revenue_per_kpi_multiplier has a non-null pydantic default (1.0) --
+    # it is always meaningfully present, never null.
+    assert out["assumptions"]["revenue_per_kpi_multiplier"] == 1.0
+
+
+def test_get_result_historical_run_is_untouched(tmp_path):
+    """T176 ruling 3: a historical run's result carries response_curves and
+    NO assumptions -- the merge must not add keys to it."""
+    svc, reg = _svc(tmp_path)
+    historical_result = {
+        "outcome_mode": "revenue",
+        "response_curves": [
+            {"channel": "tv", "spend": 1.0, "incremental_outcome": 2.0}
+        ],
+    }
+    _seed_completed_run(
+        reg,
+        run_id="hist-1",
+        config={"scenario": {"type": "fixed_budget"}},
+        result=dict(historical_result),
+    )
+
+    out = svc.get_result("hist-1")
+
+    assert out == {"run_id": "hist-1", **historical_result}
+    assert "assumptions" not in out
+
+
+def test_get_result_missing_record_raises_not_found(tmp_path):
+    """A run whose record is missing raises the service's own not-found
+    error rather than returning partial assumptions."""
+    svc, _ = _svc(tmp_path)
+    with pytest.raises(RunNotFoundError):
+        svc.get_result("does-not-exist")
