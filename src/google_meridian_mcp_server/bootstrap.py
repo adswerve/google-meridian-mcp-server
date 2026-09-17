@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import logging
 
-from google_meridian_mcp_server.domain.errors import MeridianMcpError
 from google_meridian_mcp_server.domain.models import PersistenceBackend, RuntimeConfig
 from google_meridian_mcp_server.persistence.cache import DiscoveryCache
 from google_meridian_mcp_server.persistence.gcs_provider import GcsModelProvider
@@ -14,6 +13,7 @@ from google_meridian_mcp_server.persistence.local_provider import LocalModelProv
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     LocalOptimizationRunRegistry,
     OptimizationRunRegistry,
+    RunNotFoundError,
 )
 
 log = logging.getLogger(__name__)
@@ -88,8 +88,11 @@ def _pump_error_types() -> tuple[type[BaseException], ...]:
 
     The families, and where each escapes ``pump()``:
 
-    * ``MeridianMcpError`` -- ``_fail_if_unfinished`` writes state for a run a
-      peer may have deleted since the read (``RunNotFoundError``).
+    * ``RunNotFoundError`` -- ``_fail_if_unfinished`` writes state for a run a
+      peer may have deleted since the read. The one ``MeridianMcpError`` subtype
+      ``pump()`` can raise today; the base class is deliberately NOT caught, so
+      any other domain error reaching here ends the loop loudly (below) instead
+      of being logged past.
     * ``OSError`` -- the local registry's atomic file writes.
     * ``GoogleAPIError`` -- the cloud tier reaches the Cloud Run Executions
       client in ``_reap``/``_is_alive`` and GCS in ``_claim``.
@@ -101,7 +104,7 @@ def _pump_error_types() -> tuple[type[BaseException], ...]:
     from google.api_core.exceptions import GoogleAPIError
     from google.auth.exceptions import GoogleAuthError
 
-    return (MeridianMcpError, OSError, GoogleAPIError, GoogleAuthError)
+    return (RunNotFoundError, OSError, GoogleAPIError, GoogleAuthError)
 
 
 async def pump_queue_forever(executor, *, interval_seconds: float) -> None:

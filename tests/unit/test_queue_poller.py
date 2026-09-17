@@ -15,6 +15,7 @@ import pytest
 from google.api_core.exceptions import ServiceUnavailable
 
 from google_meridian_mcp_server import bootstrap
+from google_meridian_mcp_server.domain.errors import MeridianMcpError
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     RunNotFoundError,
 )
@@ -98,6 +99,29 @@ async def test_an_unrecognised_error_ends_the_poller_loudly(caplog):
     task = bootstrap.start_queue_poller(executor, interval_seconds=TICK)
     # Bounded: a poller that never raises must fail this test, not hang it.
     with pytest.raises(ValueError, match="not a pump failure"):
+        await asyncio.wait_for(task, timeout=2)
+    await asyncio.sleep(0)  # let the done-callback run
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "poller" in errors[0].getMessage()
+
+
+class _AnotherDomainError(MeridianMcpError):
+    """A domain error pump() does not raise today -- the shape a future bug would take."""
+
+
+async def test_a_domain_error_other_than_run_not_found_ends_the_poller_loudly(caplog):
+    """The catch names ``RunNotFoundError``, not its base class: a different domain
+    error escaping ``pump()`` is a bug nobody has seen, and logging past it would
+    turn a loud failure into a queue that quietly stops draining."""
+    caplog.set_level(logging.ERROR, logger=_LOGGER)
+    executor = CountingExecutor(
+        errors=[_AnotherDomainError("other_error", "unexpected")]
+    )
+
+    task = bootstrap.start_queue_poller(executor, interval_seconds=TICK)
+    with pytest.raises(_AnotherDomainError, match="unexpected"):
         await asyncio.wait_for(task, timeout=2)
     await asyncio.sleep(0)  # let the done-callback run
 
