@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
-from google_meridian_mcp_server import server
+from google_meridian_mcp_server import bootstrap, server
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     GcsOptimizationRunRegistry,
 )
+from tests.fakes.fake_executor import CountingExecutor, wait_for_calls
 
 
 class _FakeFastMCP:
@@ -24,7 +26,7 @@ class _FakeFastMCP:
         self.providers.append(provider)
 
 
-def _runtime_config(backend: str) -> SimpleNamespace:
+def _runtime_config(backend: str, poll_interval: float = 30.0) -> SimpleNamespace:
     return SimpleNamespace(
         transport="streamable-http",
         persistence_backend=backend,
@@ -37,6 +39,7 @@ def _runtime_config(backend: str) -> SimpleNamespace:
         optimization_runs_root="/tmp/optimizations",
         optimization_gcs_prefix="optimizations/",
         optimization_max_parallel=2,
+        optimization_poll_interval_seconds=poll_interval,
         optimization_tier="local",
         analysis_worker_timeout=300.0,
     )
@@ -113,6 +116,31 @@ async def test_lifespan_shuts_down_analysis_runner_on_exit(
         shutdown.assert_not_called()
 
     shutdown.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_polls_the_optimization_queue_and_stops_on_exit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The poller is only worth anything if process start reaches it: this
+    drives the real lifespan, not pump_queue_forever directly."""
+    monkeypatch.setattr(
+        server, "load_config", lambda: _runtime_config("local", poll_interval=0.01)
+    )
+    monkeypatch.setattr(
+        server, "build_discovery_cache", mock.Mock(return_value=object())
+    )
+    monkeypatch.setattr(server, "ResultCache", mock.Mock(return_value=object()))
+    executor = CountingExecutor()
+    monkeypatch.setattr(bootstrap, "build_executor", lambda cfg, registry: executor)
+
+    async with server._lifespan(SimpleNamespace()):
+        await wait_for_calls(executor, 2)
+
+    await asyncio.sleep(0.05)  # let any in-flight pump thread finish
+    settled = executor.calls
+    await asyncio.sleep(0.2)
+    assert executor.calls == settled
 
 
 def test_run_server_uses_stdio_transport(monkeypatch: pytest.MonkeyPatch):
