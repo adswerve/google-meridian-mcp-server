@@ -769,9 +769,36 @@ def test_get_result_historical_run_is_untouched(tmp_path):
     assert "assumptions" not in out
 
 
-def test_get_result_missing_record_raises_not_found(tmp_path):
-    """A run whose record is missing raises the service's own not-found
-    error rather than returning partial assumptions."""
-    svc, _ = _svc(tmp_path)
+def test_get_result_with_a_readable_result_but_no_record_raises_not_found(tmp_path):
+    """A run whose RESULT is readable but whose record is gone raises the
+    service's own not-found error rather than returning partial assumptions.
+
+    The input matters: a run id with no directory at all is refused earlier, by
+    ``get_result`` -> ``get_state``, before the record is ever read -- a test using
+    that input passes even when the record lookup swallows its error (review
+    finding, T176). Deleting only ``record.json`` on an otherwise complete forward
+    run is what reaches the lookup this change added.
+    """
+    svc, reg = _svc(tmp_path)
+    _seed_completed_run(
+        reg,
+        run_id="fwd-3",
+        config={
+            "kind": "future",
+            "scenario": {"type": "fixed_budget"},
+            "future": {"start_date": "2099-01-01", "horizon": 4},
+        },
+        result={
+            "outcome_mode": "revenue",
+            "assumptions": {
+                "budget": None,
+                "budget_source": "determined_by_target",
+                "reference_mode": "trailing",
+                "excluded_channels": [],
+            },
+        },
+    )
+    (record,) = [p for p in tmp_path.rglob("record.json") if p.parent.name == "fwd-3"]
+    record.unlink()
     with pytest.raises(RunNotFoundError):
-        svc.get_result("does-not-exist")
+        svc.get_result("fwd-3")
