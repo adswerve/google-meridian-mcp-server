@@ -303,7 +303,36 @@ class OptimizationService:
 
     def get_result(self, run_id: str) -> dict[str, Any]:
         result = self._registry.get_result(run_id)  # raises ResultNotReadyError
+        record = self._registry.get_record(run_id)  # raises RunNotFoundError
+        if isinstance(record.config, FutureOptimizationConfig):
+            result = {
+                **result,
+                "assumptions": {
+                    **result["assumptions"],
+                    **self._future_assumptions_echo(record.config.future),
+                },
+            }
         return {"run_id": run_id, **result}
+
+    @staticmethod
+    def _future_assumptions_echo(future) -> dict[str, Any]:
+        """The three forward-run inputs the service dropped from `assumptions`
+        (T176): the two multipliers and the submitted (pre-normalization)
+        planned_allocation. Read-path only -- built from the durable
+        OptimizationRun.config, never recomputed and never touching the
+        normalized allocation vector the optimizer used (that vector is not
+        persisted anywhere; echoing it would need a worker change).
+
+        A field the caller did not submit is echoed as an explicit null
+        (matching this same dict's existing `budget` field), never omitted --
+        the dashboard's frozen, extra="forbid" parser stays unambiguous either
+        way, and this keeps one convention for "not submitted" in one dict.
+        """
+        return {
+            "cost_multipliers": future.cost_multipliers,
+            "revenue_per_kpi_multiplier": future.revenue_per_kpi_multiplier,
+            "planned_allocation_submitted": future.planned_allocation,
+        }
 
     def list_runs(self, model_id=None, status=None, limit=None) -> dict[str, Any]:
         try:

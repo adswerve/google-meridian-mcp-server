@@ -162,7 +162,8 @@ class FutureBlock(BaseModel):
         default_factory=TrailingReference,
         description="Which historical window seeds carried-forward cost, flighting, "
         "revenue-per-KPI, and default budget. trailing = last `horizon` periods; "
-        "same_period_last_year = the `horizon` periods one year before start_date; "
+        "same_period_last_year = the `horizon` periods one year before start_date, "
+        "which must fall inside the model's data; "
         "full_history_average = average over all training periods.",
     )
     cost_multipliers: dict[str, float] | None = Field(

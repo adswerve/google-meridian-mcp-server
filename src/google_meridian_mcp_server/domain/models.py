@@ -69,6 +69,10 @@ class RuntimeConfig(BaseModel):
     optimization_gcs_prefix: str = "optimizations/"
     optimization_tier: str = OptimizationMode.LOCAL.value
     optimization_max_parallel: int = 2
+    # Seconds between background pumps of the optimization queue. The queue
+    # only advances inside pump(), so this is what drains a run queued past
+    # optimization_max_parallel on an instance nothing else is calling.
+    optimization_poll_interval_seconds: float = 30.0
     cloud_run_project: str | None = None
     cloud_run_region: str | None = None
     cloud_run_job_cpu: str | None = None
@@ -120,6 +124,8 @@ class RuntimeConfig(BaseModel):
             )
         if self.optimization_max_parallel <= 0:
             raise ValueError("OPTIMIZATION_MAX_PARALLEL must be positive")
+        if self.optimization_poll_interval_seconds <= 0:
+            raise ValueError("OPTIMIZATION_POLL_INTERVAL_SECONDS must be positive")
 
         if self.optimization_tier != OptimizationMode.LOCAL.value:
             if self.persistence_backend != PersistenceBackend.GCS.value:

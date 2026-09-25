@@ -424,7 +424,8 @@ async def scenario_f4(client) -> dict:
 
 async def scenario_f5(client, national_overview: dict) -> None:
     """Adversarial: (a) non-future start_date, (b) unknown cost_multipliers
-    channel, (c) same_period_last_year w/ insufficient history -> flat
+    channel, (c) same_period_last_year w/ insufficient history (horizon 4 and
+    horizon 1) -> flat
     invalid_optimization_config envelopes at submit. Plus: horizon<=0 raises a
     PROTOCOL-level ToolError (NOT the flat envelope), asserted separately."""
     from fastmcp.exceptions import ToolError
@@ -485,6 +486,26 @@ async def scenario_f5(client, national_overview: dict) -> None:
     assert res_c.get("error_code") == "invalid_optimization_config", (
         f"(c) same_period_last_year insufficient history: expected flat envelope, "
         f"got {res_c}"
+    )
+
+    # (c2) same horizon-1 case: before the fix this silently used the model's
+    # final week instead of being rejected.
+    far_future_h1_cfg = {
+        "scenario": {"type": "fixed_budget"},
+        "future": {
+            "start_date": FAR_FUTURE,
+            "horizon": 1,
+            "reference": {"mode": "same_period_last_year"},
+        },
+    }
+    res_c2 = await call(
+        client,
+        "run_future_optimization",
+        {"model_id": NATIONAL, "config": far_future_h1_cfg},
+    )
+    assert res_c2.get("error_code") == "invalid_optimization_config", (
+        f"(c2) same_period_last_year past data end, horizon 1: expected flat "
+        f"envelope, got {res_c2}"
     )
 
     # (d) horizon<=0 -> protocol-level ToolError, raised BEFORE the tool body runs.

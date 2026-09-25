@@ -46,10 +46,73 @@ def test_reference_indices_same_period_last_year_cadence_aware():
     assert idx[0] == 0  # 52 weeks back from the next period == first label
 
 
+def _weekly_104() -> list[str]:
+    # 2024-01-01 .. 2025-12-22 weekly; the data covers through 2025-12-28.
+    return [
+        str(np.datetime64("2024-01-01") + np.timedelta64(7 * i, "D"))
+        for i in range(104)
+    ]
+
+
 def test_reference_indices_same_period_last_year_insufficient_history():
     times = [f"2026-09-{d:02d}" for d in range(1, 8)]  # < 1 year before start
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc:
         fd.reference_indices("same_period_last_year", 3, date(2026, 10, 1), times, 1)
+    msg = str(exc.value)
+    assert "needs data for 2025-10-01 to 2025-10-03" in msg
+    assert "the planned 2026-10-01 to 2026-10-03" in msg
+    assert "data covers 2026-09-01 to 2026-09-07" in msg
+
+
+def test_reference_indices_same_period_last_year_past_data_end_horizon_1():
+    # One year before 2027-03-01 is 2026-03-02, ten weeks after the data ends.
+    # Before the fix this silently returned [103], the model's final week.
+    with pytest.raises(ValueError) as exc:
+        fd.reference_indices(
+            "same_period_last_year", 1, date(2027, 3, 1), _weekly_104(), 7
+        )
+    msg = str(exc.value)
+    assert "needs data for 2026-03-02 to 2026-03-08" in msg
+    assert "data covers 2024-01-01 to 2025-12-28" in msg
+
+
+def test_reference_indices_same_period_last_year_past_data_end_names_window():
+    with pytest.raises(ValueError) as exc:
+        fd.reference_indices(
+            "same_period_last_year", 4, date(2027, 3, 1), _weekly_104(), 7
+        )
+    msg = str(exc.value)
+    assert "needs data for 2026-03-02 to 2026-03-29" in msg
+    assert "the planned 2027-03-01 to 2027-03-28" in msg
+    assert "data covers 2024-01-01 to 2025-12-28" in msg
+
+
+def test_reference_indices_same_period_last_year_target_inside_last_period():
+    # Target 2025-12-25 is off-grid but inside the last period (2025-12-22..28),
+    # so it snaps to that period. Guards against a `target > times[-1]` off-by-one.
+    assert fd.reference_indices(
+        "same_period_last_year", 1, date(2026, 12, 24), _weekly_104(), 7
+    ) == [103]
+
+
+def test_reference_indices_same_period_last_year_target_one_period_past_end():
+    # Target 2025-12-29 is the first day after the data ends.
+    with pytest.raises(ValueError) as exc:
+        fd.reference_indices(
+            "same_period_last_year", 1, date(2026, 12, 28), _weekly_104(), 7
+        )
+    assert "needs data for 2025-12-29 to 2026-01-04" in str(exc.value)
+
+
+def test_reference_indices_same_period_last_year_window_runs_past_end():
+    # Starts inside the last period, but a 2-period window spills past the data.
+    with pytest.raises(ValueError) as exc:
+        fd.reference_indices(
+            "same_period_last_year", 2, date(2026, 12, 24), _weekly_104(), 7
+        )
+    msg = str(exc.value)
+    assert "needs data for 2025-12-25 to 2026-01-07" in msg
+    assert "data covers 2024-01-01 to 2025-12-28" in msg
 
 
 def test_normalize_planned_allocation_fills_and_renormalizes():
