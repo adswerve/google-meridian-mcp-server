@@ -424,6 +424,31 @@ starts, and executions already in flight are re-adopted rather than relaunched.
 `OPTIMIZATION_MAX_PARALLEL` bounds concurrent job launches per instance, so a
 submission over the cap waits rather than failing.
 
+A run that waits is drained by a background poller: the server lifespan pumps
+the queue every `OPTIMIZATION_POLL_INTERVAL_SECONDS` (default `30`; a positive
+number) and stops the timer at shutdown. It calls the same `pump()` a tool
+handler calls — same lock, same dispatch claim — so several instances polling is
+exactly as safe as several instances serving requests. Before this, `pump()` ran
+only from `submit` and `get_optimization_status`, and a queued run made no
+progress until some request arrived.
+
+Two deployment caveats, because the timer is in-process:
+
+- An instance scaled to **zero** runs no timer. Recovery then stays where it was:
+  `reconcile_orphans` at the next instance start.
+- A revision whose **CPU is only allocated during requests** cannot tick between
+  requests.
+
+`deploy/terraform/modules/meridian-stack/cloud_run_service.tf` sets neither
+`min_instance_count` nor `cpu_idle`, so both are whatever Cloud Run defaults to:
+min instances **0**, so scale-to-zero applies and the first caveat is live on a
+stock deploy; and no explicit CPU allocation, so check the live revision before
+relying on the timer between requests. An operator who needs the timer to fire
+on an idle instance sets `min_instance_count = 1` and `cpu_idle = false` — both
+cost money while idle. The module also does not set
+`OPTIMIZATION_POLL_INTERVAL_SECONDS`, so a deployed service uses the 30s default
+until it is wired through as a Terraform variable.
+
 Every tier runs Meridian on the **JAX** backend with 64-bit precision. There is
 no per-tier engine choice: `OPTIMIZATION_BACKEND_LOCAL` /
 `OPTIMIZATION_BACKEND_CLOUD_CPU` / `OPTIMIZATION_BACKEND_CLOUD_GPU` were

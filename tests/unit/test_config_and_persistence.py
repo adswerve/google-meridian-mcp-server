@@ -84,8 +84,31 @@ class TestLoadConfig:
         monkeypatch.setenv("OPTIMIZATION_MAX_PARALLEL", "7")
         assert load_config().optimization_max_parallel == 7
 
+    def test_reads_optimization_poll_interval_from_env(self, monkeypatch):
+        """The queue poller's tick is a deployment input, not a constant: a
+        chatty interval costs a Cloud Run API call per in-flight run."""
+        monkeypatch.setenv("PERSISTENCE_BACKEND", "local")
+        monkeypatch.setenv("LOCAL_MODELS_ROOT", "/models")
+        monkeypatch.setenv("OPTIMIZATION_POLL_INTERVAL_SECONDS", "5")
+        assert load_config().optimization_poll_interval_seconds == 5.0
+        monkeypatch.delenv("OPTIMIZATION_POLL_INTERVAL_SECONDS")
+        assert load_config().optimization_poll_interval_seconds == 30.0
+
 
 class TestRuntimeConfigValidation:
+    def test_rejects_a_non_positive_poll_interval(self):
+        """Zero would spin the poller as a busy loop and a negative value would
+        raise inside asyncio.sleep at the first tick, both after startup."""
+        for value in (0, -1):
+            with pytest.raises(
+                ValueError, match="OPTIMIZATION_POLL_INTERVAL_SECONDS must be positive"
+            ):
+                RuntimeConfig(
+                    persistence_backend="local",
+                    local_models_root="/models",
+                    optimization_poll_interval_seconds=value,
+                )
+
     def test_rejects_invalid_transport(self):
         with pytest.raises(ValueError, match="Unsupported transport"):
             RuntimeConfig(

@@ -39,6 +39,9 @@ def load_config() -> RuntimeConfig:
         optimization_gcs_prefix=os.getenv("OPTIMIZATION_GCS_PREFIX", "optimizations/"),
         optimization_tier=os.getenv("OPTIMIZATION_TIER", "local"),
         optimization_max_parallel=int(os.getenv("OPTIMIZATION_MAX_PARALLEL", "2")),
+        optimization_poll_interval_seconds=float(
+            os.getenv("OPTIMIZATION_POLL_INTERVAL_SECONDS", "30")
+        ),
         cloud_run_project=os.getenv("CLOUD_RUN_PROJECT"),
         cloud_run_region=os.getenv("CLOUD_RUN_REGION"),
         cloud_run_job_cpu=os.getenv("CLOUD_RUN_JOB_CPU"),

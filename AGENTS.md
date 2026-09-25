@@ -173,17 +173,24 @@ Markdown report. Kept after the upgrade: it is the cheapest way to prove a bump 
   edge rather than return a clean error. Still pass a dataset or date filter: the unfiltered
   payload is megabytes and will overflow an agent's context.
   (`reports/drift/04-cloud-vs-local.md`)
-- **The optimization queue drains on request arrival, not in the background.** A
-  cloud run recovered at startup is re-enqueued and pumped once; after that,
-  `pump()` runs only from `submit` and `get_optimization_status`. Nothing
-  schedules it, so a queued run whose instance goes idle waits for the next
-  request or the next instance start. Durable, but not self-driving.
+- **The optimization queue is drained by a timer, but only on a live instance
+  with CPU.** `pump()` still runs from `submit` and `get_optimization_status`,
+  and the server lifespan now also starts an in-process poller that calls it
+  every `OPTIMIZATION_POLL_INTERVAL_SECONDS` (default 30) and cancels it at
+  lifespan exit (`bootstrap.pump_queue_forever`, wired in `server.py`). It calls
+  the same locked `pump()` and duplicates none of its claiming or reaping, so
+  two instances polling is as safe as two instances serving. What it does **not**
+  fix: an instance scaled to zero runs no timer (`cloud_run_service.tf` sets no
+  `min_instance_count`, so the default 0 applies), and a revision whose CPU is
+  only allocated during requests cannot tick between them (no `cpu_idle = false`
+  either). On such a deploy a queued run still waits for the next request or the
+  next instance start.
 - **`OPTIMIZATION_MAX_PARALLEL` is per instance, and counts launches this
   instance has not yet observed completing** — not concurrent executions. With
   `max_instance_count = 2` the effective ceiling is twice the value, and a slot
   is released only when a `pump()` reaps the handle. After a restart, adopted
   handles occupy slots, so a recovered queued run waits for an adopted run to
-  finish *and* for a later request.
+  finish *and* for a later poll tick or request.
 - **A dispatch claim whose process died before `run_job()` is resolved at the
   next instance start**, not immediately: `reconcile_orphans` is startup-only,
   and a claim younger than `DEFAULT_DISPATCH_STALE_SECONDS` (1800s) is left
@@ -202,10 +209,12 @@ Markdown report. Kept after the upgrade: it is the cheapest way to prove a bump 
   so past roughly 1,000 runs a cold start is at risk. Bounding it needs an
   `index/queued/` prefix mirroring `index/by_fingerprint/` — deliberately
   deferred.
-- **Startup reconciliation is best-effort and unretried** (`server.py:67-70`): a
+- **Startup reconciliation is best-effort and unretried** (`server.py:71-74`): a
   single GCS hiccup skips it entirely with only a warning, and the queued runs
-  wait for the next instance start. Deliberate — a retry loop in the ASGI
-  lifespan would trade a stranded run for a failed boot.
+  wait for the next instance start. The queue poller does not rescue this: it
+  pumps the in-memory deque, which is exactly what the skipped reconcile would
+  have rebuilt. Deliberate — a retry loop in the ASGI lifespan would trade a
+  stranded run for a failed boot.
 - **`cancel_optimization` still has three dishonest windows.** One: a run
   dispatched but whose execution name was not recorded (a transient write
   failure) cannot be terminated by name, even now that `cancel()` also checks

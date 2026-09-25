@@ -10,7 +10,11 @@ from pathlib import Path
 from fastmcp import FastMCP
 from fastmcp.server.providers.skills import SkillsDirectoryProvider
 
-from google_meridian_mcp_server.bootstrap import build_discovery_cache
+from google_meridian_mcp_server.bootstrap import (
+    build_discovery_cache,
+    start_queue_poller,
+    stop_queue_poller,
+)
 from google_meridian_mcp_server.config import load_config
 from google_meridian_mcp_server.domain.models import Transport
 from google_meridian_mcp_server.execution.subprocess_executor import DEFAULT_LOG_ROOT
@@ -97,6 +101,21 @@ async def _lifespan(server: FastMCP):
     except Exception:  # noqa: BLE001 - sweep is best-effort startup hygiene
         log.warning("startup workdir/log sweep failed", exc_info=True)
 
+    # Without this the optimization queue advances only when a tool handler
+    # happens to call pump(), so a run queued past OPTIMIZATION_MAX_PARALLEL
+    # sits QUEUED for as long as the instance is idle. Started after
+    # reconcile_orphans, so the first tick sees the recovered queue, and
+    # immediately before the try/finally that is guaranteed to cancel it.
+    queue_poller = start_queue_poller(
+        optimization_executor,
+        interval_seconds=cfg.optimization_poll_interval_seconds,
+    )
+    log.info(
+        "Optimization queue poller: interval=%ss max_parallel=%s",
+        cfg.optimization_poll_interval_seconds,
+        cfg.optimization_max_parallel,
+    )
+
     try:
         yield {
             "config": cfg,
@@ -107,6 +126,7 @@ async def _lifespan(server: FastMCP):
             "analysis_runner": analysis_runner,
         }
     finally:
+        await stop_queue_poller(queue_poller)
         await analysis_runner.shutdown()
 
 
