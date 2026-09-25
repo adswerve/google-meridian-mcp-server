@@ -37,20 +37,22 @@ def reference_indices(
         # Cadence-aware year: step back a whole number of periods (~365 days), so a
         # next-period start_date lands exactly on the label one year prior.
         periods_per_year = max(round(365 / cadence_days), 1)
-        target = np.datetime64(str(start_date)) - np.timedelta64(
-            periods_per_year * cadence_days, "D"
-        )
+        step = np.timedelta64(cadence_days, "D")
+        start = np.datetime64(str(start_date))
+        target = start - periods_per_year * step
         arr = np.array(times, dtype="datetime64[D]")
-        if arr[0] > target:
-            raise ValueError(
-                "same_period_last_year requires history starting at least one year "
-                "before start_date."
-            )
+        # The window is the `horizon` periods starting at the one containing
+        # target; all of it must lie inside [arr[0], arr[-1] + step).
         anchor = int(np.searchsorted(arr, target, side="right")) - 1
-        anchor = max(anchor, 0)
-        if anchor + horizon > n:
+        if target < arr[0] or target >= arr[-1] + step or anchor + horizon > n:
+            one_day = np.timedelta64(1, "D")
             raise ValueError(
-                "Not enough history one year before start_date to cover the horizon."
+                f"same_period_last_year needs data for {target} to "
+                f"{target + horizon * step - one_day} (one year before the planned "
+                f"{start} to {start + horizon * step - one_day}), but the model's "
+                f"data covers {arr[0]} to {arr[-1] + step - one_day}. Choose a "
+                "start_date whose date one year earlier falls inside the model's "
+                "data, or use the trailing or full_history_average reference."
             )
         return list(range(anchor, anchor + horizon))
     raise ValueError(f"Unknown reference mode: {mode}")
