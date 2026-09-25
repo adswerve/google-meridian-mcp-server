@@ -425,7 +425,8 @@ async def scenario_f4(client) -> dict:
 async def scenario_f5(client, national_overview: dict) -> None:
     """Adversarial: (a) non-future start_date, (b) unknown cost_multipliers
     channel, (c) same_period_last_year w/ insufficient history (horizon 4 and
-    horizon 1) -> flat invalid_optimization_config envelopes at submit. Plus: horizon<=0 raises a
+    horizon 1) -> flat
+    invalid_optimization_config envelopes at submit. Plus: horizon<=0 raises a
     PROTOCOL-level ToolError (NOT the flat envelope), asserted separately."""
     from fastmcp.exceptions import ToolError
 
