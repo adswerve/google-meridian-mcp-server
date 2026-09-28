@@ -29,7 +29,7 @@ never couple runtime code to them.
 
 ## Environment
 
-Python `>=3.13,<3.14`; `google-meridian[schema,geox]>=2.0,<3`; `fastmcp>=4,<5`; ruff
+Python `>=3.13,<3.14`; `google-meridian[schema,geox]>=2.1,<3`; `fastmcp>=4,<5`; ruff
 `target-version = "py313"`. `uv.lock` is **tracked**, but no Dockerfile consumes it — all
 three (`Dockerfile`, `deploy/Dockerfile.worker`, `deploy/Dockerfile.worker.gpu`) run
 `pip install "."`, so images re-resolve dependencies at build time. The lock pins developer

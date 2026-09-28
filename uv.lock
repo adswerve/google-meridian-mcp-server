@@ -636,7 +636,7 @@ wheels = [
 
 [[package]]
 name = "google-meridian"
-version = "2.0.0"
+version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "altair" },
@@ -658,9 +658,9 @@ dependencies = [
     { name = "tfp-nightly" },
     { name = "xarray" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ac/8e/c360ddc61abfb6e4bd4b6dde6f1f66d9cc382649407f4fad0b169fef1f8f/google_meridian-2.0.0.tar.gz", hash = "sha256:1211efe3cfcf88786f75cee955cb9fb818a78ea3a2e90cf12c793b8fc901d84d", size = 520285, upload-time = "2026-09-03T18:45:37.202Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/35/0cdae67519dfa22d0362fb2709ab25d7c8d7c31447bf73b66561c9d1e690/google_meridian-2.1.0.tar.gz", hash = "sha256:13050d701f723518dcc24e4ed7bd2ee347edd8bf4f708a834a744f872de53a3e", size = 539750, upload-time = "2026-09-25T00:09:52.322Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a7/8d/765832f60205847584d8a70d4f028a16cca5f51adf26bd05aec24f4a0147/google_meridian-2.0.0-py3-none-any.whl", hash = "sha256:c854e848a1750cff23743463da56d729a39c0cee03865b6cc63963e426e9e034", size = 617194, upload-time = "2026-09-03T18:45:35.648Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/f5/a760527f8ec94c88402f81c577ca97a9c037e60d0ee5931e9c82bcd33cac/google_meridian-2.1.0-py3-none-any.whl", hash = "sha256:b5fdbb517b77bd25777638c5492f4d4574a095a2ef820ed69fc102e53c8558bd", size = 635909, upload-time = "2026-09-25T00:09:50.56Z" },
 ]
 
 [package.optional-dependencies]
@@ -697,7 +697,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=4,<5" },
     { name = "google-cloud-run", specifier = ">=0.16.1,<1" },
     { name = "google-cloud-storage", specifier = ">=3.12,<4" },
-    { name = "google-meridian", extras = ["schema", "geox"], specifier = ">=2.0,<3" },
+    { name = "google-meridian", extras = ["schema", "geox"], specifier = ">=2.1,<3" },
     { name = "pydantic", specifier = ">=2.13.4,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.4" },
@@ -1334,16 +1334,16 @@ wheels = [
 
 [[package]]
 name = "mmm-proto-schema"
-version = "1.3.1"
+version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "googleapis-common-protos" },
     { name = "protobuf" },
     { name = "tensorflow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/91/11/d5ba5c6cfca7ce26bc5f3c5c4c877afcdbea0815b8179320de7c9405d391/mmm_proto_schema-1.3.1.tar.gz", hash = "sha256:8d6de992a83fc5a57f3d2466fae4725846392c92d85b27e450c947071e0fad84", size = 26175, upload-time = "2026-09-01T18:35:11.506Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/26/fd11bea40ebc52fa69aaf0a9e93c9c8a94c8a2ecad93376c7da885917a48/mmm_proto_schema-1.4.0.tar.gz", hash = "sha256:dd68e26dfefa595651d8fca9f5e52f97a08db2ba12e51c2f5bc0db6d28d6161b", size = 28749, upload-time = "2026-09-15T18:30:46.603Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fe/59/ef71e5b338d853dd4c8a23ecb24badc82f1f11bf367a3ea1daa9bb9ca785/mmm_proto_schema-1.3.1-py3-none-any.whl", hash = "sha256:a7609844e647d701f8bdacc0d086e7b10d464d73a81e269a556979273f255442", size = 72647, upload-time = "2026-09-01T18:35:10.043Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/e8/9b8fcecf79509617c43ec843b089876fce170354d5c17054f516858cca1e/mmm_proto_schema-1.4.0-py3-none-any.whl", hash = "sha256:7cc30e1c8550e6fe3dcde5b5e2e7ea0f28311a64a5592c345a0fb7b90038cf73", size = 75529, upload-time = "2026-09-15T18:30:45.366Z" },
 ]
 
 [[package]]
