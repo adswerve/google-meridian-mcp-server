@@ -165,6 +165,12 @@ def _get_funnel_breakdown(catalog: Any, model_id: str, params: dict) -> dict:
             "brand-mediator models",
         )
     filters = normalize_filters(params["filters"])
+    # The tools' own rows label a mediator "<m> (brand equity, rest)"; accept that
+    # label as the mediator's name, as get_contribution does.
+    by_label = {label: name for name, label in facade.rest_labels.items()}
+    channels = list(dict.fromkeys(by_label.get(c, c) for c in filters.channels))
+    filters = filters.model_copy(update={"channels": channels})
+    params = {**params, "filters": filters}
     valid = facade.paid_channels() + list(facade.mediator_names)
     unknown = [c for c in filters.channels if c not in valid]
     if unknown:
