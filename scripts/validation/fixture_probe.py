@@ -109,7 +109,11 @@ def probe(fixture_dir: Path) -> dict[str, Any]:
     fingerprints = {
         str(path.relative_to(fixture_dir)): file_fingerprint(path) for path in files
     }
-    model_files = [p for p in files if p.suffix.lower() in _MODEL_SUFFIXES]
+    # Prefer the stage-2 file: sorted order would put mediators/*.binpb first.
+    model_files = sorted(
+        (p for p in files if p.suffix.lower() in _MODEL_SUFFIXES),
+        key=lambda p: (p.name != "model.binpb", str(p)),
+    )
     provenance = (
         _read_provenance(model_files[0]) if model_files else dict(_NO_PROVENANCE)
     )
