@@ -51,6 +51,14 @@ class MeridianInterrogator:
             if str(c) in driving
         ]
 
+    def paid_channels(self) -> list[str]:
+        """Paid channels in Meridian order (media, then RF)."""
+        return [str(c) for c in self._mmm.input_data.get_all_paid_channels()]
+
+    def all_channels(self) -> list[str]:
+        """All channels in include_non_paid_channels=True column order."""
+        return [str(c) for c in self._mmm.input_data.get_all_channels()]
+
     @property
     def rest_labels(self) -> dict[str, str]:
         return {name: rest_label(name) for name in self._mediators}

@@ -12,6 +12,10 @@ import xarray as xr
 
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.dataset_mapper import dataset_to_records
+from google_meridian_mcp_server.meridian.full_funnel.decomposition import (
+    compute_funnel_split,
+    relabel_mediator_rows,
+)
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
 
@@ -22,6 +26,7 @@ class AnalyzerFacade(MeridianInterrogator):
         super().__init__(mmm, mediators)
         self._media_summary_cache: dict[tuple, Any] = {}
         self._model_fit_cache: dict[tuple, Any] = {}
+        self._funnel_split_cache: dict[tuple, Any] = {}
 
     def _expand_selected_times(self, filters: AnalysisFilters) -> list[str] | None:
         if filters.start_date is None and filters.end_date is None:
@@ -34,6 +39,73 @@ class AnalyzerFacade(MeridianInterrogator):
     @staticmethod
     def _selected_geos(filters: AnalysisFilters) -> list[str] | None:
         return list(filters.geos) or None
+
+    def _split_times(self, filters: AnalysisFilters) -> list[str]:
+        """Time labels a non-aggregated funnel split is indexed by."""
+        return list(self._expand_selected_times(filters) or self.get_time_values())
+
+    def _funnel_split(self, filters: AnalysisFilters, *, aggregate_times: bool):
+        """Posterior-mean direct / indirect / rest split for this filter slice."""
+        selected_times = self._expand_selected_times(filters)
+        use_kpi = self.resolve_use_kpi(filters)
+        key = (
+            use_kpi,
+            tuple(filters.geos),
+            tuple(selected_times or ()),
+            aggregate_times,
+        )
+        if key not in self._funnel_split_cache:
+            self._funnel_split_cache[key] = compute_funnel_split(
+                direct_analyzer=self._get_direct_analyzer(),
+                full_analyzer=self._get_analyzer(),
+                single_mediator_analyzers={
+                    n: self._get_single_mediator_analyzer(n)
+                    for n in self.mediator_names
+                },
+                paid_channels=self.paid_channels(),
+                all_channels=self.all_channels(),
+                selected_times=selected_times,
+                selected_geos=self._selected_geos(filters),
+                use_kpi=use_kpi,
+                aggregate_times=aggregate_times,
+            )
+        return self._funnel_split_cache[key]
+
+    def _contribution_channels(self, filters: AnalysisFilters) -> list[str] | None:
+        """Requested channels as they are labelled in the contribution table."""
+        if not filters.channels:
+            return None
+        if not self.is_full_funnel:
+            return list(filters.channels)
+        labels = self.rest_labels
+        return [labels.get(c, c) for c in filters.channels]
+
+    def _add_contribution_split(
+        self, df: pd.DataFrame, filters: AnalysisFilters, *, aggregate_times: bool
+    ) -> pd.DataFrame:
+        """Add direct / indirect columns to paid-channel rows (null elsewhere)."""
+        split = self._funnel_split(filters, aggregate_times=aggregate_times)
+        direct, indirect = split.direct, split.indirect
+        out = df.copy()
+        if aggregate_times:
+            out["incremental_outcome_direct"] = [
+                float(direct[c]) if c in direct else None for c in out["channel"]
+            ]
+            out["incremental_outcome_indirect"] = [
+                float(indirect[c]) if c in indirect else None for c in out["channel"]
+            ]
+            return out
+        index = {t[:10]: i for i, t in enumerate(self._split_times(filters))}
+
+        def pick(values, channel, time):
+            if channel not in values:
+                return None
+            return float(np.asarray(values[channel])[index[str(time)[:10]]])
+
+        pairs = list(zip(out["channel"], out["time"], strict=True))
+        out["incremental_outcome_direct"] = [pick(direct, c, t) for c, t in pairs]
+        out["incremental_outcome_indirect"] = [pick(indirect, c, t) for c, t in pairs]
+        return out
 
     @staticmethod
     def _filter_channels(data: Any, channels: Sequence[str]) -> Any:
@@ -92,10 +164,21 @@ class AnalyzerFacade(MeridianInterrogator):
 
             class FilteredMediaSummary(visualizer_mod.MediaSummary):
                 def __init__(
-                    self, *args, selected_geos: list[str] | None = None, **kwargs
+                    self,
+                    *args,
+                    selected_geos: list[str] | None = None,
+                    facade: AnalyzerFacade | None = None,
+                    split_filters: AnalysisFilters | None = None,
+                    **kwargs,
                 ):
                     super().__init__(*args, **kwargs)
                     self._selected_geos = selected_geos
+                    self._ff_facade = facade
+                    self._split_filters = split_filters
+                    if facade is not None:
+                        # MediaSummary builds nothing eagerly, so swapping in the
+                        # full-funnel analyzer here is safe.
+                        self._analyzer = facade._get_analyzer()
 
                 @functools.lru_cache(maxsize=128)
                 def get_paid_summary_metrics(self, aggregate_times: bool = True):
@@ -111,7 +194,7 @@ class AnalyzerFacade(MeridianInterrogator):
 
                 @functools.lru_cache(maxsize=128)
                 def get_all_summary_metrics(self, aggregate_times: bool = True):
-                    return self._analyzer.summary_metrics(
+                    ds = self._analyzer.summary_metrics(
                         selected_geos=self._selected_geos,
                         selected_times=self._selected_times,
                         use_kpi=self._use_kpi,
@@ -120,6 +203,15 @@ class AnalyzerFacade(MeridianInterrogator):
                         non_media_baseline_values=self._non_media_baseline_values,
                         aggregate_times=aggregate_times,
                     )
+                    if self._ff_facade is None:
+                        return ds
+                    return relabel_mediator_rows(
+                        ds,
+                        self._ff_facade._funnel_split(
+                            self._split_filters, aggregate_times=aggregate_times
+                        ),
+                        self._ff_facade.rest_labels,
+                    )
 
             self._media_summary_cache[key] = FilteredMediaSummary(
                 self._mmm,
@@ -127,6 +219,11 @@ class AnalyzerFacade(MeridianInterrogator):
                 selected_times=list(selected_times) or None,
                 confidence_level=confidence_level,
                 use_kpi=use_kpi,
+                **(
+                    {"facade": self, "split_filters": filters}
+                    if self.is_full_funnel
+                    else {}
+                ),
             )
         return self._media_summary_cache[key]
 
@@ -206,27 +303,27 @@ class AnalyzerFacade(MeridianInterrogator):
     # -- Contribution methods ---------------------------------------------------
 
     def get_contribution_metrics(self, filters: AnalysisFilters) -> list[dict]:
-        ms = self._get_media_summary(filters)
-        include_non_paid = (
-            filters.include_non_paid if filters.include_non_paid is not None else True
-        )
-        df = ms.contribution_metrics(
-            selected_channels=filters.channels or None,
-            include_non_paid=include_non_paid,
-            aggregate_times=filters.aggregate_times,
-        )
-        return dataset_to_records(df)
+        return self._contribution(filters, aggregate_times=filters.aggregate_times)
 
     def get_contribution_metrics_by_time(self, filters: AnalysisFilters) -> list[dict]:
+        return self._contribution(filters, aggregate_times=False)
+
+    def _contribution(
+        self, filters: AnalysisFilters, *, aggregate_times: bool
+    ) -> list[dict]:
         ms = self._get_media_summary(filters)
         include_non_paid = (
             filters.include_non_paid if filters.include_non_paid is not None else True
         )
         df = ms.contribution_metrics(
-            selected_channels=filters.channels or None,
+            selected_channels=self._contribution_channels(filters),
             include_non_paid=include_non_paid,
-            aggregate_times=False,
+            aggregate_times=aggregate_times,
         )
+        if self.is_full_funnel:
+            df = self._add_contribution_split(
+                df, filters, aggregate_times=aggregate_times
+            )
         return dataset_to_records(df)
 
     # -- Response dynamics methods ----------------------------------------------

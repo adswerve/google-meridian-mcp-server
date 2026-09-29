@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from meridian.analysis import visualizer as visualizer_mod
 
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.analyzer_facade import AnalyzerFacade
@@ -798,3 +799,47 @@ def test_model_fit_is_cached_by_use_kpi_and_confidence_level():
 
     assert first is second
     assert model_fit_ctor.call_count == 1
+
+
+def _stub_media_summary(monkeypatch):
+    """Replace Meridian's MediaSummary with a recorder that owns a plain analyzer."""
+    constructed = []
+
+    class _FakeMediaSummary:
+        def __init__(self, *args, **kwargs):
+            self._analyzer = "own-plain-analyzer"
+            constructed.append(kwargs)
+
+    monkeypatch.setattr(visualizer_mod, "MediaSummary", _FakeMediaSummary)
+    return constructed
+
+
+def test_single_model_media_summary_is_not_injected(monkeypatch):
+    constructed = _stub_media_summary(monkeypatch)
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None))
+    )
+
+    ms = facade._get_media_summary(AnalysisFilters())
+
+    assert ms._analyzer == "own-plain-analyzer"
+    assert ms._ff_facade is None
+    assert "facade" not in constructed[0]
+    assert "split_filters" not in constructed[0]
+
+
+def test_full_funnel_media_summary_uses_the_facades_full_funnel_analyzer(monkeypatch):
+    _stub_media_summary(monkeypatch)
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None)),
+        {"M1": SimpleNamespace()},
+    )
+    facade._analyzer = "full-funnel-analyzer"
+    filters = AnalysisFilters(use_kpi=True)
+
+    ms = facade._get_media_summary(filters)
+
+    assert ms._analyzer == "full-funnel-analyzer"
+    assert ms._analyzer != "own-plain-analyzer"
+    assert ms._ff_facade is facade
+    assert ms._split_filters is filters
