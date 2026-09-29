@@ -59,15 +59,18 @@ and whether it is **full-funnel** (`funnel: "full_funnel"`). See
   with reach/frequency channels; otherwise it is absent from
   `available_tool_options` and returns `metric_not_supported`.
 - **Full-funnel models report total effects.** When the overview shows
-  `funnel: "full_funnel"`, every number already includes brand-building
-  (indirect) effects, and a brand mediator's own row is only its brand-equity
-  rest. Never add that row on top of the paid channels, and always say whether
-  you quote a direct or a total figure. Read `references/full-funnel.md`.
+  `funnel: "full_funnel"`, the effect and outcome views (ROI, summaries,
+  contribution, response curves, spend what-ifs, optimization) already include
+  brand-building (indirect) effects, and a brand signal appears only as its
+  "brand equity, rest" row. Never add the brand signal's full effect on top of
+  the paid channels, and always say whether you quote a direct or a total
+  figure. Read `references/full-funnel.md`.
 - **Never present a point estimate as certain.** Analysis and optimization
   outputs carry credible intervals (`ci_lo`/`ci_hi`). Report the interval with
   the mean; a wide interval means low confidence, not a precise number. The one
   exception: the direct / indirect / brand-equity split on full-funnel models is
-  a mean estimate with no interval — say so rather than inventing one.
+  a mean estimate with no interval, and so is the adjusted baseline — say so
+  rather than inventing one.
 - **Speak the marketer's language — never leak internal vocabulary.** In
   everything the user sees — questions, offers, next-step suggestions, result
   summaries, caveats — refer to scenarios, options, metrics, fields, and tools

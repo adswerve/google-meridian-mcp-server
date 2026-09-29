@@ -107,7 +107,8 @@ credible intervals from the analysis tools). The key fields:
   to explain *why* the plan moves money. On a full-funnel model every row is
   the total effect and also carries `incremental_outcome_direct` /
   `incremental_outcome_indirect`; use them to explain moves toward awareness
-  channels (`full-funnel.md`).
+  channels, and attach the brand-path caveat (below) to every full-funnel
+  recommendation, historical or future (`full-funnel.md`).
 - **`allocation`** — the recommended optimized spend per channel (the answer to
   "where should the money go").
 - **`spend_delta`** — per-channel change, cuts first then increases. This is your
@@ -116,7 +117,9 @@ credible intervals from the analysis tools). The key fields:
   points; use them to show headroom vs. saturation behind the allocation.
 - **`assumptions`** (future runs only) — the plan's own assumptions echoed back:
   `budget`, `budget_source` (`explicit` / `derived_from_reference` /
-  `determined_by_target`), `reference_mode`, and `excluded_channels`. This is the
+  `determined_by_target`), `reference_mode`, `excluded_channels`, and, on a
+  full-funnel model, `full_funnel` (which brand signals were predicted from the
+  planned spend). This is the
   authoritative record of what the plan assumed, including the auto-derived budget
   when none was given. Read the *actual* assumed values from this field rather than
   reconstructing them by hand — but state them to the user in plain terms, not as
@@ -300,8 +303,8 @@ Channel and geo names still come from
   the absolute future KPI/revenue — baseline demand and macro price shifts are
   not modeled.
 - **Full-funnel models:** the brand-building path rests on a separate model of
-  how paid media moves each brand signal, and the plan assumes that
-  relationship holds in the future period.
+  how paid media moves each brand signal, and assumes that relationship holds
+  in the plan period.
 - **Validate large moves with a geo or holdout experiment** before committing real
   budget; the model informs the hypothesis, the experiment confirms it.
 

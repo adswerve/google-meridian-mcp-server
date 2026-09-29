@@ -34,7 +34,9 @@ async def test_full_funnel_reference_is_served_and_states_the_double_counting_ru
         contents = await client.read_resource(FULL_FUNNEL_URI)
         flat = " ".join(contents[0].text.split())  # markdown wraps lines
         assert (
-            "Never add the brand mediator's own row on top of the paid channels" in flat
+            "Never add the brand signal's full effect on top of the paid channels"
+            in flat
         )
+        assert "it belongs in that sum" in flat  # the rest row IS in the identity
         skill = (await client.read_resource(SKILL_URI))[0].text
         assert "references/full-funnel.md" in skill

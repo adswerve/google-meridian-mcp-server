@@ -56,12 +56,15 @@ historical spend. The aggregate view gives each channel's share; the by-time vie
 gives the trend. By default the result already includes a **`baseline`** row
 alongside the channels — what would have happened with no paid media: organic
 demand, seasonality, price — so a single call covers both halves of "base vs.
-incremental." On a full-funnel model, paid rows include their brand-building effect
+incremental." (On a full-funnel model the baseline is the no-paid-media outcome
+less the brand-equity rest; leaving out non-paid rows makes it larger, because it
+absorbs them.) On a full-funnel model, paid rows include their brand-building effect
 (with direct / indirect columns) and each brand signal appears only as its
-brand-equity rest — never add it on top of the paid channels (`full-funnel.md`).
+brand-equity rest, which is part of the total; never add the brand signal's
+full effect on top of the paid channels (`full-funnel.md`).
 Only reach for `get_channel_summary`'s baseline summary view when you need the
-baseline's own **credible interval** (mean/median/ci_lo/ci_hi; on a full-funnel
-model the adjusted baseline has none); the contribution view gives a point share,
+baseline's own **credible interval** (mean/median/ci_lo/ci_hi; single
+models only — a full-funnel model's adjusted baseline has none); the contribution view gives a point share,
 not a range. Note contribution is a **single point at historical spend** — it cannot
 tell you what happens if you spend more; that is the response curve's job (glossary:
 "contribution vs. response curve").
@@ -77,7 +80,8 @@ to a date range or a single market. Never label a decay chart with a story's dat
 window or geo. If you pass those filters, the response lists them under
 `ignored_filters`. The response always states its `scope`, whether or not you
 pass filters. On a full-funnel model this is each channel's own carry-over, not
-its brand-building path.
+its brand-building path; the brand signals themselves also appear as
+organic-media rows there, showing their own carry-over.
 
 **`get_response_curves` — saturation and spend sensitivity.** Outcome across a
 *range* of spend per channel. A curve still climbing steeply = headroom; a flat curve
@@ -121,7 +125,8 @@ ones (see `budget-optimization.md`, teaching point 1).
 
 **`get_model_fit` — model trust.** Per time period it returns `expected` (model),
 `actual` (observed), `baseline` (no-media), and `residual` (`actual − expected`),
-with credible intervals on expected and baseline. How to talk about it: the model
+with credible intervals on expected and baseline (on a full-funnel model the
+adjusted baseline has none). How to talk about it: the model
 tracks reality well when expected sits close to actual and residuals are small and
 patternless. Watch for **structured** residuals — a run of same-sign residuals, or
 big misses around promotions/launches — which mean the model is missing something and

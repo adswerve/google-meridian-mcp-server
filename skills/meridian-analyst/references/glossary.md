@@ -44,9 +44,10 @@ levels to find an efficient frequency.
 **Base vs. incremental** — Base (baseline) outcome is what would have happened
 with no paid media — organic demand, seasonality, price. Incremental outcome is
 the lift the media actually caused. MMM credits channels only for the incremental
-part; the base is not attributable to any channel. On a full-funnel model the
-base also excludes the brand-equity rest, which is shown as its own row (see
-`full-funnel.md`).
+part; the base is not attributable to any channel. On a full-funnel model, the
+brand-equity rest (brand demand that exists anyway) is taken out of the base and
+shown as its own row (see `full-funnel.md`). If a contribution view leaves out
+non-paid rows, its base absorbs them and is larger.
 
 **Full-funnel model** — A KPI model plus one or more brand-mediator models
 (e.g. branded search explained by video). Paid channels are credited with both
@@ -58,8 +59,9 @@ indirect is the outcome it causes by building a brand signal. Total = direct +
 indirect; `roi` on a full-funnel model is the total.
 
 **Brand equity (rest)** — The part of a brand signal paid media did not build:
-demand that exists anyway. Shown as "`<name>` (brand equity, rest)"; never add
-the raw brand signal on top of the paid channels.
+demand that exists anyway. Shown as "`<name>` (brand equity, rest)", and part of
+the contribution total; never add the brand signal's full effect (its raw series
+or mediator-lift units) on top of the paid channels.
 
 **Credible interval (`ci_lo`/`ci_hi`)** — Meridian is Bayesian, so every estimate
 is a distribution, not a single number. The credible interval is the plausible
