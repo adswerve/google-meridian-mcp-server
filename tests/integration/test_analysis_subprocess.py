@@ -66,7 +66,12 @@ async def test_overview_matches_golden(real_runner, fixture_model_id):
         # Decoration (available_tool_options) is server-side, not the worker's
         # job -- compare only the raw keys the worker's op actually returns.
         expected = json.loads(golden.read_text())
-        for key in ("available_training_datasets", "media_channels", "geo_names"):
+        for key in (
+            "available_training_datasets",
+            "media_channels",
+            "geo_names",
+            "funnel",
+        ):
             if key in expected:
                 assert got.get(key) == expected[key]
     else:

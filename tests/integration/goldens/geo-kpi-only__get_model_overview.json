@@ -193,6 +193,7 @@
       "population": 3050.0
     }
   ],
+  "funnel": "single",
   "has_revenue_per_kpi": false,
   "input_column_names": [
     "ch_0",

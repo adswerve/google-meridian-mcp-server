@@ -248,7 +248,7 @@ class MeridianInterrogator:
         if has_revenue:
             metric_views.append("revenue")
 
-        return {
+        overview = {
             "model_type": "national" if self.is_national() else "geo",
             "is_national": self.is_national(),
             "time": {
@@ -275,6 +275,20 @@ class MeridianInterrogator:
             "metric_views": metric_views,
             "has_revenue_per_kpi": has_revenue,
         }
+        overview["funnel"] = "full_funnel" if self.is_full_funnel else "single"
+        if self.is_full_funnel:
+            labels = self.rest_labels
+            overview["full_funnel"] = {
+                "mediators": [
+                    {
+                        "name": name,
+                        "driven_by": self.mediator_channels(name),
+                        "brand_equity_label": labels[name],
+                    }
+                    for name in self.mediator_names
+                ]
+            }
+        return overview
 
     def get_data(
         self,
