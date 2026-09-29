@@ -6,10 +6,31 @@ facades/materialization) so the server never imports Meridian.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
 from typing import Any
 
+from google_meridian_mcp_server.domain.errors import ModelNotFoundError
+from google_meridian_mcp_server.domain.models import ModelCatalogEntry
 from google_meridian_mcp_server.persistence.cache import DiscoveryCache
+
+
+async def lookup_catalog_entry(
+    discovery: DiscoveryCache, model_id: str
+) -> ModelCatalogEntry:
+    """Server-side catalog lookup (Meridian-free).
+
+    get_model can trigger a full provider discover (blocking I/O), so it runs on a
+    thread, as list_models does (F6). A miss invalidates and retries once, so a model
+    uploaded since the last 2h refresh is still found; only then ModelNotFoundError.
+    """
+    entry = await asyncio.to_thread(discovery.get_model, model_id)
+    if entry is None:
+        discovery.invalidate()
+        entry = await asyncio.to_thread(discovery.get_model, model_id)
+    if entry is None:
+        raise ModelNotFoundError(model_id)
+    return entry
 
 
 class ModelCatalogService:

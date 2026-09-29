@@ -29,6 +29,9 @@ from google_meridian_mcp_server.persistence.cache import ResultCache
 from google_meridian_mcp_server.persistence.optimization_run_registry import (
     OptimizationRunRegistry,
 )
+from google_meridian_mcp_server.services.model_catalog_service import (
+    lookup_catalog_entry,
+)
 
 
 def _dist_version(name: str) -> str:
@@ -93,7 +96,9 @@ class OptimizationService:
         executor: Any,
         cfg: RuntimeConfig,
         result_cache: ResultCache | None = None,
+        discovery: Any | None = None,
     ) -> None:
+        self._discovery = discovery
         self._runner = runner
         self._registry = registry
         self._executor = executor
@@ -108,6 +113,12 @@ class OptimizationService:
         # it would cache nothing, ever. Cache in the lifespan-scoped
         # ResultCache instead, which outlives individual tool calls.
         self._result_cache = result_cache
+
+    async def _model_identity(self, model_id: str) -> tuple[str | None, str]:
+        if self._discovery is None:
+            return None, "single"
+        entry = await lookup_catalog_entry(self._discovery, model_id)
+        return entry.model_version, ("full_funnel" if entry.mediators else "single")
 
     async def _preflight(
         self, model_id: str, config_dict: dict, fingerprint: str
@@ -143,8 +154,12 @@ class OptimizationService:
         except Exception as exc:  # pydantic ValidationError
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
+        model_version, funnel = await self._model_identity(model_id)
         fingerprint = config_fingerprint(
-            model_id, config, meridian_version=_MERIDIAN_VERSION
+            model_id,
+            config,
+            meridian_version=_MERIDIAN_VERSION,
+            model_version=model_version,
         )
         preflight = await self._preflight(
             model_id, config.model_dump(mode="json"), fingerprint
@@ -163,6 +178,8 @@ class OptimizationService:
             model_id,
             config,
             fingerprint=fingerprint,
+            model_version=model_version,
+            funnel=funnel,
             size_features=preflight["size_features"],
             label=label,
             note=note,
@@ -185,8 +202,12 @@ class OptimizationService:
         except Exception as exc:  # pydantic ValidationError
             raise InvalidOptimizationConfigError(str(exc)) from exc
 
+        model_version, funnel = await self._model_identity(model_id)
         fingerprint = config_fingerprint(
-            model_id, config, meridian_version=_MERIDIAN_VERSION
+            model_id,
+            config,
+            meridian_version=_MERIDIAN_VERSION,
+            model_version=model_version,
         )
         preflight = await self._preflight(
             model_id, config.model_dump(mode="json"), fingerprint
@@ -201,6 +222,8 @@ class OptimizationService:
             model_id,
             config,
             fingerprint=fingerprint,
+            model_version=model_version,
+            funnel=funnel,
             size_features=preflight["size_features"],
             label=label,
             note=note,
@@ -219,6 +242,8 @@ class OptimizationService:
         note: str | None,
         compute_tier: str,
         force_rerun: bool,
+        model_version: str | None = None,
+        funnel: str = "single",
     ) -> dict[str, Any]:
         if not force_rerun:
             existing_id = self._registry.find_by_fingerprint(fingerprint)
@@ -256,6 +281,8 @@ class OptimizationService:
             created_at=datetime.now(timezone.utc).isoformat(),
             meridian_version=_MERIDIAN_VERSION,
             server_version=_SERVER_VERSION,
+            model_version=model_version,
+            funnel=funnel,
         )
         self._registry.create(record)
         self._registry.put_fingerprint(fingerprint, run_id)

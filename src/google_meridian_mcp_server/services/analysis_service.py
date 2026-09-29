@@ -26,6 +26,9 @@ from google_meridian_mcp_server.domain.filters import (
     normalize_filters,
 )
 from google_meridian_mcp_server.persistence.cache import ResultCache
+from google_meridian_mcp_server.services.model_catalog_service import (
+    lookup_catalog_entry,
+)
 
 log = logging.getLogger(__name__)
 
@@ -61,9 +64,15 @@ class AnalysisService:
     and the actual Meridian facade calls happen worker-side.
     """
 
-    def __init__(self, runner: Any, result_cache: ResultCache | None = None) -> None:
+    def __init__(
+        self,
+        runner: Any,
+        result_cache: ResultCache | None = None,
+        discovery: Any | None = None,
+    ) -> None:
         self._runner = runner
         self._cache = result_cache
+        self._discovery = discovery
 
     @staticmethod
     def _filter_key(filters: AnalysisFilters) -> dict[str, Any]:
@@ -174,8 +183,13 @@ class AnalysisService:
         ``key[0]``; ``get_model_overview`` has no key tuple and passes its
         literal directly.
         """
+        cache_params = params
+        if self._discovery is not None:
+            entry = await lookup_catalog_entry(self._discovery, model_id)
+            # Cache key only -- the worker never needs the version.
+            cache_params = {**params, "model_version": entry.model_version}
         if self._cache:
-            hit = self._cache.get(name, model_id, params)
+            hit = self._cache.get(name, model_id, cache_params)
             if hit is not None:
                 log.debug("Cache hit: %s / %s", name, model_id)
                 return hit
@@ -183,7 +197,7 @@ class AnalysisService:
         result = await self._runner.run(name, model_id, params)
 
         if self._cache:
-            self._cache.put(name, model_id, params, result)
+            self._cache.put(name, model_id, cache_params, result)
         return result
 
     async def get_training_data(

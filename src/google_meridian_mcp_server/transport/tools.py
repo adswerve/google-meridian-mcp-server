@@ -118,6 +118,7 @@ def _analysis_service(ctx: Context) -> AnalysisService:
     return AnalysisService(
         runner=ctx.lifespan_context["analysis_runner"],
         result_cache=ctx.lifespan_context["result_cache"],
+        discovery=ctx.lifespan_context["discovery_cache"],
     )
 
 
@@ -128,6 +129,7 @@ def _optimization_service(ctx: Context) -> OptimizationService:
         executor=ctx.lifespan_context["optimization_executor"],
         cfg=ctx.lifespan_context["config"],
         result_cache=ctx.lifespan_context["result_cache"],
+        discovery=ctx.lifespan_context["discovery_cache"],
     )
 
 
