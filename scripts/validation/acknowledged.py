@@ -1,6 +1,6 @@
 """Structural changes pre-registered as intentional (spec section 7.4).
 
-Empty by default and shipping with exactly three entries, each carrying a
+Empty by default and shipping with exactly seven entries, each carrying a
 MANDATORY reason. Acknowledged findings are reported in their own section of
 the diff report -- never folded into PASS -- so a reader always sees what was
 waved through and why. ``reason`` is the intent (why the change is
@@ -138,6 +138,29 @@ ACKNOWLEDGED: tuple[Acknowledged, ...] = (
             "type."
         ),
     ),
+    Acknowledged(
+        pointer="/*/funnel",
+        change="added",
+        reason="v0.4.0: list_models reports each model's funnel type (single/full_funnel).",
+    ),
+    Acknowledged(
+        pointer="/*/mediators",
+        change="added",
+        reason="v0.4.0: list_models lists brand-mediator names (empty for single models).",
+    ),
+    Acknowledged(
+        pointer="/*/model_version",
+        change="added",
+        reason=(
+            "v0.4.0: list_models exposes the stage-file version token that now keys "
+            "result caching and optimization reuse."
+        ),
+    ),
+    Acknowledged(
+        pointer="/funnel",
+        change="added",
+        reason="v0.4.0: get_model_overview reports funnel='single' on single models.",
+    ),
 )
 
 
@@ -147,6 +170,16 @@ def match(pointer: str, change: str) -> Acknowledged | None:
             continue
         if pointer == entry.pointer:
             return entry
+        if entry.pointer.startswith("/*/"):
+            # `*` is exactly one all-digit segment (a list index), never a glob.
+            parts = pointer.split("/")
+            if (
+                len(parts) == 3
+                and parts[1].isdigit()
+                and f"/{parts[2]}" == entry.pointer[2:]
+            ):
+                return entry
+            continue
         if any(pointer == f"/{key}{entry.pointer}" for key in _KNOWN_ENVELOPE_KEYS):
             return entry
     return None
