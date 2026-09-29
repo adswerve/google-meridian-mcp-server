@@ -171,3 +171,8 @@ def test_run_server_uses_http_transport_and_env_host_port(
     run.assert_called_once_with(
         transport="http", host="127.0.0.1", port=9000, json_response=True
     )
+
+
+def test_server_instructions_point_at_full_funnel_guidance():
+    assert "full-funnel" in server._SERVER_INSTRUCTIONS
+    assert "references/full-funnel.md" in server._SERVER_INSTRUCTIONS

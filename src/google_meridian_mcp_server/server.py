@@ -36,6 +36,8 @@ _SERVER_INSTRUCTIONS = (
     "scenario guidance. Read skill://meridian-analyst/SKILL.md before analysis — "
     "especially for budget optimization, reallocation, or channel-performance "
     "questions."
+    " For full-funnel models (get_model_overview shows funnel='full_funnel'), also "
+    "read skill://meridian-analyst/references/full-funnel.md."
 )
 
 
