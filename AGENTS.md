@@ -29,11 +29,12 @@ never couple runtime code to them.
 
 ## Environment
 
-Python `>=3.13,<3.14`; `google-meridian[schema,geox]>=2.1,<3`; `fastmcp>=4,<5`; ruff
+Python `>=3.13,<3.14`; `google-meridian[schema,geox]>=2.1,<2.2`; `fastmcp>=4,<5`; ruff
 `target-version = "py313"`. `uv.lock` is **tracked**, but no Dockerfile consumes it — all
 three (`Dockerfile`, `deploy/Dockerfile.worker`, `deploy/Dockerfile.worker.gpu`) run
 `pip install "."`, so images re-resolve dependencies at build time. The lock pins developer
-and CI environments only.
+and CI environments only. The `<2.2` cap exists because the vendored full-funnel analyzer uses Meridian private
+internals; widen it only after re-vendoring and re-running the full-funnel gates.
 
 ### Engine: JAX with 64-bit precision, everywhere
 
