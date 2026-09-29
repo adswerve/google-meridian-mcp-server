@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from google_meridian_mcp_server.domain.errors import BackendUnavailableError
 from google_meridian_mcp_server.domain.models import (
+    MediatorFile,
     ModelCatalogEntry,
     ModelFormat,
     PersistenceBackend,
 )
 from google_meridian_mcp_server.persistence.base import (
+    ListedFile,
     ModelProvider,
-    build_display_name,
-    build_model_id,
+    build_catalog_entries,
 )
 
 log = logging.getLogger(__name__)
@@ -35,29 +36,25 @@ class LocalModelProvider(ModelProvider):
                 "local", f"Models root does not exist: {self._root}"
             )
 
-        entries: list[ModelCatalogEntry] = []
+        listed: list[ListedFile] = []
         for path in sorted(self._root.rglob("*")):
             if not path.is_file() or path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
                 continue
-
-            relative_path = path.relative_to(self._root)
-            fmt = path.suffix.lstrip(".").lower()
             stat = path.stat()
-            model_id = build_model_id(relative_path)
-
-            entries.append(
-                ModelCatalogEntry(
-                    model_id=model_id,
-                    display_name=build_display_name(model_id),
-                    source_backend=PersistenceBackend.LOCAL.value,
+            listed.append(
+                ListedFile(
+                    relative_path=PurePosixPath(
+                        path.relative_to(self._root).as_posix()
+                    ),
                     source_path=str(path.resolve()),
-                    model_format=fmt,
+                    etag_or_fingerprint=f"size:{stat.st_size}:mtime:{stat.st_mtime}",
                     last_modified=datetime.fromtimestamp(
                         stat.st_mtime, tz=timezone.utc
                     ),
-                    etag_or_fingerprint=f"size:{stat.st_size}:mtime:{stat.st_mtime}",
                 )
             )
+
+        entries = build_catalog_entries(listed, PersistenceBackend.LOCAL.value)
 
         log.info(
             "Local provider discovered %d model(s) under %s", len(entries), self._root
@@ -69,4 +66,12 @@ class LocalModelProvider(ModelProvider):
         source = Path(entry.source_path)
         if not source.is_file():
             raise FileNotFoundError(f"Local model file not found: {source}")
+        return source
+
+    def materialize_mediator(
+        self, entry: ModelCatalogEntry, mediator: MediatorFile, dest_dir: Path
+    ) -> Path:
+        source = Path(mediator.source_path)
+        if not source.is_file():
+            raise FileNotFoundError(f"Local mediator file not found: {source}")
         return source

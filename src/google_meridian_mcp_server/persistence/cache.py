@@ -64,6 +64,15 @@ class MaterializationCache:
     def get_local_path(self, entry: ModelCatalogEntry) -> Path:
         return self._provider.materialize(entry, self._cache_dir)
 
+    def get_local_paths(self, entry: ModelCatalogEntry) -> tuple[Path, dict[str, Path]]:
+        """Stage 2 then every mediator (by name). Any failure propagates: all or nothing."""
+        stage2 = self._provider.materialize(entry, self._cache_dir)
+        mediators = {
+            m.name: self._provider.materialize_mediator(entry, m, self._cache_dir)
+            for m in entry.mediators
+        }
+        return stage2, mediators
+
 
 class ResultCache:
     """Optional in-memory cache for repeated analysis results.

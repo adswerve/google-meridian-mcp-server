@@ -451,3 +451,56 @@ class TestGcsModelProvider:
         downloaded_to = blob.download_to_filename.call_args.args[0]
         assert downloaded_to != str(dest)
         assert not list(tmp_path.rglob("*.part*"))
+
+
+class TestGcsFullFunnel:
+    def _provider(self, monkeypatch, blobs):
+        provider = GcsModelProvider("bucket", "models")
+        monkeypatch.setattr(
+            provider, "_get_client", lambda: _FakeClient(_FakeBucket(blobs))
+        )
+        return provider
+
+    def test_discover_folds_mediators_and_sorts(self, monkeypatch):
+        provider = self._provider(
+            monkeypatch,
+            [
+                _FakeBlob("models/exp/mediators/M1.binpb", etag="m1"),
+                _FakeBlob("models/exp/model.binpb", etag="s2"),
+                _FakeBlob("models/exp-2/model.binpb", etag="x"),
+            ],
+        )
+        entries = provider.discover()
+        assert [e.model_id for e in entries] == ["exp", "exp-2"]
+        assert [m.name for m in entries[0].mediators] == ["M1"]
+        assert (
+            entries[0].mediators[0].source_path
+            == "gs://bucket/models/exp/mediators/M1.binpb"
+        )
+
+    def test_materialize_mediator_downloads_with_etag_sidecar(
+        self, monkeypatch, tmp_path
+    ):
+        blobs = [
+            _FakeBlob("models/exp/model.binpb", etag="s2"),
+            _FakeBlob("models/exp/mediators/M1.binpb", etag="m1"),
+        ]
+        provider = self._provider(monkeypatch, blobs)
+        entry = provider.discover()[0]
+        path = provider.materialize_mediator(entry, entry.mediators[0], tmp_path)
+        assert path == tmp_path / "exp" / "mediators" / "M1.binpb"
+        assert path.read_bytes() == b"fake-model-bytes"
+        assert (tmp_path / "exp" / "mediators" / "M1.binpb.etag").read_text() == "m1"
+
+    def test_get_local_paths_is_all_or_nothing(self, monkeypatch, tmp_path):
+        from google_meridian_mcp_server.persistence.cache import MaterializationCache
+
+        blobs = [
+            _FakeBlob("models/exp/model.binpb", etag="s2"),
+            _FakeBlob("models/exp/mediators/M1.binpb", etag="m1"),
+        ]
+        blobs[1].download_to_filename = mock.Mock(side_effect=RuntimeError("boom"))
+        provider = self._provider(monkeypatch, blobs)
+        entry = provider.discover()[0]
+        with pytest.raises(RuntimeError, match="boom"):
+            MaterializationCache(provider, str(tmp_path)).get_local_paths(entry)

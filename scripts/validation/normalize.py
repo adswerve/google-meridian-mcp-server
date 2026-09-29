@@ -70,6 +70,7 @@ VOLATILE_FIELDS: dict[str, str] = {
     "elapsed_seconds": "<float>",
     # list_models catalog entries.
     "last_modified": "<iso8601>",
+    "model_version": "<model_version>",
     "source_path": "<path>",
     "source_backend": "<backend>",
     "etag_or_fingerprint": "<fingerprint>",
@@ -82,6 +83,7 @@ _EXPECTED_TYPES: dict[str, tuple[type, ...]] = {
     "<path>": (str,),
     "<backend>": (str,),
     "<fingerprint>": (str,),
+    "<model_version>": (str,),
 }
 
 

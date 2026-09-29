@@ -25,5 +25,7 @@ class ModelCatalogService:
             payload = asdict(entry)
             if payload["last_modified"] is not None:
                 payload["last_modified"] = payload["last_modified"].isoformat()
+            payload["mediators"] = [m.name for m in entry.mediators]
+            payload["funnel"] = "full_funnel" if entry.mediators else "single"
             results.append(payload)
         return results
