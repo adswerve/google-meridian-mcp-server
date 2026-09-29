@@ -15,6 +15,9 @@ from meridian.analysis import visualizer as visualizer_mod
 
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.analyzer_facade import AnalyzerFacade
+from google_meridian_mcp_server.meridian.full_funnel import (
+    visualizers as ff_visualizers,
+)
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
 
@@ -804,15 +807,15 @@ def test_model_fit_is_cached_by_use_kpi_and_confidence_level():
 def test_full_funnel_model_fit_is_built_with_the_facades_full_funnel_analyzer(
     monkeypatch,
 ):
-    from google_meridian_mcp_server.meridian import analyzer_facade as facade_mod
-
     built = []
 
     class _RecordingFullFunnelModelFit:
         def __init__(self, meridian, analyzer, use_kpi, confidence_level):
             built.append((meridian, analyzer, use_kpi, confidence_level))
 
-    monkeypatch.setattr(facade_mod, "FullFunnelModelFit", _RecordingFullFunnelModelFit)
+    monkeypatch.setattr(
+        ff_visualizers, "FullFunnelModelFit", _RecordingFullFunnelModelFit
+    )
     monkeypatch.setattr(
         visualizer_mod,
         "ModelFit",
@@ -832,8 +835,6 @@ def test_full_funnel_model_fit_is_built_with_the_facades_full_funnel_analyzer(
 
 
 def test_single_model_fit_still_uses_meridians_own_model_fit(monkeypatch):
-    from google_meridian_mcp_server.meridian import analyzer_facade as facade_mod
-
     constructed = []
 
     class _OwnModelFit:
@@ -842,7 +843,7 @@ def test_single_model_fit_still_uses_meridians_own_model_fit(monkeypatch):
 
     monkeypatch.setattr(visualizer_mod, "ModelFit", _OwnModelFit)
     monkeypatch.setattr(
-        facade_mod,
+        ff_visualizers,
         "FullFunnelModelFit",
         lambda *a, **k: pytest.fail("FullFunnelModelFit used on a single model"),
     )

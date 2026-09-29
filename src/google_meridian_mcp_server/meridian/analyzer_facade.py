@@ -19,9 +19,6 @@ from google_meridian_mcp_server.meridian.full_funnel.decomposition import (
     compute_funnel_split,
     relabel_mediator_rows,
 )
-from google_meridian_mcp_server.meridian.full_funnel.visualizers import (
-    FullFunnelModelFit,
-)
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
 
@@ -671,6 +668,10 @@ class AnalyzerFacade(MeridianInterrogator):
         key = (use_kpi, confidence_level)
         if key not in self._model_fit_cache:
             if self.is_full_funnel:
+                from google_meridian_mcp_server.meridian.full_funnel.visualizers import (
+                    FullFunnelModelFit,
+                )
+
                 self._model_fit_cache[key] = FullFunnelModelFit(
                     self._mmm,
                     self._get_analyzer(),
