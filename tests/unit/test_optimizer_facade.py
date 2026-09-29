@@ -653,6 +653,7 @@ def _fake_results():
 
 def test_run_hands_the_full_funnel_analyzer_to_the_optimizer_and_splits(monkeypatch):
     results = _fake_results()
+    results.optimization_grid.optimal_frequency = optimal_frequency = object()
     constructed = _recording_optimizer(monkeypatch, results)
     analyzer = object()
     facade = OptimizerFacade.__new__(OptimizerFacade)
@@ -671,6 +672,10 @@ def test_run_hands_the_full_funnel_analyzer_to_the_optimizer_and_splits(monkeypa
     assert optimized_call.args[:2] == (results, results.optimized_data)
     assert initial_call.args[2] == {"start_date": None}  # the optimize() kwargs
     assert initial_call.args[3] is False  # use_kpi
+    # The optimized allocation is scored at the grid's optimal frequency, the
+    # initial one at the historical frequency, exactly as Meridian scores them.
+    assert initial_call.kwargs.get("optimal_frequency") is None
+    assert optimized_call.kwargs["optimal_frequency"] is optimal_frequency
     (initial,) = result["channel_tables"]["initial"]
     (optimized,) = result["channel_tables"]["optimized"]
     assert (

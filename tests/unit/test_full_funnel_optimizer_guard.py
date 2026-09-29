@@ -1,5 +1,6 @@
 """The post-hoc split relies on two Meridian private APIs; pin them on 2.1.x."""
 
+import dataclasses
 import inspect
 
 import meridian
@@ -21,4 +22,12 @@ def test_private_optimizer_apis_are_unchanged():
     assert sig == ["model_context", "start_date", "end_date", "new_data"]
     assert (
         "analyzer" in inspect.signature(optimizer.BudgetOptimizer.__init__).parameters
+    )
+    grid_fields = {f.name for f in dataclasses.fields(optimizer.OptimizationGrid)}
+    assert {"optimal_frequency", "historical_spend"} <= grid_fields
+    result_fields = {f.name for f in dataclasses.fields(optimizer.OptimizationResults)}
+    assert "new_data" in result_fields
+    assert isinstance(
+        inspect.getattr_static(optimizer.OptimizationResults, "optimization_grid"),
+        property,
     )

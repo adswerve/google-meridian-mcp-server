@@ -79,8 +79,15 @@ class OptimizerFacade(MeridianInterrogator):
                 "initial": self._direct_incremental(
                     results, results.nonoptimized_data, kwargs, use_kpi
                 ),
+                # Meridian scores optimized_data at the grid's optimal frequency
+                # (None on models without RF) and nonoptimized_data at the
+                # historical one; the direct score must use the same frequency.
                 "optimized": self._direct_incremental(
-                    results, results.optimized_data, kwargs, use_kpi
+                    results,
+                    results.optimized_data,
+                    kwargs,
+                    use_kpi,
+                    optimal_frequency=results.optimization_grid.optimal_frequency,
                 ),
             }
         return self.build_result(
@@ -93,7 +100,7 @@ class OptimizerFacade(MeridianInterrogator):
         )
 
     def _direct_incremental(
-        self, results, spend_ds, kwargs, use_kpi
+        self, results, spend_ds, kwargs, use_kpi, optimal_frequency=None
     ) -> dict[str, float]:
         """Direct-only (plain stage-2) outcome of an allocation, scored exactly like
         BudgetOptimizer._create_budget_dataset (meridian 2.1.x optimizer.py:2452-2508)."""
@@ -119,7 +126,7 @@ class OptimizerFacade(MeridianInterrogator):
             results.optimization_grid.historical_spend,
             np.asarray(spend_ds["spend"].values, dtype=float),
             new_data=filled.filter_fields(c.PAID_CHANNELS),
-            optimal_frequency=None,
+            optimal_frequency=optimal_frequency,
         )
         scored = direct_analyzer.incremental_outcome(
             use_posterior=True,
