@@ -3,7 +3,8 @@ name: meridian-analyst
 description: >-
   Use when analyzing a Google Meridian marketing-mix model through this MCP —
   budget optimization and reallocation, channel ROI/performance, response
-  curves, adstock, reach & frequency, or model diagnostics. Routes business
+  curves, adstock, reach & frequency, full-funnel (brand-building / indirect)
+  effects, or model diagnostics. Routes business
   questions to the right tools and interprets the results.
 ---
 
@@ -25,9 +26,10 @@ numbers correctly — uncertainty included.
    capabilities. Treat it as ground truth; never call a tool or metric it does
    not list.
 
-The overview also gives you the two facts that drive every downstream choice:
-whether the model is **national or geo**, and whether it **can measure revenue**.
-See `references/taxonomy.md` for how each fact changes what is valid.
+The overview also gives you the three facts that drive every downstream choice:
+whether the model is **national or geo**, whether it **can measure revenue**,
+and whether it is **full-funnel** (`funnel: "full_funnel"`). See
+`references/taxonomy.md` for how each fact changes what is valid.
 
 ## Cardinal rules
 
@@ -56,9 +58,22 @@ See `references/taxonomy.md` for how each fact changes what is valid.
 - **Reach & frequency is RF-only.** `get_reach_frequency` applies only to models
   with reach/frequency channels; otherwise it is absent from
   `available_tool_options` and returns `metric_not_supported`.
-- **Never present a point estimate as certain.** Analysis and optimization
-  outputs carry credible intervals (`ci_lo`/`ci_hi`). Report the interval with
-  the mean; a wide interval means low confidence, not a precise number.
+- **Full-funnel models report total effects.** When the overview shows
+  `funnel: "full_funnel"`, the effect and outcome views (ROI, summaries,
+  contribution, response curves, spend what-ifs, optimization) already include
+  brand-building (indirect) effects, and a brand signal appears only as its
+  "brand equity, rest" row. Never add the brand signal's full effect on top of
+  the paid channels, and always say whether you quote a direct or a total
+  figure. Read `references/full-funnel.md`.
+- **Never present a point estimate as certain.** Most analysis
+  views (channel summaries, response curves, reach & frequency, decay curves,
+  model fit, spend what-ifs) carry credible intervals (`ci_lo`/`ci_hi`);
+  contribution shares, carry-over parameters and optimization results are means
+  only. Report the interval with the mean wherever one exists; a wide interval
+  means low confidence, not a precise number. The one
+  exception: the direct / indirect / brand-equity split on full-funnel models is
+  a mean estimate with no interval, and so is the adjusted baseline — say so
+  rather than inventing one.
 - **Speak the marketer's language — never leak internal vocabulary.** In
   everything the user sees — questions, offers, next-step suggestions, result
   summaries, caveats — refer to scenarios, options, metrics, fields, and tools
@@ -76,6 +91,8 @@ See `references/taxonomy.md` for how each fact changes what is valid.
 - **Scope:** national (one aggregate series) or geo (per-region, sub-selectable).
 - **Outcome:** revenue models; KPI-only models; and KPI + `revenue_per_kpi`
   models (KPI converted to revenue, so they behave as revenue-capable).
+- **Funnel:** single model, or full-funnel (a KPI model plus brand-mediator
+  models; see `references/full-funnel.md`).
 
 Revenue-capability decides which metrics are legal; `outcome_mode` in results
 reports `revenue` vs `kpi`. Full validity matrix and how to read it off
@@ -88,5 +105,6 @@ reports `revenue` vs `kpi`. Full validity matrix and how to read it off
 | Whole-budget allocation or reallocation across channels, "how should I spend", target ROAS/mROAS, or planning a FUTURE period's budget | `references/budget-optimization.md` |
 | Channel ROI/performance, contribution, response curves, saturation, adstock, reach & frequency, single-channel spend what-ifs, model fit/diagnostics | `references/channel-performance.md` |
 | What the model types mean and which tools/metrics are valid where | `references/taxonomy.md` |
+| Brand-building / indirect effects, brand equity, "does awareness drive conversions?" on a full-funnel model | `references/full-funnel.md` |
 | An unfamiliar term (ROAS, CPIK, adstock, incremental, reference window…) | `references/glossary.md` |
 | A vague, high-level, or high-stakes ask that needs clarifying before you run anything | `references/consultation.md` |

@@ -802,3 +802,27 @@ def test_get_result_with_a_readable_result_but_no_record_raises_not_found(tmp_pa
     record.unlink()
     with pytest.raises(RunNotFoundError):
         svc.get_result("fwd-3")
+
+
+@pytest.mark.asyncio
+async def test_get_result_keeps_full_funnel_assumptions_through_the_echo_merge(
+    tmp_path,
+):
+    svc, reg = _svc(tmp_path)
+    cfg = {
+        "scenario": {"type": "fixed_budget"},
+        "future": {"start_date": "2099-01-05", "horizon": 4},
+    }
+    submit = await svc.run_future_optimization("m", cfg)
+    ff = {"mediators": ["M1"], "mediator_treatment": "predicted_from_planned_spend"}
+    reg.write_result(
+        submit["run_id"],
+        {
+            "outcome_mode": "revenue",
+            "assumptions": {"budget": 1.0, "full_funnel": ff},
+        },
+    )
+    reg.write_state(
+        OptimizationRunState(run_id=submit["run_id"], status=RunStatus.COMPLETED)
+    )
+    assert svc.get_result(submit["run_id"])["assumptions"]["full_funnel"] == ff

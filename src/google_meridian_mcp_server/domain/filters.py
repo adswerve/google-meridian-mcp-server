@@ -39,6 +39,8 @@ ResponseDynamicsType = Literal["adstock_decay", "alpha_summary"]
 
 ResponseCurveType = Literal["response_curves", "response_curve_summary"]
 
+FunnelBreakdownType = Literal["channel_breakdown", "mediator_lift"]
+
 TRAINING_DATASETS = (
     "kpi",
     "revenue_per_kpi",

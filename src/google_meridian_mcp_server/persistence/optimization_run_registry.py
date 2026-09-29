@@ -36,14 +36,19 @@ class ResultNotReadyError(MeridianMcpError):
         )
 
 
+def _mark_funnel(summary: str, run: OptimizationRun) -> str:
+    return summary + " . full funnel" if run.funnel == "full_funnel" else summary
+
+
 def build_config_summary(run: OptimizationRun) -> str:
     cfg = run.config
     if getattr(cfg, "kind", "historical") == "future":
         f = cfg.future
-        return (
+        summary = (
             f"future {cfg.scenario.type} . {f.horizon} periods from "
             f"{f.start_date.isoformat()} . {f.reference.mode}"
         )
+        return _mark_funnel(summary, run)
     scenario = cfg.scenario.type
     dates = f"{cfg.start_date or 'start'}..{cfg.end_date or 'end'}"
     geos = "all geos" if not cfg.selected_geos else f"{len(cfg.selected_geos)} geos"
@@ -53,7 +58,8 @@ def build_config_summary(run: OptimizationRun) -> str:
         if cfg.constraint.mode == "global"
         else "per-channel"
     )
-    return f"{scenario} . {dates} . {geos} . {objective} . {constraint}"
+    summary = f"{scenario} . {dates} . {geos} . {objective} . {constraint}"
+    return _mark_funnel(summary, run)
 
 
 class OptimizationRunRegistry(abc.ABC):

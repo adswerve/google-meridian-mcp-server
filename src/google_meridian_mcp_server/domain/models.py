@@ -163,6 +163,15 @@ class RuntimeConfig(BaseModel):
 
 
 @dataclass(frozen=True)
+class MediatorFile:
+    """One stage-1 (mediator) model file folded into a full-funnel catalog entry."""
+
+    name: str
+    source_path: str
+    etag_or_fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
 class ModelCatalogEntry:
     model_id: str
     display_name: str
@@ -173,3 +182,5 @@ class ModelCatalogEntry:
     etag_or_fingerprint: str | None = None
     status: str = ModelStatus.READY.value
     metadata: dict[str, Any] = field(default_factory=dict)
+    mediators: tuple[MediatorFile, ...] = ()
+    model_version: str | None = None

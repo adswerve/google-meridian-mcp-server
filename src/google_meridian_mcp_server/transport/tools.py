@@ -18,6 +18,7 @@ from google_meridian_mcp_server.domain.filters import (
     AnalysisFilters,
     ChannelSummaryType,
     ContributionType,
+    FunnelBreakdownType,
     ResponseCurveType,
     ResponseDynamicsType,
     TrainingDataset,
@@ -117,6 +118,7 @@ def _analysis_service(ctx: Context) -> AnalysisService:
     return AnalysisService(
         runner=ctx.lifespan_context["analysis_runner"],
         result_cache=ctx.lifespan_context["result_cache"],
+        discovery=ctx.lifespan_context["discovery_cache"],
     )
 
 
@@ -127,6 +129,7 @@ def _optimization_service(ctx: Context) -> OptimizationService:
         executor=ctx.lifespan_context["optimization_executor"],
         cfg=ctx.lifespan_context["config"],
         result_cache=ctx.lifespan_context["result_cache"],
+        discovery=ctx.lifespan_context["discovery_cache"],
     )
 
 
@@ -136,7 +139,7 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     @_guarded(wrap_result=True)
     async def list_models(ctx: Context) -> list[dict[str, Any]] | dict[str, Any]:
-        """List all available Meridian marketing-mix models. Call this first to get model_id values needed by every other tool. Returns id, display_name, format, and last_modified for each model."""
+        """List all available Meridian marketing-mix models. Call this first to get model_id values needed by every other tool. Returns id, display_name, format, last_modified, funnel ('single' or 'full_funnel'), mediators (brand-mediator names for full-funnel models) and model_version for each model."""
         # F6: list_models does discovery I/O (local fs walk or GCS list) synchronously;
         # offload to a thread so a slow/degraded backend can't stall the event loop
         # (and therefore every other in-flight tool call) while this resolves.
@@ -309,6 +312,37 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get the spend-response relationship for each channel — how KPI changes as spend increases or decreases. Use this to answer 'what happens if we double search spend?' or 'which channels show diminishing returns?'."""
         return await _analysis_service(ctx).get_response_curves(
+            model_id,
+            output_type,
+            filters,
+        )
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
+    async def get_funnel_breakdown(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
+            ),
+        ],
+        output_type: Annotated[
+            FunnelBreakdownType,
+            Field(
+                description="'channel_breakdown': per paid channel, the direct effect, the indirect effect through each brand mediator, and each mediator's 'brand equity (rest)' row (the part paid media did not build) — posterior means, no intervals. 'mediator_lift': how much each paid channel moved each mediator in the mediator's own units (e.g. branded searches), with credible intervals, spend, and cost per incremental unit.",
+            ),
+        ],
+        ctx: Context,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters: start_date/end_date/geos slice the model; channels accepts paid channel names and mediator names (a mediator name keeps its indirect, brand-equity and lift rows); use_kpi applies to channel_breakdown only.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Explain a FULL-FUNNEL model's paid-media effect path by path: how much each channel drives the KPI directly versus indirectly by building brand mediators (e.g. video -> branded search -> conversions), and how much each mediator is brand equity paid media did not build. Only available when get_model_overview lists it in available_tool_options (funnel='full_funnel')."""
+        return await _analysis_service(ctx).get_funnel_breakdown(
             model_id,
             output_type,
             filters,
@@ -492,7 +526,7 @@ def register_tools(mcp: FastMCP) -> None:
             ),
         ] = False,
     ) -> dict[str, Any]:
-        """Optimize how budget is split across paid-media & RF channels. Answers "how should I reallocate spend?" or "what mix best hits a 2x ROAS target?". Supply a scenario (fixed_budget | target_roas | target_mroas) and spend constraints via `config`. Long-running: returns a run_id immediately — then poll get_optimization_status until status is 'completed', then read get_optimization_result. An identical prior run (same model + config) is reused unless force_rerun=true; browse prior runs with list_optimizations."""
+        """Optimize how budget is split across paid-media & RF channels. Answers "how should I reallocate spend?" or "what mix best hits a 2x ROAS target?". Supply a scenario (fixed_budget | target_roas | target_mroas) and spend constraints via `config`. Long-running: returns a run_id immediately — then poll get_optimization_status until status is 'completed', then read get_optimization_result. An identical prior run (same model + config) is reused unless force_rerun=true; browse prior runs with list_optimizations. On a full-funnel model (overview funnel='full_funnel') the optimizer maximizes the TOTAL effect, direct plus indirect through brand mediators; result channel rows then also carry incremental_outcome_direct / incremental_outcome_indirect."""
         return await _optimization_service(ctx).run_optimization(
             model_id,
             config.model_dump(mode="json"),
@@ -554,7 +588,7 @@ def register_tools(mcp: FastMCP) -> None:
             ),
         ] = False,
     ) -> dict[str, Any]:
-        """Optimize a FUTURE budget under explicit assumptions (not a demand forecast). Answers "how should I split next quarter's budget?" or "if TV CPMs rise 20%, what's the best future mix?". Meridian does not forecast the future: this carries forward a chosen historical reference window's costs/flighting/revenue (optionally scaled by cost_multipliers / revenue_per_kpi_multiplier) and optimizes the allocation over a future window you define with start_date + horizon. Long-running: returns a run_id immediately — poll get_optimization_status until 'completed', then get_optimization_result. Identical prior runs are reused unless force_rerun=true."""
+        """Optimize a FUTURE budget under explicit assumptions (not a demand forecast). Answers "how should I split next quarter's budget?" or "if TV CPMs rise 20%, what's the best future mix?". Meridian does not forecast the future: this carries forward a chosen historical reference window's costs/flighting/revenue (optionally scaled by cost_multipliers / revenue_per_kpi_multiplier) and optimizes the allocation over a future window you define with start_date + horizon. Long-running: returns a run_id immediately — poll get_optimization_status until 'completed', then get_optimization_result. Identical prior runs are reused unless force_rerun=true. On a full-funnel model (overview funnel='full_funnel') the optimizer maximizes the TOTAL effect, direct plus indirect through brand mediators; result channel rows then also carry incremental_outcome_direct / incremental_outcome_indirect. On such a model, assumptions.full_funnel records that mediators are predicted from the planned spend."""
         return await _optimization_service(ctx).run_future_optimization(
             model_id,
             config.model_dump(mode="json"),
@@ -595,7 +629,7 @@ def register_tools(mcp: FastMCP) -> None:
         ],
         ctx: Context,
     ) -> dict[str, Any]:
-        """Fetch the full structured result of a completed optimization: optimized-vs-current spend per channel, expected outcome lift, and per-channel efficiency (ROI/ROAS for revenue models, CPIK otherwise). Raises optimization_not_ready until get_optimization_status reports 'completed'. Answers 'what is the recommended budget allocation?'. Future-optimization results also carry an `assumptions` echo (budget, budget_source, reference_mode, excluded_channels, cost_multipliers, revenue_per_kpi_multiplier, planned_allocation_submitted -- the raw dict as submitted, before normalization) so an auto-derived budget is never silent and a submitted future input is never dropped. A field not submitted is echoed as null, never omitted."""
+        """Fetch the full structured result of a completed optimization: optimized-vs-current spend per channel, expected outcome lift, and per-channel efficiency (ROI/ROAS for revenue models, CPIK otherwise). Raises optimization_not_ready until get_optimization_status reports 'completed'. Answers 'what is the recommended budget allocation?'. Future-optimization results also carry an `assumptions` echo (budget, budget_source, reference_mode, excluded_channels, cost_multipliers, revenue_per_kpi_multiplier, planned_allocation_submitted -- the raw dict as submitted, before normalization) so an auto-derived budget is never silent and a submitted future input is never dropped. A field not submitted is echoed as null, never omitted. On a full-funnel model the result also carries `assumptions.full_funnel` (the mediators and how they were predicted) and its channel rows include incremental_outcome_direct / incremental_outcome_indirect split columns."""
         # F6: registry read is synchronous (GCS on that backend); offload.
         service = _optimization_service(ctx)
         return await asyncio.to_thread(service.get_result, run_id)

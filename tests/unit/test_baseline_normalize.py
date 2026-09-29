@@ -3,7 +3,7 @@
 from scripts.validation.normalize import VOLATILE_FIELDS, normalize
 
 
-def test_all_ten_spec_fields_are_normalized():
+def test_all_eleven_spec_fields_are_normalized():
     assert set(VOLATILE_FIELDS) == {
         # optimization payloads
         "run_id",
@@ -14,6 +14,7 @@ def test_all_ten_spec_fields_are_normalized():
         "elapsed_seconds",
         # list_models entries (spec 7.3.1)
         "last_modified",
+        "model_version",
         "source_path",
         "source_backend",
         "etag_or_fingerprint",

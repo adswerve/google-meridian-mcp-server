@@ -11,15 +11,16 @@ from google_meridian_mcp_server.domain.errors import (
     BackendUnavailableError,
 )
 from google_meridian_mcp_server.domain.models import (
+    MediatorFile,
     ModelCatalogEntry,
     ModelFormat,
     PersistenceBackend,
 )
 from google_meridian_mcp_server.persistence.base import (
+    ListedFile,
     ModelProvider,
     build_cache_path,
-    build_display_name,
-    build_model_id,
+    build_catalog_entries,
 )
 
 log = logging.getLogger(__name__)
@@ -61,35 +62,26 @@ class GcsModelProvider(ModelProvider):
             raise BackendUnavailableError("gcs", str(exc)) from exc
 
         prefix = self._blob_prefix()
-        entries: list[ModelCatalogEntry] = []
-
         try:
             blobs = list(bucket.list_blobs(prefix=prefix))
         except Exception as exc:
             raise BackendUnavailableError("gcs", str(exc)) from exc
 
+        listed: list[ListedFile] = []
         for blob in blobs:
             name = blob.name
-            relative_path = self._relative_path_from_blob_name(name)
-
-            ext = Path(name).suffix.lower()
-            if ext not in _SUPPORTED_EXTENSIONS:
+            if Path(name).suffix.lower() not in _SUPPORTED_EXTENSIONS:
                 continue
-
-            fmt = ext.lstrip(".")
-            model_id = build_model_id(relative_path)
-
-            entries.append(
-                ModelCatalogEntry(
-                    model_id=model_id,
-                    display_name=build_display_name(model_id),
-                    source_backend=PersistenceBackend.GCS.value,
+            listed.append(
+                ListedFile(
+                    relative_path=self._relative_path_from_blob_name(name),
                     source_path=f"gs://{self._bucket_name}/{name}",
-                    model_format=fmt,
-                    last_modified=blob.updated,
                     etag_or_fingerprint=blob.etag,
+                    last_modified=blob.updated,
                 )
             )
+
+        entries = build_catalog_entries(listed, PersistenceBackend.GCS.value)
 
         log.info(
             "GCS provider discovered %d model(s) in gs://%s/%s",
@@ -100,10 +92,27 @@ class GcsModelProvider(ModelProvider):
         return entries
 
     def materialize(self, entry: ModelCatalogEntry, dest_dir: Path) -> Path:
-        """Download a GCS model to a local cache directory if not present, or
-        if the cached copy's etag no longer matches the catalog entry's."""
+        return self._materialize_blob(
+            entry.source_path, entry.etag_or_fingerprint, dest_dir, entry.model_id
+        )
+
+    def materialize_mediator(
+        self, entry: ModelCatalogEntry, mediator: MediatorFile, dest_dir: Path
+    ) -> Path:
+        return self._materialize_blob(
+            mediator.source_path,
+            mediator.etag_or_fingerprint,
+            dest_dir,
+            f"{entry.model_id}/mediators/{mediator.name}",
+        )
+
+    def _materialize_blob(
+        self, source_path: str, etag: str | None, dest_dir: Path, label: str
+    ) -> Path:
+        """Download a GCS blob to a local cache directory if not present, or
+        if the cached copy's etag no longer matches the expected one."""
         gs_prefix = f"gs://{self._bucket_name}/"
-        blob_name = entry.source_path[len(gs_prefix) :]
+        blob_name = source_path[len(gs_prefix) :]
         relative_path = self._relative_path_from_blob_name(blob_name)
         local_path = build_cache_path(dest_dir, relative_path)
         local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,19 +129,19 @@ class GcsModelProvider(ModelProvider):
         # missing the cache and both downloading -- is benign: both write the
         # same content via the atomic .part+os.replace path below, so the
         # last os.replace just wins harmlessly. No code change needed there.)
-        if local_path.is_file() and entry.etag_or_fingerprint:
+        if local_path.is_file() and etag:
             cached_etag = etag_path.read_text().strip() if etag_path.is_file() else None
-            if cached_etag == entry.etag_or_fingerprint:
-                log.debug("Cache hit for %s at %s", entry.model_id, local_path)
+            if cached_etag == etag:
+                log.debug("Cache hit for %s at %s", label, local_path)
                 return local_path
             log.info(
                 "Cached etag for %s is stale (cached=%s, current=%s); re-downloading",
-                entry.model_id,
+                label,
                 cached_etag,
-                entry.etag_or_fingerprint,
+                etag,
             )
 
-        log.info("Downloading %s to %s", entry.source_path, local_path)
+        log.info("Downloading %s to %s", source_path, local_path)
         client = self._get_client()
         bucket = client.bucket(self._bucket_name)
 
@@ -144,10 +153,10 @@ class GcsModelProvider(ModelProvider):
         finally:
             part_path.unlink(missing_ok=True)
 
-        if entry.etag_or_fingerprint:
+        if etag:
             etag_part = etag_path.with_name(f"{etag_path.name}.part.{os.getpid()}")
             try:
-                etag_part.write_text(entry.etag_or_fingerprint)
+                etag_part.write_text(etag)
                 os.replace(etag_part, etag_path)
             finally:
                 etag_part.unlink(missing_ok=True)

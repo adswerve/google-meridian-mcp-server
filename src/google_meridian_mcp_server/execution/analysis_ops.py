@@ -66,6 +66,11 @@ RESPONSE_CURVE_DISPATCH = {
     "response_curve_summary": "get_response_curve_summary",
 }
 
+FUNNEL_BREAKDOWN_DISPATCH = {
+    "channel_breakdown": "get_funnel_channel_breakdown",
+    "mediator_lift": "get_funnel_mediator_lift",
+}
+
 
 def sanitize_nan(obj: Any) -> Any:
     """Recursively replace non-finite floats (nan/inf/-inf) with None, and
@@ -113,6 +118,8 @@ def _dispatch_facade_query(
     method_name = dispatch[output_type]
     try:
         rows = getattr(facade, method_name)(filters)
+    except MeridianMcpError:
+        raise  # typed errors keep their own code (e.g. invalid_full_funnel_model)
     except Exception as exc:  # worker boundary
         raise MissingModelDataError(model_id, str(exc)) from exc
     return AnalysisService._build_result(
@@ -145,6 +152,35 @@ def _get_response_curves(catalog: Any, model_id: str, params: dict) -> dict:
     return _dispatch_facade_query(catalog, model_id, params, RESPONSE_CURVE_DISPATCH)
 
 
+def _get_funnel_breakdown(catalog: Any, model_id: str, params: dict) -> dict:
+    output_type = params["output_type"]
+    if output_type not in FUNNEL_BREAKDOWN_DISPATCH:
+        raise InvalidOutputTypeError(output_type, sorted(FUNNEL_BREAKDOWN_DISPATCH))
+    facade = catalog.get_facade(model_id)
+    if not facade.is_full_funnel:
+        raise MetricNotSupportedError(
+            model_id,
+            output_type,
+            "model is not a full-funnel model: it has no mediators/ folder of "
+            "brand-mediator models",
+        )
+    filters = normalize_filters(params["filters"])
+    # The tools' own rows label a mediator "<m> (brand equity, rest)"; accept that
+    # label as the mediator's name, as get_contribution does.
+    by_label = {label: name for name, label in facade.rest_labels.items()}
+    channels = list(dict.fromkeys(by_label.get(c, c) for c in filters.channels))
+    filters = filters.model_copy(update={"channels": channels})
+    params = {**params, "filters": filters}
+    valid = facade.paid_channels() + list(facade.mediator_names)
+    unknown = [c for c in filters.channels if c not in valid]
+    if unknown:
+        raise MissingModelDataError(
+            model_id,
+            f"unknown channel(s) {', '.join(unknown)}; valid: {', '.join(valid)}",
+        )
+    return _dispatch_facade_query(catalog, model_id, params, FUNNEL_BREAKDOWN_DISPATCH)
+
+
 def _get_reach_frequency(catalog: Any, model_id: str, params: dict) -> dict:
     interrogator = catalog.get_interrogator(model_id)
     if not interrogator.has_rf_channels():
@@ -157,6 +193,8 @@ def _get_reach_frequency(catalog: Any, model_id: str, params: dict) -> dict:
     filters = normalize_filters(params["filters"])
     try:
         rows = facade.get_reach_frequency(filters)
+    except MeridianMcpError:
+        raise  # typed errors keep their own code (e.g. invalid_full_funnel_model)
     except Exception as exc:  # worker boundary
         raise MissingModelDataError(model_id, str(exc)) from exc
     return AnalysisService._build_result(model_id=model_id, rows=rows)
@@ -174,6 +212,8 @@ def _get_model_fit(catalog: Any, model_id: str, params: dict) -> dict:
     facade = catalog.get_facade(model_id)
     try:
         rows = facade.get_model_fit(filters)
+    except MeridianMcpError:
+        raise  # typed errors keep their own code (e.g. invalid_full_funnel_model)
     except Exception as exc:  # worker boundary
         raise MissingModelDataError(model_id, str(exc)) from exc
     return AnalysisService._build_result(model_id=model_id, rows=rows)
@@ -183,6 +223,8 @@ def _get_model_overview(catalog: Any, model_id: str, params: dict) -> dict:
     interrogator = catalog.get_interrogator(model_id)
     try:
         overview = interrogator.get_model_overview()
+    except MeridianMcpError:
+        raise  # typed errors keep their own code (e.g. invalid_full_funnel_model)
     except Exception as exc:  # worker boundary
         raise MissingModelDataError(model_id, str(exc)) from exc
     # Raw overview only -- `available_tool_options` decoration is pure and
@@ -194,6 +236,8 @@ def _get_channel_data(catalog: Any, model_id: str, params: dict) -> dict:
     filters = normalize_filters(params["filters"])
     try:
         rows = extract_channel_data(catalog.resolve(model_id))
+    except MeridianMcpError:
+        raise  # typed errors keep their own code (e.g. invalid_full_funnel_model)
     except Exception as exc:  # worker boundary
         raise MissingModelDataError(model_id, str(exc)) from exc
     rows = filter_records(
@@ -211,6 +255,8 @@ def _get_training_data(catalog: Any, model_id: str, params: dict) -> dict:
     datasets: list[str] = params["datasets"]
     try:
         rows = extract_training_datasets(catalog.resolve(model_id), datasets)
+    except MeridianMcpError:
+        raise  # typed errors keep their own code (e.g. invalid_full_funnel_model)
     except Exception as exc:  # worker boundary
         raise MissingModelDataError(model_id, str(exc)) from exc
     rows = filter_records(
@@ -259,6 +305,8 @@ def _get_spend_scenario(catalog: Any, model_id: str, params: dict) -> dict:
         )
         new_spend = resolved_base + spend_increase
         outcomes = facade.spend_response(channel, [resolved_base, new_spend], filters)
+    except MeridianMcpError:
+        raise  # typed errors keep their own code (e.g. invalid_full_funnel_model)
     except Exception as exc:  # worker boundary
         raise MissingModelDataError(model_id, str(exc)) from exc
 
@@ -324,6 +372,7 @@ ANALYSIS_OPS: dict[str, Callable[[Any, str, dict], dict]] = {
     "get_channel_summary": _get_channel_summary,
     "get_adstock_decay": _get_adstock_decay,
     "get_response_curves": _get_response_curves,
+    "get_funnel_breakdown": _get_funnel_breakdown,
     "get_reach_frequency": _get_reach_frequency,
     "get_model_fit": _get_model_fit,
     "get_model_overview": _get_model_overview,

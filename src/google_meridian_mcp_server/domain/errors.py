@@ -143,6 +143,13 @@ class UnsupportedModelFormatError(MeridianMcpError):
         )
 
 
+class InvalidFullFunnelModelError(MeridianMcpError):
+    """A full-funnel experiment folder cannot be combined; the message says how to fix it."""
+
+    def __init__(self, reason: str):
+        super().__init__(error_code="invalid_full_funnel_model", message=reason)
+
+
 class WorkerFailedError(MeridianMcpError):
     def __init__(
         self, message: str = "worker process failed", details: dict | None = None

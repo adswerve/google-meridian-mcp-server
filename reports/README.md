@@ -51,6 +51,10 @@ then diffs two labels leaf-by-leaf with numeric tolerances. Each report is one s
   checked against a live server call rather than just read for plausibility.
 - `weekly-optimization-grid-measurements.md` — the measurements behind the compute-tier sizing
   grid in the README's "Which tier does `auto` pick?" section.
+- `full-funnel-performance.md` — one timed call per tool plus a historical and a future
+  optimization on Google's simulated full-funnel data (20 geos x 156 weeks), with peak memory
+  and the machine used. Every analysis call finished in under 8 s, against a 150 s escalation
+  threshold; produced by `scripts/qa/full_funnel_perf.py`.
 
 ## Optimization queue durability
 

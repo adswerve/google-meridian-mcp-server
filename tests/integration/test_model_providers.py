@@ -94,3 +94,28 @@ class TestLocalModelProvider:
         provider = LocalModelProvider(str(tmp_path))
         entries = provider.discover()
         assert entries[0].display_name == "My Cool Model"
+
+
+def test_local_provider_folds_mediators_and_skips_orphans(tmp_path):
+    (tmp_path / "exp" / "mediators").mkdir(parents=True)
+    (tmp_path / "exp" / "model.binpb").write_bytes(b"s2")
+    (tmp_path / "exp" / "mediators" / "M1.binpb").write_bytes(b"s1")
+    (tmp_path / "orphan" / "mediators").mkdir(parents=True)
+    (tmp_path / "orphan" / "mediators" / "M9.binpb").write_bytes(b"x")
+
+    entries = LocalModelProvider(str(tmp_path)).discover()
+
+    assert [e.model_id for e in entries] == ["exp"]
+    assert [m.name for m in entries[0].mediators] == ["M1"]
+    assert entries[0].model_version is not None
+    assert entries[0].source_path == str((tmp_path / "exp" / "model.binpb").resolve())
+
+
+def test_local_materialize_mediator_returns_source(tmp_path):
+    (tmp_path / "exp" / "mediators").mkdir(parents=True)
+    (tmp_path / "exp" / "model.binpb").write_bytes(b"s2")
+    (tmp_path / "exp" / "mediators" / "M1.binpb").write_bytes(b"s1")
+    provider = LocalModelProvider(str(tmp_path))
+    entry = provider.discover()[0]
+    path = provider.materialize_mediator(entry, entry.mediators[0], tmp_path / "cache")
+    assert path == (tmp_path / "exp" / "mediators" / "M1.binpb").resolve()

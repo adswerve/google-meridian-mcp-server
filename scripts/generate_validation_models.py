@@ -7,6 +7,10 @@ data, fitted with a tiny real posterior, and serialized to .binpb. Pickle
 (.pkl) models are no longer supported by this server -- see
 reports/pkl-format-removed.md -- so no .pkl fixture is produced here.
 
+It also builds one full-funnel fixture (`geo-full-funnel`: a KPI model plus two
+mediator models, no RF), kept out of `VARIANTS` so the drift harness's fixture
+set stays at seven.
+
 Usage:
   uv run python scripts/generate_validation_models.py            # build if missing
   uv run python scripts/generate_validation_models.py --force    # rebuild all
@@ -18,6 +22,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 DEFAULT_OUT_ROOT = Path("models/_validation")
 
@@ -61,6 +68,171 @@ _FACTORY_NAMES = {
     "kpi_rpk": "sample_input_data_non_revenue_revenue_per_kpi",
     "kpi_only": "sample_input_data_non_revenue_no_revenue_per_kpi",
 }
+
+
+FF_PAID = ("A", "B", "C")
+FF_KNOTS = 8
+
+
+@dataclasses.dataclass(frozen=True)
+class FullFunnelVariantSpec:
+    """A KPI model plus one stage-1 model per (mediator, driving paid channels)."""
+
+    key: str
+    n_geos: int
+    mediators: tuple[tuple[str, tuple[str, ...]], ...]
+    with_rf: bool = False  # AnalyzerFullFunnel cannot handle RF (known limitation)
+    factory: str = "full_funnel"
+
+    def factory_has_revenue(self) -> bool:
+        return True
+
+    def mediator_names(self) -> tuple[str, ...]:
+        return tuple(name for name, _ in self.mediators)
+
+
+# Kept OUT of VARIANTS: matrix.fixture_specs() mirrors VARIANTS, and the drift
+# harness must keep diffing the same seven fixtures (spec section 8).
+FULL_FUNNEL_VARIANTS: list[FullFunnelVariantSpec] = [
+    FullFunnelVariantSpec("geo-full-funnel", 5, (("M1", ("A",)), ("M2", ("A", "B")))),
+]
+
+
+def _full_funnel_frame(spec: FullFunnelVariantSpec) -> pd.DataFrame:
+    """Synthetic geo x week data with a known brand path (A -> M1; A, B -> M2)."""
+    rng = np.random.default_rng(7)
+    times = pd.date_range("2023-01-02", periods=N_TIMES, freq="7D").strftime("%Y-%m-%d")
+    frames = []
+    for g in range(spec.n_geos):
+        scale = float(g + 1)
+        imp = {c: rng.gamma(4.0, 2500.0 * scale, N_TIMES) for c in FF_PAID}
+        m1 = 400.0 * scale + 0.02 * imp["A"] + rng.normal(0.0, 20.0, N_TIMES)
+        m2 = (
+            300.0 * scale
+            + 0.01 * imp["A"]
+            + 0.015 * imp["B"]
+            + rng.normal(0.0, 20.0, N_TIMES)
+        )
+        control = rng.normal(0.0, 1.0, N_TIMES)
+        kpi = (
+            1000.0 * scale
+            + 0.004 * imp["A"]
+            + 0.006 * imp["B"]
+            + 0.008 * imp["C"]
+            + 0.5 * m1
+            + 0.4 * m2
+            + 20.0 * control
+            + rng.normal(0.0, 40.0, N_TIMES)
+        )
+        frame = pd.DataFrame(
+            {
+                "geo": f"geo_{g}",
+                "time": times,
+                "population": 100_000.0 * scale,
+                "kpi": np.clip(kpi, 1.0, None),
+                "revenue_per_kpi": 2.0,
+                "control": control,
+                "M1": np.clip(m1, 1.0, None),
+                "M2": np.clip(m2, 1.0, None),
+            }
+        )
+        for c in FF_PAID:
+            frame[f"{c}_impression"] = imp[c]
+            frame[f"{c}_spend"] = imp[c] * 0.02
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True)
+
+
+def _ff_input_data(df, *, kpi: str, media_channels, **extra):
+    from meridian.data import load
+
+    media = [f"{c}_impression" for c in media_channels]
+    spend = [f"{c}_spend" for c in media_channels]
+    return load.DataFrameDataLoader(
+        df,
+        kpi_type="non_revenue",
+        coord_to_columns=load.CoordToColumns(
+            time="time",
+            geo="geo",
+            population="population",
+            kpi=kpi,
+            media=media,
+            media_spend=spend,
+            **extra,
+        ),
+        media_to_channel={f"{c}_impression": c for c in media_channels},
+        media_spend_to_channel={f"{c}_spend": c for c in media_channels},
+    ).load()
+
+
+def _ff_model_spec(*, saturation_spec=None):
+    from meridian.model import spec as spec_mod
+
+    kwargs = {"knots": FF_KNOTS}
+    if saturation_spec is not None:
+        kwargs["saturation_spec"] = saturation_spec
+    return spec_mod.ModelSpec(**kwargs)
+
+
+def _fit_with_spec(input_data, model_spec):
+    from meridian.model import model
+
+    mmm = model.Meridian(input_data=input_data, model_spec=model_spec)
+    mmm.sample_prior(n_draws=PRIOR_DRAWS, seed=0)
+    mmm.sample_posterior(seed=1, **POSTERIOR_KW)
+    return mmm
+
+
+def _save(mmm, path: Path) -> None:
+    from meridian.schema.serde import meridian_serde
+
+    meridian_serde.save_meridian(mmm, str(path))
+
+
+def build_full_funnel_variant(
+    spec: FullFunnelVariantSpec, out_root: Path = DEFAULT_OUT_ROOT, force: bool = False
+) -> Path:
+    """Fit and save mediators FIRST and model.binpb LAST.
+
+    "Already built" means model.binpb AND every mediator file exist, so an interrupted
+    build (model.binpb absent, or a mediator missing) is rebuilt rather than skipped.
+    Identical PRIOR_DRAWS/POSTERIOR_KW across all stages: AnalyzerFullFunnel pairs
+    posterior draws by index.
+    """
+    target_dir = out_root / spec.key
+    stage2_path = target_dir / "model.binpb"
+    mediator_paths = {
+        name: target_dir / "mediators" / f"{name}.binpb" for name, _ in spec.mediators
+    }
+    if (
+        not force
+        and stage2_path.exists()
+        and all(p.exists() for p in mediator_paths.values())
+    ):
+        print(f"  skip {spec.key} (exists)")
+        return stage2_path
+    (target_dir / "mediators").mkdir(parents=True, exist_ok=True)
+    stage2_path.unlink(missing_ok=True)  # never leave a stale "complete" marker
+    df = _full_funnel_frame(spec)
+    for name, channels in spec.mediators:
+        stage1 = _fit_with_spec(
+            _ff_input_data(df, kpi=name, media_channels=channels), _ff_model_spec()
+        )
+        _save(stage1, mediator_paths[name])
+    stage2 = _fit_with_spec(
+        _ff_input_data(
+            df,
+            kpi="kpi",
+            media_channels=FF_PAID,
+            revenue_per_kpi="revenue_per_kpi",
+            controls=["control"],
+            organic_media=list(spec.mediator_names()),
+        ),
+        _ff_model_spec(saturation_spec={n: "none" for n in spec.mediator_names()}),
+    )
+    _save(stage2, stage2_path)
+    print(f"  built {spec.key} -> {stage2_path} (+{len(mediator_paths)} mediators)")
+    return stage2_path
 
 
 def _build_input_data(spec: VariantSpec):
@@ -111,7 +283,12 @@ def build_variant(
 
 def build_all(out_root: Path = DEFAULT_OUT_ROOT, force: bool = False) -> list[Path]:
     print(f"Generating validation fixtures in {out_root} (force={force})")
-    return [build_variant(variant, out_root, force) for variant in VARIANTS]
+    paths = [build_variant(variant, out_root, force) for variant in VARIANTS]
+    paths += [
+        build_full_funnel_variant(spec, out_root, force)
+        for spec in FULL_FUNNEL_VARIANTS
+    ]
+    return paths
 
 
 def main() -> None:

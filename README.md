@@ -1,4 +1,4 @@
-# Google Meridian MCP Server [v0.3.2]
+# Google Meridian MCP Server [v0.4.0]
 
 FastMCP server exposing a focused set of Google Meridian model-analysis and budget-optimization tools for agents.
 
@@ -21,6 +21,7 @@ It is designed for both local development and containerized deployment on Google
 - `get_reach_frequency` — optimal-frequency ROI curves (RF models only).
 - `get_channel_data` — per-channel long table across all channel types.
 - `get_spend_scenario` — what-if spend change: ROI/mROI or CPIK/mCPIK at new spend level.
+- `get_funnel_breakdown` — full-funnel models only: direct vs. indirect (brand-building) effect per channel, each brand mediator's brand-equity rest, and mediator lift in native units.
 
 **Optimization**
 
@@ -32,13 +33,17 @@ It is designed for both local development and containerized deployment on Google
 - `delete_optimization` — remove a completed or failed run from the registry.
 - `cancel_optimization` — best-effort cancel of a queued or running run.
 
+On a full-funnel model every tool reports full-funnel effects; paid rows carry `incremental_outcome_direct` / `incremental_outcome_indirect`, and the optimizers maximize the total effect.
+
 ## Bundled skill
 
 The server bundles a `meridian-analyst` Agent Skill. When a connecting client supports the MCP skills provider, it's discoverable over the resource URI `skill://meridian-analyst/SKILL.md`.
 
 For clients that don't yet surface MCP skill resources, use the folder-drop fallback: copy the `skills/meridian-analyst/` directory verbatim into the client's skills folder (e.g. `.claude/skills/`). It's a standards-compliant Agent Skill (agentskills.io format) and needs no conversion.
 
-The skill teaches orchestration, model taxonomy, budget optimization and reallocation (both **historical** `run_optimization` and **future** `run_future_optimization`), and channel-performance workflows.
+The skill teaches orchestration, model taxonomy, budget optimization and reallocation (both **historical** `run_optimization` and **future** `run_future_optimization`), channel-performance workflows, and full-funnel (brand-building) interpretation.
+
+Full-funnel interpretation lives in `references/full-funnel.md`: how to detect a full-funnel model, how to read direct vs. indirect effects and the brand-equity (rest) row without double counting, when to use `get_funnel_breakdown`, and the caveats for optimization. The server's own instructions point agents at it whenever a model reports `funnel='full_funnel'`.
 
 It includes a **consultative guidance layer** (`references/consultation.md`) for the common case where a non-expert user (marketer, CMO) asks a vague, high-level question ("optimize my Q4 budget", "where should I put more money?"). Instead of running on silent defaults, the skill has the agent: (1) elicit only the genuinely-unknowable gaps first — goal, budget change, hard constraints, the future period — in plain business language (no `cpmu`/`flighting`/`pct_of_spend` jargon); (2) propose a concrete plan with every remaining assumption named; (3) confirm before running when the request is ambiguous or high-stakes. It also carries a plain-language → tool-field translation table (e.g. "TV CPMs up ~15%" → `cost_multipliers {TV: 1.15}`; "plan like last December" → future tool, `same_period_last_year` reference).
 
@@ -192,6 +197,17 @@ Models must be Meridian's proto format (`.binpb`). Pickle (`.pkl`) checkpoints a
 supported -- see [reports/pkl-format-removed.md](reports/pkl-format-removed.md). Re-export
 a pickle model to `.binpb` and load that instead.
 
+**Full-funnel experiment** — put the KPI model and one model per brand mediator
+side by side; the whole folder is one `model_id`:
+
+```text
+models/<experiment>/model.binpb                        # KPI model
+models/<experiment>/mediators/<organic_channel>.binpb  # one per mediator
+```
+
+Each file stem must equal an `organic_media` channel of the KPI model exactly.
+See [Full-funnel models](#full-funnel-models) below.
+
 ### Run the server
 
 ```bash
@@ -256,7 +272,7 @@ Build dummy models for every variant and validate every tool live against an in-
 uv run python -m scripts.validation.live_validate
 ```
 
-This generates gitignored fixtures under `models/_validation/` on first run and exits non-zero on any mismatch.
+This generates gitignored fixtures under `models/_validation/` on first run and exits non-zero on any mismatch. The variant list includes `geo-full-funnel` (a KPI model plus two mediator models, `M1` driven by paid channel `A` and `M2` driven by `A` and `B`; `C` drives neither), which exercises the full-funnel tools and optimization end to end. A passing run ends with `178 passed, 0 failed` and `LIVE VALIDATION PASSED`.
 
 The `reports/` directory holds committed evidence from past verification work (drift reports, refit notes, format-support decisions, and a running list of what verification did *not* cover); see `reports/README.md` for an index.
 
@@ -310,7 +326,9 @@ Two optional envelope keys sit after the leading identity keys and before the co
 
 **Per-tool notes**
 
-`get_model_overview` returns the model's time range, geo scope, channel/input groups, flattened data schema, and the supported dataset/output-type values for the other analysis tools.
+`list_models` returns one entry per model, sorted by `model_id`, with `funnel` (`"single"` or `"full_funnel"`), `mediators` (the sorted mediator names, empty for a single model) and `model_version` (a short hash of the model file versions, which changes when any model file is replaced).
+
+`get_model_overview` returns the model's time range, geo scope, channel/input groups, flattened data schema, and the supported dataset/output-type values for the other analysis tools. It also reports `funnel` (`"single"` or `"full_funnel"`). On a full-funnel model it adds a `full_funnel` block listing each mediator with the paid channels that drive it (`driven_by`) and its brand-equity label (for example `BrandedSearch (brand equity, rest)`), and `available_tool_options` lists `get_funnel_breakdown` with its output types, the mediators and the paid channels. The mediator stays in `data_inputs.organic_media`, because that describes the input data.
 
 `get_training_data` accepts one or more dataset keys and returns a single merged result set for the requested selections. Pass a `dataset` or date filter for anything but small models: the unfiltered, all-datasets call returns 3.2 MB for `national-revenue` and 16.3 MB for `geo-revenue`, which the transport delivers correctly but which is far more than an agent can hold in context.
 
@@ -342,6 +360,83 @@ Two optional envelope keys sit after the leading identity keys and before the co
 `get_spend_scenario` simulates a what-if change to one channel's spend (a per-time-unit increment, with an optional explicit base spend) and returns the channel's efficiency at the base and new spend levels — ROI/mROI for revenue models, CPIK/mCPIK for KPI-only models.
 
 Note: `roi` and `marginal_roi` output types are only available for revenue models (those with a non-null `revenue_per_kpi`). On KPI-only models, requesting these metrics raises `metric_not_supported`. `cpik` and `marginal_cpik` are valid for all model types.
+
+**Full-funnel notes** (these apply only to full-funnel models; single-model payloads are unchanged)
+
+- **Direct and indirect columns.** In `paid_summary_metrics` and the `roi` output of `get_channel_summary`, and in both `get_contribution` outputs, paid rows keep their full-funnel total in the usual columns and add `incremental_outcome_direct` and `incremental_outcome_indirect` (direct plus indirect equals the total). `paid_summary_metrics` and `roi` also add `roi_direct` and `roi_indirect` (with `aggregate_times=false`, `paid_summary_metrics` carries the incremental columns per period and no ROI columns, as Meridian omits ROI there). The split is a posterior mean, so only the `mean` metric row carries it; median and interval rows are null. `cpik`, `marginal_roi` and `marginal_cpik` are full-funnel totals only, because ratios do not split.
+- **Brand-equity contribution row.** In `get_contribution`, each mediator's row is relabelled `<mediator> (brand equity, rest)` and holds only the part of the mediator that paid media did not build. Channel rows, the brand-equity rows, other non-paid rows and the baseline add up to the expected outcome, aggregated and per period. A negative rest is passed through unclamped. A `channels` filter accepts the plain mediator name (as the overview lists it) or the label. Never add a mediator's full effect on top of the paid channels: their totals already include the part they built.
+- **One baseline.** `baseline_summary_metrics` and the `get_model_fit` baseline subtract the brand-equity rest, so every tool shows the same baseline. Its median and interval cells (`baseline_ci_lo` / `baseline_ci_hi` in model fit) are null, since it is a derived mean.
+- **No intervals on derived values.** Direct, indirect and brand-equity rest values are posterior means only.
+- **Other tools.** `get_response_curves`, `get_spend_scenario`, `get_reach_frequency` and `get_model_fit` (expected outcome) report full-funnel totals. `get_adstock_decay` reports the carry-over parameters only (not the brand-building path), and `get_training_data` and `get_channel_data` are unchanged.
+
+`get_funnel_breakdown` (full-funnel models only; a single model returns `metric_not_supported`) has two output types:
+
+- `channel_breakdown` — long-form columns `channel, component, mediator, incremental_outcome, share_of_channel_total`. For each paid channel: a `direct` row, then an `indirect` row for every mediator (0.0 where the channel does not drive that mediator), in mediator order. Then one `brand_equity_rest` row per mediator, with `channel` set to the brand-equity label. `share_of_channel_total` is the component divided by the channel's full-funnel total, and is null on rest rows and when the total is zero. Posterior means only. Honors `start_date`, `end_date`, `geos`, `channels` and `use_kpi`.
+- `mediator_lift` — per mediator and per paid channel that drives it: `mediator, channel, incremental_units, incremental_units_ci_lo, incremental_units_ci_hi, spend, cost_per_incremental_unit`, in the mediator's own units (for example branded searches), with credible intervals. Honors `start_date`, `end_date`, `geos` and `channels`; `use_kpi` is ignored, since mediator units are always native.
+
+The `channels` filter accepts paid channel names and mediator names. A paid channel keeps its rows; a mediator name keeps that mediator's `indirect` and `brand_equity_rest` rows (or its `mediator_lift` rows); a mixed list is the union. Any other name raises `missing_model_data` naming the valid channels. `mediator_lift` filtered to a paid channel that drives no mediator returns no rows.
+
+**Optimization.** `run_optimization` and `run_future_optimization` maximize the total (direct plus indirect) effect on a full-funnel model. Each row of `channel_tables.initial` and `channel_tables.optimized` in the result also carries `incremental_outcome_direct` and `incremental_outcome_indirect` (these keys are absent on single models). For reach & frequency channels the split is scored at the frequency the optimizer used. Future results add `assumptions.full_funnel` with `mediators` (the mediator names) and `mediator_treatment: "predicted_from_planned_spend"`: the planned paid spend drives each mediator's prediction, and the mediator's own input series is not an optimization lever. Run records for full-funnel models carry a `full funnel` marker in their config summary, and the optimization size score scales with the number of stage models.
+
+### Full-funnel models
+
+A full-funnel model credits paid media with the brand-building it causes: a video campaign that lifts branded search, which later converts. Meridian 2.x expresses this with two stages: a KPI model in which each brand signal (a *mediator*) is a linear organic-media channel, and one model per mediator that regresses the mediator on paid media. This server loads the folder as one model and serves full-funnel results from every tool.
+
+**Layout and naming.** Local root or GCS prefix:
+
+```text
+<experiment>/model.binpb                          # KPI model
+<experiment>/mediators/<organic_channel>.binpb    # one per mediator
+```
+
+The whole folder is one `model_id` (`<experiment>`). Each file stem must equal an `organic_media` channel of the KPI model exactly, including case. `.binpb` is the only format. A file under `mediators/` with no sibling `model.binpb` is skipped with a warning and never becomes a model of its own.
+
+**Requirements.** The server checks these when the model loads:
+
+- Each mediator is an `organic_media` channel of the KPI model with `saturation_spec={name: "none"}`.
+- The mediator models and the KPI model have identical geos (and geo order) and identical time periods.
+- Identical posterior chain and draw counts, and identical prior draw counts where both have priors.
+- The paid channels of every mediator model are a subset of the KPI model's paid channels.
+- Saving both stages at the same precision is recommended (the server runs JAX at 64-bit regardless, so this is a hygiene recommendation, not a check).
+
+**Saving the stages:**
+
+```python
+from meridian.schema.serde import meridian_serde
+
+meridian_serde.save_meridian(kpi_model, "models/my-exp/model.binpb")
+meridian_serde.save_meridian(search_model, "models/my-exp/mediators/BrandedSearch.binpb")
+```
+
+**GCS.** The same layout under `GCS_MODELS_PREFIX` (for example `models/my-exp/model.binpb` and `models/my-exp/mediators/BrandedSearch.binpb`). All stage files are downloaded when the model is first used; a stage file that fails to download fails the whole model, and the server never loads a partial funnel.
+
+**Errors.** A model that breaks a requirement fails with the tool error `invalid_full_funnel_model` (on `run_optimization` / `run_future_optimization` it fails the submit call and no run record is created). The message names the fix:
+
+| Message (abridged) | Fix |
+|---|---|
+| `model.binpb has no organic media channels, so nothing in mediators/ can be a mediator` | Include each mediator as an `organic_media` channel in the KPI model and refit. |
+| `mediators/<stem>.binpb does not match any organic media channel of the KPI model (found: ...)` | Rename the file to the channel name exactly (case included). |
+| `The KPI model must model mediator "<m>" linearly: set saturation_spec={"<m>": "none"}` | Set that saturation in the KPI model's `ModelSpec` and refit. |
+| `<file> and the KPI model use different geos (or a different geo order)` | Fit both models on the same geos in the same order. |
+| `<file> and the KPI model use different time periods` | Fit both models on the same time periods. |
+| `<file> has CxD posterior draws, the KPI model C'xD'` | Fit both with the same `n_chains` and `n_keep`. |
+| `<file> has N prior draws, the KPI model N'` | Call `sample_prior` with the same number of draws for both. |
+| `<file> uses paid channels missing from the KPI model: X` | Add the channel to the KPI model, or drop it from the mediator model, and refit. |
+
+A misnamed mediator file never falls back to another error: it is always `invalid_full_funnel_model`. If a mediator model's KPI differs from the KPI model's organic column for that mediator, the server only logs a warning.
+
+**Model versioning.** Every model has a `model_version` derived from the storage version of each of its files. Replacing any model file (the KPI model or a mediator) changes it, which invalidates cached analysis results and optimization reuse for that model; this applies to single models too. The server notices a replaced file only when its model catalog refreshes, up to 2 hours (the discovery TTL) later; workers always load the current bytes.
+
+**Known limitations.**
+
+- **Reach & frequency crash.** If the KPI model has reach & frequency channels while any mediator model has none, Google's vendored analyzer crashes. This is left unpatched (an upstream fix is expected); it surfaces as `missing_model_data` on analysis tools and as a failed run in optimization. Other reach & frequency full-funnel models are not refused.
+- **Partial future windows.** Future optimization over part of a future window is unsupported by Google's class, so the whole window is always used.
+- **The mediator's input series is inert** for `get_spend_scenario` and response curves, as for any organic channel: stage 1 predicts it, it is not a lever.
+- **No credible intervals** on the direct / indirect / brand-equity split.
+- **National full-funnel models** use the same code path, but no fixture covers them.
+- **Meridian pin.** `google-meridian` is pinned `>=2.1,<2.2`, because the vendored analyzer uses Meridian internals; widen only after re-vendoring and re-running the guard tests.
+- **Cost.** Full-funnel calls cost several times more than single-model calls, and every analysis call reloads all stage files in a fresh worker.
+- **Cached calls depend on discovery.** Result-cache hits look up the model's `model_version` through discovery on every call. Once the discovery TTL has expired, a storage or backend outage therefore fails even cached calls with `backend_unavailable`, and an unknown model id triggers one rediscovery per call.
 
 ### Terraform variables
 

@@ -69,3 +69,9 @@ def test_incompatible_explicit_tier_raises_with_an_actionable_message(mode, requ
         resolve_tier(1, mode=mode, requested=requested)
     assert requested in str(exc.value)
     assert f"OPTIMIZATION_TIER={mode}" in str(exc.value)
+
+
+def test_size_score_multiplies_n_models_only_when_present():
+    base = {"n_geos": 2, "n_time_units": 3, "n_channels": 4, "n_posterior_samples": 5}
+    assert size_score(base) == 120
+    assert size_score({**base, "n_models": 3}) == 360

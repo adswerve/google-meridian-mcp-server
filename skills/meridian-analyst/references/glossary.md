@@ -5,16 +5,20 @@ metrics are valid on which model, see `taxonomy.md`.
 
 **ROAS / ROI (`roi`)** — Return on ad spend: incremental revenue driven per unit
 of spend (3.0 = $3 of revenue per $1 spent). Higher is better. Defined only for
-revenue-capable models. This server uses ROAS and ROI interchangeably.
+revenue-capable models. This server uses ROAS and ROI interchangeably. On a
+full-funnel model this is the total (direct + indirect).
 
 **Marginal ROI / mROAS (`marginal_roi`)** — The ROI of the *next* dollar on a
 channel, not its average ROI so far. Because of diminishing returns, mROI is
-usually below average ROI; it is what tells you where added budget works hardest.
+usually below average ROI; it is what tells you where added budget works
+hardest. On a full-funnel model it is a total and does not split into direct and
+indirect.
 
 **CPIK** — Cost Per Incremental KPI: spend divided by the extra KPI units it
 caused (e.g. cost per incremental conversion). It is the inverse of ROI, so here
 **lower is better**. CPIK is the efficiency metric for KPI-only models and is
-valid on every model (`cpik`/`marginal_cpik`).
+valid on every model (`cpik`/`marginal_cpik`). On a full-funnel model it is a
+total and does not split into direct and indirect.
 
 **Contribution vs. response curve** — Contribution is the outcome a channel
 actually drove at its historical spend (a single point or share). A response
@@ -23,7 +27,9 @@ outcome would move if you spent more or less, which contribution alone cannot.
 
 **Adstock / carryover** — Advertising's effect persists after the exposure:
 today's spend keeps driving outcome in later periods, decaying over time.
-`get_adstock_decay` shows how fast a channel's effect fades.
+`get_adstock_decay` shows how fast a channel's effect fades. On a full-funnel
+model it describes each channel's own effect, not the slower brand-building
+path.
 
 **Saturation / diminishing returns** — Each extra dollar on a channel returns
 less than the last as the channel saturates, so response curves bend and flatten.
@@ -38,7 +44,27 @@ levels to find an efficient frequency.
 **Base vs. incremental** — Base (baseline) outcome is what would have happened
 with no paid media — organic demand, seasonality, price. Incremental outcome is
 the lift the media actually caused. MMM credits channels only for the incremental
-part; the base is not attributable to any channel.
+part; the base is not attributable to any channel. On a full-funnel model, the
+brand-equity rest (brand demand that exists anyway) is taken out of the base and
+shown as its own row (see `full-funnel.md`). If a contribution view leaves out
+non-paid rows, its base absorbs them and is larger.
+
+**Full-funnel model** — A KPI model plus one or more brand-signal models
+(e.g. branded search explained by video). Paid channels are credited with both
+their direct effect and what they drive through the brand signal
+(`full-funnel.md`).
+
+**Direct vs. indirect effect** — Direct is a channel's own pull on the outcome;
+indirect is the outcome it causes by building a brand signal. Total = direct +
+indirect; `roi` on a full-funnel model is the total.
+
+**Brand equity (rest)** — The part of a brand signal paid media did not build:
+demand that exists anyway. If it comes out negative, it is a modelling residual
+that keeps the numbers reconciled (paid channels credited with more brand
+building than the signal's total), not negative demand. Shown as "`<name>`
+(brand equity, rest)", and part of the contribution total; never add the brand
+signal's full effect (its raw series, or the brand signal's own units) on top of
+the paid channels.
 
 **Credible interval (`ci_lo`/`ci_hi`)** — Meridian is Bayesian, so every estimate
 is a distribution, not a single number. The credible interval is the plausible

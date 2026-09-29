@@ -253,6 +253,12 @@ async def test_register_tools_exposes_successful_handlers(
                 "output_type": output_type,
             }
         ),
+        get_funnel_breakdown=_async(
+            lambda model_id, output_type, filters: {
+                "model_id": model_id,
+                "output_type": output_type,
+            }
+        ),
     )
     monkeypatch.setattr(tools_module, "_catalog_service", lambda ctx: catalog_service)
     monkeypatch.setattr(tools_module, "_analysis_service", lambda ctx: analysis_service)
@@ -289,6 +295,9 @@ async def test_register_tools_exposes_successful_handlers(
     assert (
         await mcp.tools["get_response_curves"]("m1", "response_curve_summary", ctx)
     ).structured_content["output_type"] == "response_curve_summary"
+    assert (
+        await mcp.tools["get_funnel_breakdown"]("m1", "mediator_lift", ctx)
+    ).structured_content["output_type"] == "mediator_lift"
 
 
 @pytest.mark.asyncio

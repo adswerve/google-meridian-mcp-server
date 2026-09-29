@@ -29,11 +29,12 @@ never couple runtime code to them.
 
 ## Environment
 
-Python `>=3.13,<3.14`; `google-meridian[schema,geox]>=2.1,<3`; `fastmcp>=4,<5`; ruff
+Python `>=3.13,<3.14`; `google-meridian[schema,geox]>=2.1,<2.2`; `fastmcp>=4,<5`; ruff
 `target-version = "py313"`. `uv.lock` is **tracked**, but no Dockerfile consumes it — all
 three (`Dockerfile`, `deploy/Dockerfile.worker`, `deploy/Dockerfile.worker.gpu`) run
 `pip install "."`, so images re-resolve dependencies at build time. The lock pins developer
-and CI environments only.
+and CI environments only. The `<2.2` cap exists because the vendored full-funnel analyzer uses Meridian private
+internals; widen it only after re-vendoring and re-running the full-funnel gates.
 
 ### Engine: JAX with 64-bit precision, everywhere
 
@@ -57,6 +58,52 @@ an actionable `UnsupportedModelFormatError`. Meridian 2.0 on JAX cannot run infe
 pickle saved under TensorFlow — that is the reason, not tidiness. See
 `reports/pkl-format-removed.md`.
 
+## Full funnel
+
+A folder `<exp>/model.binpb` plus `<exp>/mediators/<organic_channel>.binpb` is ONE model,
+`model_id = <exp>`. Every tool serves full-funnel results for it; only `get_funnel_breakdown`
+exposes the mediator (stage-1) models. User-facing docs: README "Full-funnel models".
+
+- **Modules:** `meridian/full_funnel/{analyzer,validation,loading,decomposition,visualizers}.py`.
+  `validation` raises `InvalidFullFunnelModelError` (`invalid_full_funnel_model`) before Google's
+  constructor runs; `loading.load_full_funnel` loads every file; `decomposition` is pure
+  numpy/xarray; `visualizers` holds `FullFunnelModelFit`.
+- **Convention:** each file stem under `mediators/` must equal a KPI-model `organic_media`
+  channel exactly. The grouping helper `group_model_files` in `persistence/base.py` (pure, no
+  Meridian import) folds `mediators/` files into their sibling `model.binpb`; an orphan
+  `mediators/` file is skipped with a warning. It also computes `model_version` (a hash of every
+  file's etag, `model` first then mediators by name), which goes into result-cache keys and
+  optimization fingerprints for all models.
+- **Decomposition identity:** `indirect(c) = FF(c) − D(c)` per paid channel (`FF` full analyzer,
+  `D` direct analyzer); per mediator `I_{c,m} = FF_m(c) − D(c)`, `built_m = Σ_c I_{c,m}` and
+  `rest_m = O_m − built_m` (`O_m` = the direct analyzer's non-paid row for `m`). Saturation
+  `"none"` on the mediators makes them additive. Relabelling **assigns** values (never scales):
+  each mediator row becomes `rest_m`, and `All Channels` becomes `All − Σ built_m`, with
+  `total = All / pct_All` unchanged, so rows + baseline = expected outcome. A negative rest is
+  never clamped. Derived values (direct, indirect, rest, adjusted baseline) are posterior means;
+  their median, CI and prior cells are null.
+- **One baseline:** the full-funnel zero-media baseline still contains `Σ rest_m`. The facade
+  subtracts it from `baseline_summary_metrics` and from the model-fit baseline, so every tool
+  shows the same baseline.
+- **`analyzer.py` is vendored verbatim** from Google's demo notebook. Re-vendor with
+  `scripts/vendor_full_funnel_analyzer.py`, never edit it (a unit test pins its hash, and ruff
+  excludes it). Meridian upgrades need re-vendoring, hence the `<2.2` pin.
+- **Optimization** maximizes the total effect; the direct/indirect split is scored post hoc with
+  the direct analyzer (`optimizer_facade`), guarded by tests on two private Meridian functions.
+  Future runs must use the whole future window (Google's class does not support part of one).
+- **Limitations:**
+  - *Reach & frequency:* a KPI model with RF channels while any mediator model has none crashes
+    inside the vendored `_map_new_data_to_mediator` (left unpatched; an upstream fix is expected).
+    It surfaces as `missing_model_data` on analysis tools and a failed optimization run. Other RF
+    full-funnel models are fine.
+  - *Cache hits depend on discovery:* the result cache is keyed with `model_version`, so every
+    analysis call (cache hit or not) looks the model up through discovery. Once the 2 h TTL has
+    expired, a storage outage fails even cached calls with `backend_unavailable`, and an unknown
+    model id triggers one rediscovery per call. The same TTL bounds how quickly a replaced model
+    file is noticed.
+  - No intervals on the split; national full-funnel models have no fixture; calls cost several
+    times a single-model call.
+
 ## Commands
 
 ```
@@ -71,7 +118,7 @@ OPTIMIZATION_TIER=local uv run python scripts/qa/future_optimization_qa.py
 
 `scripts/validation/live_validate.py` is the integration acceptance gate: it drives an
 in-process FastMCP `Client(mcp)` over every tool across the fixture matrix plus adversarial
-error paths, and exits non-zero on any mismatch. 146 assertions. It prints a variant×tool
+error paths, and exits non-zero on any mismatch. 178 assertions. It prints a variant×tool
 PASS / EXPECTED-ERR / FAIL matrix and ends with `LIVE VALIDATION PASSED` or `N failed`.
 
 - **Do not run two instances concurrently.** It `rmtree`s fixed shared paths at startup
@@ -79,9 +126,12 @@ PASS / EXPECTED-ERR / FAIL matrix and ends with `LIVE VALIDATION PASSED` or `N f
   destroys the first's run records and produces failures that look like real regressions.
 - **Fixtures** live under gitignored `models/_validation/` and are never committed. The first
   run BUILDS them via real tiny MCMC fits — a few minutes, not a hang.
-- **Generator** `scripts/generate_validation_models.py` builds **7** variants: the 2×3
-  `national|geo` × `revenue | kpi+revenue_per_kpi | kpi-only` matrix (all with reach and
-  frequency), plus `geo-revenue-media-only` for the no-RF error path. Model id == fixture
+- **Generator** `scripts/generate_validation_models.py` builds **7 drift variants**
+  (`VARIANTS`): the 2×3 `national|geo` × `revenue | kpi+revenue_per_kpi | kpi-only` matrix
+  (all with reach and frequency), plus `geo-revenue-media-only` for the no-RF error path. It
+  also builds the `geo-full-funnel` fixture from `FULL_FUNNEL_VARIANTS` (a KPI model plus
+  mediators `M1`, driven by paid `A`, and `M2`, driven by `A` and `B`; paid `C` drives none),
+  kept out of `VARIANTS` so the drift harness still diffs the same seven. Model id == fixture
   directory name.
 - **Expectations** live declaratively in `matrix.py`: `roi`/`marginal_roi` only for revenue
   and kpi+rpk variants (else `metric_not_supported`), `get_reach_frequency` only for RF
@@ -93,9 +143,10 @@ PASS / EXPECTED-ERR / FAIL matrix and ends with `LIVE VALIDATION PASSED` or `N f
   project; an opt-in **Cloud Run smoke** (`cloud_smoke`, `CLOUD_SMOKE=1`) covers a live one.
   The cloud gate prints its own summary line, `cloud gate: 3/3 checks passed` — the 2
   `run_optimization[cloud_cpu]` checks (`national-revenue`, `geo-revenue`) plus the
-  restart-recovery check added when durability landed. This count is separate from the 146
+  restart-recovery check added when durability landed. This count is separate from the 178
   assertions above: that figure is only `Report.ok()` calls from `run_matrix(client)`, which
-  never counted the cloud gate's checks, before or after.
+  never counted the cloud gate's checks, before or after. The 178 include 29 checks on
+  `geo-full-funnel` plus 3 global checks (`get_funnel_breakdown` on a single model → `metric_not_supported`, and `model_not_found` for an unknown model on `get_channel_data` and `get_training_data`).
 - **Against a DEPLOYED server**, `scripts/validation/remote_smoke.py --url ...` is the only
   driver that speaks HTTP to the Cloud Run service. `cloud_smoke` builds the service
   in-process and launches real Cloud Run Jobs, so it proves the worker containers and the
@@ -285,7 +336,7 @@ anything a collaborator needs. `references/` is **gitignored**, so the files bel
 local-only and absent from a fresh clone. Expected; not a broken repo.
 
 - `references/module-map.md` — the full per-module map, plus the future-optimization gotchas.
-- `references/tool-contracts.md` — the 18-tool surface, per-tool response contracts, the full
+- `references/tool-contracts.md` — the 19-tool surface, per-tool response contracts, the full
   env-var reference, the test-coverage map, and the accepted follow-ups.
 - `references/research-deferred-work.md` — GeoX / `ModelReviewer` findings,
   `WeeklyOptimizationGrid` measurements, and what is out of scope.

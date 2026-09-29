@@ -8,8 +8,9 @@ import types
 import httpx2
 import pytest
 
+from google_meridian_mcp_server.persistence.local_provider import LocalModelProvider
 from scripts.validation import capture_baseline as cb
-from scripts.validation.matrix import ToolCase
+from scripts.validation.matrix import ToolCase, fixture_specs
 
 CASE = ToolCase("get_channel_summary", "roi", {}, frozenset(), "service")
 
@@ -172,9 +173,34 @@ def test_read_snapshot_returns_the_envelope_for_a_valid_file(tmp_path):
     assert cb.read_snapshot(path) == {"capture_env": {"e": "x"}, "payload": {"a": 1}}
 
 
+def _restore_env_after_test(monkeypatch):
+    """prepare_env writes os.environ directly; register every key it touches
+    with monkeypatch so the original values come back after the test."""
+    for var in _PREPARE_ENV_VARS:
+        monkeypatch.setenv(var, "")
+
+
+_PREPARE_ENV_VARS = (
+    "PERSISTENCE_BACKEND",
+    "LOCAL_MODELS_ROOT",
+    "OPTIMIZATION_TIER",
+    "RESULT_CACHE_ENABLED",
+    "OPTIMIZATION_RUNS_ROOT",
+)
+
+
+def _seed_models_root(src, keys):
+    for key in keys:
+        (src / key).mkdir(parents=True)
+        (src / key / "model.binpb").write_bytes(b"x")
+
+
 def test_prepare_env_isolates_the_registry(tmp_path, monkeypatch):
+    _restore_env_after_test(monkeypatch)
     monkeypatch.setenv("RESULT_CACHE_ENABLED", "true")
     monkeypatch.setenv("OPTIMIZATION_RUNS_ROOT", "/somewhere/shared")
+    monkeypatch.setattr(cb, "DEFAULT_OUT_ROOT", tmp_path / "src")
+    _seed_models_root(tmp_path / "src", [v.key for v in fixture_specs()])
     cb.prepare_env(str(tmp_path / "runs"))
     assert os.environ["OPTIMIZATION_RUNS_ROOT"] == str(tmp_path / "runs")
     assert os.environ["RESULT_CACHE_ENABLED"] == "false"
@@ -1632,3 +1658,34 @@ class TestRefreshingBearerAuth:
         transport = client.transport
         assert isinstance(transport.auth, cb.RefreshingBearerAuth)
         assert "Authorization" not in (transport.headers or {})
+
+
+def test_drift_models_root_exposes_exactly_the_drift_variants(tmp_path):
+    src = tmp_path / "src"
+    _seed_models_root(src, ["a", "b", "geo-full-funnel"])
+    (src / "geo-full-funnel" / "mediators").mkdir()
+    (src / "geo-full-funnel" / "mediators" / "M1.binpb").write_bytes(b"y")
+
+    root = cb.build_drift_models_root(src, ["a", "b"], tmp_path / "drift")
+
+    assert (root / "a").is_dir() and not (root / "a").is_symlink()
+    assert (root / "a" / "model.binpb").is_symlink()
+    ids = [e.model_id for e in LocalModelProvider(str(root)).discover()]
+    assert ids == ["a", "b"]  # directory symlinks would have yielded []
+
+
+def test_prepare_env_points_discovery_at_exactly_the_drift_variants(
+    tmp_path, monkeypatch
+):
+    src = tmp_path / "src"
+    _seed_models_root(src, [v.key for v in fixture_specs()] + ["geo-full-funnel"])
+    monkeypatch.setattr(cb, "DEFAULT_OUT_ROOT", src)
+    _restore_env_after_test(monkeypatch)
+
+    cb.prepare_env(str(tmp_path / "runs"))
+
+    ids = [
+        e.model_id
+        for e in LocalModelProvider(os.environ["LOCAL_MODELS_ROOT"]).discover()
+    ]
+    assert ids == sorted(v.key for v in fixture_specs())

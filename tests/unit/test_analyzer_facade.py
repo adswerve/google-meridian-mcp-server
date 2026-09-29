@@ -11,9 +11,13 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from meridian.analysis import visualizer as visualizer_mod
 
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.analyzer_facade import AnalyzerFacade
+from google_meridian_mcp_server.meridian.full_funnel import (
+    visualizers as ff_visualizers,
+)
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
 
@@ -798,3 +802,98 @@ def test_model_fit_is_cached_by_use_kpi_and_confidence_level():
 
     assert first is second
     assert model_fit_ctor.call_count == 1
+
+
+def test_full_funnel_model_fit_is_built_with_the_facades_full_funnel_analyzer(
+    monkeypatch,
+):
+    built = []
+
+    class _RecordingFullFunnelModelFit:
+        def __init__(self, meridian, analyzer, use_kpi, confidence_level):
+            built.append((meridian, analyzer, use_kpi, confidence_level))
+
+    monkeypatch.setattr(
+        ff_visualizers, "FullFunnelModelFit", _RecordingFullFunnelModelFit
+    )
+    monkeypatch.setattr(
+        visualizer_mod,
+        "ModelFit",
+        lambda *a, **k: pytest.fail("plain ModelFit used on a full-funnel model"),
+    )
+    mmm = SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None))
+    facade = AnalyzerFacade(mmm, {"M1": object()})
+    ff_analyzer = object()
+    facade._analyzer = (
+        ff_analyzer  # what _get_analyzer() returns for a full-funnel model
+    )
+
+    fit = facade._get_model_fit(AnalysisFilters(), confidence_level=0.8)
+
+    assert built == [(mmm, ff_analyzer, True, 0.8)]
+    assert isinstance(fit, _RecordingFullFunnelModelFit)
+
+
+def test_single_model_fit_still_uses_meridians_own_model_fit(monkeypatch):
+    constructed = []
+
+    class _OwnModelFit:
+        def __init__(self, *args, **kwargs):
+            constructed.append((args, kwargs))
+
+    monkeypatch.setattr(visualizer_mod, "ModelFit", _OwnModelFit)
+    monkeypatch.setattr(
+        ff_visualizers,
+        "FullFunnelModelFit",
+        lambda *a, **k: pytest.fail("FullFunnelModelFit used on a single model"),
+    )
+    mmm = SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None))
+
+    fit = AnalyzerFacade(mmm)._get_model_fit(AnalysisFilters())
+
+    assert isinstance(fit, _OwnModelFit)
+    assert constructed == [((mmm,), {"use_kpi": True, "confidence_level": 0.9})]
+
+
+def _stub_media_summary(monkeypatch):
+    """Replace Meridian's MediaSummary with a recorder that owns a plain analyzer."""
+    constructed = []
+
+    class _FakeMediaSummary:
+        def __init__(self, *args, **kwargs):
+            self._analyzer = "own-plain-analyzer"
+            constructed.append(kwargs)
+
+    monkeypatch.setattr(visualizer_mod, "MediaSummary", _FakeMediaSummary)
+    return constructed
+
+
+def test_single_model_media_summary_is_not_injected(monkeypatch):
+    constructed = _stub_media_summary(monkeypatch)
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None))
+    )
+
+    ms = facade._get_media_summary(AnalysisFilters())
+
+    assert ms._analyzer == "own-plain-analyzer"
+    assert ms._ff_facade is None
+    assert "facade" not in constructed[0]
+    assert "split_filters" not in constructed[0]
+
+
+def test_full_funnel_media_summary_uses_the_facades_full_funnel_analyzer(monkeypatch):
+    _stub_media_summary(monkeypatch)
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None)),
+        {"M1": SimpleNamespace()},
+    )
+    facade._analyzer = "full-funnel-analyzer"
+    filters = AnalysisFilters(use_kpi=True)
+
+    ms = facade._get_media_summary(filters)
+
+    assert ms._analyzer == "full-funnel-analyzer"
+    assert ms._analyzer != "own-plain-analyzer"
+    assert ms._ff_facade is facade
+    assert ms._split_filters is filters

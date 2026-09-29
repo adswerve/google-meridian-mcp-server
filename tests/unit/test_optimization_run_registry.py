@@ -254,3 +254,23 @@ def test_get_dispatch_is_none_when_never_claimed(tmp_path):
     reg = LocalOptimizationRunRegistry(str(tmp_path))
     reg.create(_run())
     assert reg.get_dispatch("m-1-abc") is None
+
+
+def test_config_summary_marks_full_funnel_runs_only():
+    single = _make_run()
+    ff = single.model_copy(update={"funnel": "full_funnel"})
+    assert "full funnel" not in build_config_summary(single)
+    assert build_config_summary(ff) == build_config_summary(single) + " . full funnel"
+
+
+def test_config_summary_marks_full_funnel_future_runs():
+    single = _make_run(
+        {
+            "kind": "future",
+            "scenario": {"type": "fixed_budget"},
+            "future": {"start_date": "2026-10-01", "horizon": 4},
+        }
+    )
+    ff = single.model_copy(update={"funnel": "full_funnel"})
+    assert "full funnel" not in build_config_summary(single)
+    assert build_config_summary(ff) == build_config_summary(single) + " . full funnel"

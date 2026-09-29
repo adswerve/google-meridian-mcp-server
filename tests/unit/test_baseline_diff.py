@@ -5,6 +5,7 @@ import math
 
 import pytest
 
+from scripts.validation import acknowledged
 from scripts.validation import diff_baseline as db
 
 
@@ -802,3 +803,31 @@ def test_report_shows_per_case_provenance_when_it_actually_varies():
         "a", "b", findings_by_case, manifest, manifest, missing, case_envs
     )
     assert report.count("src_hash") >= 2
+
+
+def test_list_index_wildcard_matches_digits_only():
+    assert acknowledged.match("/0/funnel", "added") is not None
+    assert acknowledged.match("/12/model_version", "added") is not None
+    assert acknowledged.match("/3/mediators", "added") is not None
+    assert acknowledged.match("/x/funnel", "added") is None
+    assert acknowledged.match("/0/1/funnel", "added") is None
+    assert acknowledged.match("/funnel", "added") is not None  # overview root
+    assert acknowledged.match("/details/backend", "removed") is None  # unchanged guard
+
+
+@pytest.mark.parametrize(
+    "envelope_key", ["submit", "status", "reused", "status_after_delete"]
+)
+def test_overview_funnel_added_is_not_acknowledged_under_an_envelope_key(envelope_key):
+    findings = db.compare(
+        {envelope_key: {"run_id": "x"}},
+        {envelope_key: {"run_id": "x", "funnel": "single"}},
+    )
+    assert [f.verdict for f in findings] != ["ACKNOWLEDGED"], findings
+    assert acknowledged.match(f"/{envelope_key}/funnel", "added") is None
+
+
+def test_overview_funnel_added_at_the_case_root_is_still_acknowledged():
+    findings = db.compare({"run_id": "x"}, {"run_id": "x", "funnel": "single"})
+    assert [f.verdict for f in findings] == ["ACKNOWLEDGED"], findings
+    assert findings[0].pointer == "/funnel"

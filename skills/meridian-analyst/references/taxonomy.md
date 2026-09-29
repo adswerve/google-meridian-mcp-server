@@ -1,6 +1,8 @@
 # Model taxonomy
 
-Two independent axes describe every Meridian model on this server. Read both off
+Three independent facts describe every Meridian model on this server: two axes
+(geographic scope and revenue capability) and whether it is **full-funnel** (see
+`full-funnel.md`). Read them off
 `get_model_overview` before choosing tools or metrics.
 
 ## Axis 1 — geographic scope
@@ -30,6 +32,7 @@ KPI-only models can only express cost per incremental KPI.
 | `roi`, `marginal_roi` | valid | valid | `metric_not_supported` |
 | `cpik`, `marginal_cpik` | valid | valid | valid |
 | `get_reach_frequency` | RF channels only | RF channels only | RF channels only |
+| `get_funnel_breakdown` | full-funnel models only | full-funnel models only | full-funnel models only |
 | every other analysis tool | valid | valid | valid |
 
 - `roi`/`marginal_roi` require revenue; on a KPI-only model they raise
@@ -47,6 +50,7 @@ it already reflects both axes:
 
 - It **omits** `roi`/`marginal_roi` for no-revenue models.
 - It **lists** `get_reach_frequency` only when the model has RF channels.
+- It **lists** `get_funnel_breakdown` only on full-funnel models.
 - It enumerates the legal channels and geos to use when optimizing.
 
 Rule: if a tool or metric is not in `available_tool_options`, do not call it. The
@@ -57,7 +61,8 @@ overview is authoritative over any assumption from this document.
 `run_optimization` picks its objective from the same revenue capability: revenue
 models optimize ROAS, KPI-only models optimize CPIK. A ROAS-style target given
 against a KPI-only model is interpreted as a CPIK target automatically. Normally
-let the model's native objective apply; override only with a clear reason. Full
+let the model's native objective apply; override only with a clear reason. On a
+full-funnel model the objective is the total (direct + indirect) effect. Full
 workflow: `budget-optimization.md`.
 
 ## Future optimization: two independent axes of input

@@ -12,6 +12,7 @@ from google_meridian_mcp_server.domain.errors import (
     ModelNotFoundError,
 )
 from google_meridian_mcp_server.domain.models import (
+    MediatorFile,
     ModelCatalogEntry,
     ModelStatus,
     PersistenceBackend,
@@ -21,6 +22,9 @@ from google_meridian_mcp_server.persistence.base import ModelProvider
 from google_meridian_mcp_server.persistence.cache import (
     DiscoveryCache,
     MaterializationCache,
+)
+from google_meridian_mcp_server.services.model_catalog_service import (
+    ModelCatalogService,
 )
 
 
@@ -144,3 +148,30 @@ class TestModelCatalogResolve:
 
         with pytest.raises(BackendUnavailableError):
             catalog.list_entries()
+
+
+def test_list_models_exposes_funnel_mediator_names_and_version():
+    ff = ModelCatalogEntry(
+        model_id="exp",
+        display_name="Exp",
+        source_backend="local",
+        source_path="/r/exp/model.binpb",
+        model_format="binpb",
+        mediators=(MediatorFile("M1", "/r/exp/mediators/M1.binpb", "e"),),
+        model_version="0123456789abcdef",
+    )
+    single = ModelCatalogEntry(
+        model_id="flat",
+        display_name="Flat",
+        source_backend="local",
+        source_path="/r/flat.binpb",
+        model_format="binpb",
+        model_version="fedcba9876543210",
+    )
+
+    rows = ModelCatalogService(DiscoveryCache(FakeProvider([ff, single]))).list_models()
+    assert rows[0]["funnel"] == "full_funnel"
+    assert rows[0]["mediators"] == ["M1"]  # names only, never paths/etags
+    assert rows[0]["model_version"] == "0123456789abcdef"
+    assert rows[1]["funnel"] == "single"
+    assert rows[1]["mediators"] == []

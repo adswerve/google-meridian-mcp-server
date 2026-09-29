@@ -113,6 +113,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -127,7 +128,7 @@ from scripts.validation.manifest import (
     package_versions,
     write_manifest,
 )
-from scripts.validation.matrix import ToolCase
+from scripts.validation.matrix import ToolCase, fixture_specs
 from scripts.validation.normalize import normalize
 from scripts.validation.payloads import extract
 from scripts.validation.remote_smoke import normalize_mcp_url
@@ -373,6 +374,23 @@ def write_snapshot(
     os.replace(tmp, path)
 
 
+def build_drift_models_root(src_root: Path, keys: Sequence[str], dest: Path) -> Path:
+    """A models root holding ONLY the drift variants, as real dirs with file symlinks.
+
+    Directory symlinks would not work: Python 3.13's Path.rglob does not descend into
+    them, so LocalModelProvider would discover nothing.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    for key in keys:
+        target = dest / key
+        target.mkdir(exist_ok=True)
+        link = target / "model.binpb"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to((src_root / key / "model.binpb").resolve())
+    return dest
+
+
 def prepare_env(runs_root: str) -> None:
     """Spec section 4.1 -- the trap that would have voided every measurement.
 
@@ -392,7 +410,13 @@ def prepare_env(runs_root: str) -> None:
     (see ``run_optimization_case``) crosses the wire.
     """
     os.environ["PERSISTENCE_BACKEND"] = "local"
-    os.environ["LOCAL_MODELS_ROOT"] = str(DEFAULT_OUT_ROOT)
+    drift_root = build_drift_models_root(
+        DEFAULT_OUT_ROOT,
+        [v.key for v in fixture_specs()],
+        Path(runs_root) / "_drift_models",
+    )
+    # Only the drift variants: the full-funnel fixture must not appear in list_models.
+    os.environ["LOCAL_MODELS_ROOT"] = str(drift_root)
     os.environ["OPTIMIZATION_TIER"] = "local"
     os.environ["RESULT_CACHE_ENABLED"] = "false"
     os.environ["OPTIMIZATION_RUNS_ROOT"] = runs_root

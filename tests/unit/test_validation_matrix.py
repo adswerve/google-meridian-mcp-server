@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from scripts.generate_validation_models import VARIANTS
+from scripts.generate_validation_models import FULL_FUNNEL_VARIANTS, VARIANTS
 from scripts.validation import matrix
 
 
@@ -55,3 +55,20 @@ def test_adversarial_cases_cover_reach_frequency_on_media_only():
         and c.expected_error_code == "metric_not_supported"
         for c in cases
     )
+
+
+def test_full_funnel_variants_are_separate_from_the_drift_fixtures():
+    assert [v.key for v in FULL_FUNNEL_VARIANTS] == ["geo-full-funnel"]
+    assert "geo-full-funnel" not in {v.key for v in VARIANTS}
+    assert "geo-full-funnel" not in {v.key for v in matrix.fixture_specs()}
+
+
+def test_full_funnel_variant_capabilities():
+    (variant,) = FULL_FUNNEL_VARIANTS
+    assert matrix.variant_capabilities(variant) == frozenset(
+        {"revenue", "geo", "optimize", "funnel"}
+    )
+
+
+def test_single_model_variants_never_have_the_funnel_capability():
+    assert all("funnel" not in matrix.variant_capabilities(v) for v in VARIANTS)

@@ -1002,3 +1002,127 @@ def test_run_analysis_writes_compact_separators(tmp_path):
     assert written == json.dumps(
         json.loads(written), separators=(",", ":"), allow_nan=False
     )
+
+
+def test_funnel_breakdown_on_single_model_is_metric_not_supported():
+    class _Facade:
+        is_full_funnel = False
+
+    class _Catalog:
+        def get_facade(self, model_id):
+            return _Facade()
+
+    with pytest.raises(MetricNotSupportedError, match="not a full-funnel model"):
+        analysis_ops.run_operation(
+            _Catalog(),
+            "get_funnel_breakdown",
+            "flat",
+            {"output_type": "channel_breakdown", "filters": {}},
+        )
+
+
+def test_funnel_breakdown_rejects_unknown_channel():
+    class _Facade:
+        is_full_funnel = True
+        mediator_names = ["M1"]
+        rest_labels = {"M1": "M1 (brand equity, rest)"}
+
+        def paid_channels(self):
+            return ["A", "B"]
+
+    class _Catalog:
+        def get_facade(self, model_id):
+            return _Facade()
+
+    with pytest.raises(MissingModelDataError, match="unknown channel"):
+        analysis_ops.run_operation(
+            _Catalog(),
+            "get_funnel_breakdown",
+            "exp",
+            {"output_type": "channel_breakdown", "filters": {"channels": ["Z"]}},
+        )
+
+
+@pytest.mark.parametrize(
+    ("output_type", "method"),
+    [
+        ("channel_breakdown", "get_funnel_channel_breakdown"),
+        ("mediator_lift", "get_funnel_mediator_lift"),
+    ],
+)
+def test_funnel_breakdown_dispatches_each_output_type_to_its_facade_method(
+    output_type, method
+):
+    class _Facade:
+        is_full_funnel = True
+        mediator_names = ["M1"]
+        rest_labels = {"M1": "M1 (brand equity, rest)"}
+
+        def paid_channels(self):
+            return ["A", "B"]
+
+        def get_funnel_channel_breakdown(self, filters):
+            assert isinstance(filters, AnalysisFilters)
+            return [{"which": "channel_breakdown"}]
+
+        def get_funnel_mediator_lift(self, filters):
+            assert isinstance(filters, AnalysisFilters)
+            return [{"which": "mediator_lift"}]
+
+    class _Catalog:
+        def get_facade(self, model_id):
+            return _Facade()
+
+    result = analysis_ops.run_operation(
+        _Catalog(),
+        "get_funnel_breakdown",
+        "exp",
+        {"output_type": output_type, "filters": {"channels": ["A", "M1"]}},
+    )
+    assert result["output_type"] == output_type
+    assert result["rows"] == [[output_type]]
+
+
+@pytest.mark.parametrize(
+    ("output_type", "method"),
+    [
+        ("channel_breakdown", "get_funnel_channel_breakdown"),
+        ("mediator_lift", "get_funnel_mediator_lift"),
+    ],
+)
+def test_funnel_breakdown_accepts_the_brand_equity_label_as_a_channel(
+    output_type, method
+):
+    seen = {}
+
+    class _Facade:
+        is_full_funnel = True
+        mediator_names = ["M1"]
+        rest_labels = {"M1": "M1 (brand equity, rest)"}
+
+        def paid_channels(self):
+            return ["A", "B"]
+
+        def get_funnel_channel_breakdown(self, filters):
+            seen["filters"] = filters
+            return [{"ok": 1}]
+
+        def get_funnel_mediator_lift(self, filters):
+            seen["filters"] = filters
+            return [{"ok": 1}]
+
+    class _Catalog:
+        def get_facade(self, model_id):
+            return _Facade()
+
+    result = analysis_ops.run_operation(
+        _Catalog(),
+        "get_funnel_breakdown",
+        "exp",
+        {
+            "output_type": output_type,
+            "filters": {"channels": ["M1 (brand equity, rest)", "M1", "A"]},
+        },
+    )
+    assert result["output_type"] == output_type
+    assert seen["filters"].channels == ["M1", "A"]

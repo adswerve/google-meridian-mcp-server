@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 
 from scripts.validation import matrix
@@ -62,9 +63,44 @@ def assert_summary(payload, label: str, *, required_keys, outcome_mode: str) -> 
     )
 
 
-async def assert_live_optimization(client, model_id: str, *, overview) -> None:
-    import asyncio
+def _rows(payload) -> list[dict]:
+    return [dict(zip(payload["columns"], row)) for row in payload["rows"]]
 
+
+def _close(a: float, b: float, rel: float = 1e-5) -> bool:
+    """Payload numbers are rounded to 6 significant figures, hence rel 1e-5."""
+    return abs(a - b) <= rel * max(abs(a), abs(b), 1e-12)
+
+
+_TERMINAL_STATUSES = ("completed", "failed", "canceled")
+FULL_FUNNEL_MAX_POLLS = 480  # ~240s: full-funnel optimization is slower
+
+
+async def _await_run(client, run_id: str, *, max_polls: int = 120) -> dict:
+    """Poll get_optimization_status until terminal; max_polls * 0.5s is the cap."""
+    status = None
+    for _ in range(max_polls):
+        status = await call(client, "get_optimization_status", {"run_id": run_id})
+        if status["status"] in _TERMINAL_STATUSES:
+            break
+        await asyncio.sleep(0.5)
+    return status
+
+
+def _assert_direct_plus_indirect(result, label: str) -> None:
+    """Every optimized channel row: direct + indirect == total incremental outcome."""
+    rows = result["channel_tables"]["optimized"]
+    assert rows, f"{label}: no optimized channel rows"
+    for row in rows:
+        assert _close(
+            row["incremental_outcome_direct"] + row["incremental_outcome_indirect"],
+            row["incremental_outcome"],
+        ), f"{label}: direct + indirect != total in {row}"
+
+
+async def assert_live_optimization(
+    client, model_id: str, *, overview, max_polls: int = 120
+) -> None:
     config = {
         "scenario": {"type": "fixed_budget"},
         "constraint": {"mode": "global", "pct": 0.2},
@@ -79,12 +115,7 @@ async def assert_live_optimization(client, model_id: str, *, overview) -> None:
     )
 
     try:
-        status = None
-        for _ in range(120):  # tiny fixtures finish fast; cap ~60s
-            status = await call(client, "get_optimization_status", {"run_id": run_id})
-            if status["status"] in ("completed", "failed"):
-                break
-            await asyncio.sleep(0.5)
+        status = await _await_run(client, run_id, max_polls=max_polls)
         assert status and status["status"] == "completed", (
             f"run did not complete: {status}"
         )
@@ -101,6 +132,8 @@ async def assert_live_optimization(client, model_id: str, *, overview) -> None:
         assert {"initial", "optimized"} <= set(result["channel_tables"]), (
             "missing channel tables"
         )
+        if overview.get("funnel") == "full_funnel":
+            _assert_direct_plus_indirect(result, f"{model_id}/optimization")
 
         # Reuse: identical submit returns the same run, flagged reused.
         again = await call(
@@ -135,9 +168,9 @@ async def assert_live_optimization(client, model_id: str, *, overview) -> None:
     assert_error(gone, "optimization_run_not_found", f"{model_id}/deleted-run-status")
 
 
-async def assert_live_future_optimization(client, model_id: str, *, overview) -> None:
-    import asyncio
-
+async def assert_live_future_optimization(
+    client, model_id: str, *, overview, max_polls: int = 120
+) -> None:
     # 2099-01-01 is always safely after any fixture's last training period, so
     # the "trailing" reference window (last `horizon` periods before start_date)
     # is always covered by history.
@@ -161,12 +194,7 @@ async def assert_live_future_optimization(client, model_id: str, *, overview) ->
     )
 
     try:
-        status = None
-        for _ in range(120):  # tiny fixtures finish fast; cap ~60s
-            status = await call(client, "get_optimization_status", {"run_id": run_id})
-            if status["status"] in ("completed", "failed"):
-                break
-            await asyncio.sleep(0.5)
+        status = await _await_run(client, run_id, max_polls=max_polls)
         assert status and status["status"] == "completed", (
             f"run did not complete: {status}"
         )
@@ -183,6 +211,8 @@ async def assert_live_future_optimization(client, model_id: str, *, overview) ->
         assert {"initial", "optimized"} <= set(result["channel_tables"]), (
             "missing channel tables"
         )
+        if overview.get("funnel") == "full_funnel":
+            _assert_direct_plus_indirect(result, f"{model_id}/future optimization")
 
         # Exclusion: pause the first channel; assert it is pinned to 0 spend.
         first_channel = overview["available_tool_options"]["run_optimization"][
@@ -208,14 +238,7 @@ async def assert_live_future_optimization(client, model_id: str, *, overview) ->
         )
         excl_run_id = excl_submit["run_id"]
         try:
-            excl_status = None
-            for _ in range(120):  # tiny fixtures finish fast; cap ~60s
-                excl_status = await call(
-                    client, "get_optimization_status", {"run_id": excl_run_id}
-                )
-                if excl_status["status"] in ("completed", "failed"):
-                    break
-                await asyncio.sleep(0.5)
+            excl_status = await _await_run(client, excl_run_id, max_polls=max_polls)
             assert excl_status and excl_status["status"] == "completed", (
                 f"{model_id}/exclude expected completed, got {excl_status}"
             )
@@ -370,10 +393,10 @@ async def assert_cloud_live_optimization(service, model_id: str) -> None:
 
 
 async def run_matrix(client) -> Report:
-    from scripts.generate_validation_models import VARIANTS
+    from scripts.generate_validation_models import FULL_FUNNEL_VARIANTS, VARIANTS
 
     report = Report()
-    for variant in VARIANTS:
+    for variant in [*VARIANTS, *FULL_FUNNEL_VARIANTS]:
         model_id = variant.key
         # Overview: must load and must prune ROI for no-revenue models.
         overview = await call(client, "get_model_overview", {"model_id": model_id})
@@ -496,11 +519,18 @@ async def run_matrix(client) -> Report:
             except AssertionError as exc:
                 report.fail(label, str(exc))
 
-        # Live optimization: end-to-end subprocess worker for national and geo revenue models.
-        if model_id in ("national-revenue", "geo-revenue"):
+        # Live optimization: end-to-end subprocess worker for national and geo
+        # revenue models and the full-funnel model. The full-funnel model gets a
+        # longer poll cap: its optimizer scores every candidate through the
+        # mediator models.
+        if model_id in ("national-revenue", "geo-revenue", "geo-full-funnel"):
+            is_ff = bool(getattr(variant, "mediators", ()))
+            max_polls = FULL_FUNNEL_MAX_POLLS if is_ff else 120
             label = f"{model_id}/run_optimization[live,local,subprocess]"
             try:
-                await assert_live_optimization(client, model_id, overview=overview)
+                await assert_live_optimization(
+                    client, model_id, overview=overview, max_polls=max_polls
+                )
                 report.ok(label)
             except AssertionError as exc:
                 report.fail(label, str(exc))
@@ -508,11 +538,22 @@ async def run_matrix(client) -> Report:
             future_label = f"{model_id}/run_future_optimization[live,local,subprocess]"
             try:
                 await assert_live_future_optimization(
-                    client, model_id, overview=overview
+                    client, model_id, overview=overview, max_polls=max_polls
                 )
                 report.ok(future_label)
             except AssertionError as exc:
                 report.fail(future_label, str(exc))
+
+        if getattr(variant, "mediators", ()):
+            await assert_full_funnel_variant(client, report, variant, overview)
+            label = f"{model_id}/full_funnel[future optimization assumptions]"
+            try:
+                await assert_full_funnel_optimization(
+                    client, model_id, max_polls=FULL_FUNNEL_MAX_POLLS
+                )
+                report.ok(label)
+            except AssertionError as exc:
+                report.fail(label, str(exc))
 
         # Adversarial: result for unknown run_id must return typed error.
         if model_id == "national-revenue":
@@ -537,4 +578,151 @@ async def run_matrix(client) -> Report:
     except AssertionError as exc:
         report.fail(label, str(exc))
 
+    label = "GLOBAL/ADV/get_funnel_breakdown[single-model]->metric_not_supported"
+    try:
+        payload = await call(
+            client,
+            "get_funnel_breakdown",
+            {"model_id": "geo-revenue", "output_type": "channel_breakdown"},
+        )
+        assert_error(payload, "metric_not_supported", label)
+        report.ok(label)
+    except AssertionError as exc:
+        report.fail(label, str(exc))
+
+    for tool, extra in (
+        ("get_channel_data", {}),
+        ("get_training_data", {"dataset": ["kpi"]}),
+    ):
+        label = f"GLOBAL/ADV/{tool}[unknown-model]->model_not_found"
+        try:
+            payload = await call(client, tool, {"model_id": "does-not-exist", **extra})
+            assert_error(payload, "model_not_found", label)
+            report.ok(label)
+        except AssertionError as exc:
+            report.fail(label, str(exc))
+
     return report
+
+
+async def assert_full_funnel_variant(client, report, variant, overview) -> None:
+    """Full-funnel checks over the wire (values are 6-sig-fig rounded)."""
+    model_id = variant.key
+    names = list(variant.mediator_names())
+    labels = {n: f"{n} (brand equity, rest)" for n in names}
+    driver = variant.mediators[0][1][0]  # a paid channel that drives a mediator
+
+    label = f"{model_id}/full_funnel[overview]"
+    try:
+        assert overview.get("funnel") == "full_funnel", overview.get("funnel")
+        got = [m["name"] for m in overview["full_funnel"]["mediators"]]
+        assert got == names, got
+        assert "get_funnel_breakdown" in overview["available_tool_options"]
+        report.ok(label)
+    except AssertionError as exc:
+        report.fail(label, str(exc))
+
+    contribution = await call(
+        client,
+        "get_contribution",
+        {"model_id": model_id, "output_type": "contribution_metrics"},
+    )
+
+    label = f"{model_id}/full_funnel[contribution]"
+    try:
+        assert_columnar(contribution, label)
+        by = {r["channel"]: r for r in _rows(contribution)}
+        for n in names:
+            assert labels[n] in by and n not in by, f"{n} not relabelled"
+        row = by[driver]
+        assert _close(
+            row["incremental_outcome_direct"] + row["incremental_outcome_indirect"],
+            row["incremental_outcome"],
+        ), row
+        assert row["incremental_outcome_indirect"] > 0, row
+        report.ok(label)
+    except AssertionError as exc:
+        report.fail(label, str(exc))
+
+    label = f"{model_id}/full_funnel[one baseline]"
+    try:
+        base_row = next(r for r in _rows(contribution) if r["channel"] == "baseline")
+        summary = await call(
+            client,
+            "get_channel_summary",
+            {"model_id": model_id, "output_type": "baseline_summary_metrics"},
+        )
+        mean = next(r for r in _rows(summary) if r["metric"] == "mean")
+        assert _close(mean["baseline_outcome"], base_row["incremental_outcome"]), (
+            mean,
+            base_row,
+        )
+        report.ok(label)
+    except AssertionError as exc:
+        report.fail(label, str(exc))
+
+    for output_type in ("channel_breakdown", "mediator_lift"):
+        label = f"{model_id}/get_funnel_breakdown[{output_type}]"
+        try:
+            payload = await call(
+                client,
+                "get_funnel_breakdown",
+                {"model_id": model_id, "output_type": output_type},
+            )
+            assert_columnar(payload, label)
+            assert payload["row_count"] > 0, label
+            report.ok(label)
+        except AssertionError as exc:
+            report.fail(label, str(exc))
+
+    label = f"{model_id}/ADV/get_funnel_breakdown[unknown channel]->missing_model_data"
+    try:
+        payload = await call(
+            client,
+            "get_funnel_breakdown",
+            {
+                "model_id": model_id,
+                "output_type": "channel_breakdown",
+                "filters": {"channels": ["NOPE"]},
+            },
+        )
+        assert_error(payload, "missing_model_data", label)
+        report.ok(label)
+    except AssertionError as exc:
+        report.fail(label, str(exc))
+
+
+async def assert_full_funnel_optimization(
+    client, model_id: str, *, max_polls: int = FULL_FUNNEL_MAX_POLLS
+) -> None:
+    """The full-funnel-only optimization case: a future run.
+
+    The historical run (and its direct + indirect == total check) is already made
+    by ``assert_live_optimization``, so it is not repeated here. The generic
+    future run starts 2099-01-01; this one starts 2099-01-05 so the two do not
+    share a fingerprint, and asserts the mediator-treatment assumption.
+    """
+    future = await call(
+        client,
+        "run_future_optimization",
+        {
+            "model_id": model_id,
+            "config": {
+                "scenario": {"type": "fixed_budget"},
+                "future": {"start_date": "2099-01-05", "horizon": 4},
+            },
+        },
+    )
+    assert "error_code" not in future, f"submit error: {future}"
+    run_id = future["run_id"]
+    try:
+        status = await _await_run(client, run_id, max_polls=max_polls)
+        assert status and status["status"] == "completed", (
+            f"future run did not complete: {status}"
+        )
+        result = await call(client, "get_optimization_result", {"run_id": run_id})
+        _assert_direct_plus_indirect(result, f"{model_id}/future optimization")
+        treatment = result["assumptions"]["full_funnel"]["mediator_treatment"]
+        assert treatment == "predicted_from_planned_spend", result["assumptions"]
+    finally:
+        await call(client, "delete_optimization", {"run_id": run_id})

@@ -26,6 +26,9 @@ from google_meridian_mcp_server.domain.filters import (
     normalize_filters,
 )
 from google_meridian_mcp_server.persistence.cache import ResultCache
+from google_meridian_mcp_server.services.model_catalog_service import (
+    lookup_catalog_entry,
+)
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +52,9 @@ RESPONSE_DYNAMICS_TYPES = frozenset(RESPONSE_DYNAMICS_TYPE_ORDER)
 RESPONSE_CURVE_TYPE_ORDER = ("response_curves", "response_curve_summary")
 RESPONSE_CURVE_TYPES = frozenset(RESPONSE_CURVE_TYPE_ORDER)
 
+FUNNEL_BREAKDOWN_TYPE_ORDER = ("channel_breakdown", "mediator_lift")
+FUNNEL_BREAKDOWN_TYPES = frozenset(FUNNEL_BREAKDOWN_TYPE_ORDER)
+
 
 class AnalysisService:
     """Orchestrates grouped analysis queries via the subprocess runner.
@@ -58,9 +64,15 @@ class AnalysisService:
     and the actual Meridian facade calls happen worker-side.
     """
 
-    def __init__(self, runner: Any, result_cache: ResultCache | None = None) -> None:
+    def __init__(
+        self,
+        runner: Any,
+        result_cache: ResultCache | None = None,
+        discovery: Any | None = None,
+    ) -> None:
         self._runner = runner
         self._cache = result_cache
+        self._discovery = discovery
 
     @staticmethod
     def _filter_key(filters: AnalysisFilters) -> dict[str, Any]:
@@ -171,8 +183,13 @@ class AnalysisService:
         ``key[0]``; ``get_model_overview`` has no key tuple and passes its
         literal directly.
         """
+        cache_params = params
+        if self._discovery is not None:
+            entry = await lookup_catalog_entry(self._discovery, model_id)
+            # Cache key only -- the worker never needs the version.
+            cache_params = {**params, "model_version": entry.model_version}
         if self._cache:
-            hit = self._cache.get(name, model_id, params)
+            hit = self._cache.get(name, model_id, cache_params)
             if hit is not None:
                 log.debug("Cache hit: %s / %s", name, model_id)
                 return hit
@@ -180,7 +197,7 @@ class AnalysisService:
         result = await self._runner.run(name, model_id, params)
 
         if self._cache:
-            self._cache.put(name, model_id, params, result)
+            self._cache.put(name, model_id, cache_params, result)
         return result
 
     async def get_training_data(
@@ -254,6 +271,15 @@ class AnalysisService:
         }
         if overview.get("rf_channels"):
             overview["available_tool_options"]["get_reach_frequency"] = {}
+        if overview.get("funnel") == "full_funnel":
+            mediators = [m["name"] for m in overview["full_funnel"]["mediators"]]
+            overview["available_tool_options"]["get_funnel_breakdown"] = {
+                "output_type": list(FUNNEL_BREAKDOWN_TYPE_ORDER),
+                "channels": overview.get("media_channels", [])
+                + overview.get("rf_channels", [])
+                + mediators,
+                "mediators": mediators,
+            }
         return {"model_id": model_id, **overview}
 
     async def get_channel_summary(
@@ -304,6 +330,19 @@ class AnalysisService:
         if output_type not in RESPONSE_CURVE_TYPES:
             raise InvalidOutputTypeError(output_type, sorted(RESPONSE_CURVE_TYPES))
         key = ("get_response_curves", output_type)
+        params, ignored = self._narrowed(filters, key, {"output_type": output_type})
+        result = await self._cached(key[0], model_id, params)
+        return insert_note(result, key, ignored)
+
+    async def get_funnel_breakdown(
+        self,
+        model_id: str,
+        output_type: str,
+        filters: AnalysisFilters | dict | None,
+    ) -> dict[str, Any]:
+        if output_type not in FUNNEL_BREAKDOWN_TYPES:
+            raise InvalidOutputTypeError(output_type, sorted(FUNNEL_BREAKDOWN_TYPES))
+        key = ("get_funnel_breakdown", output_type)
         params, ignored = self._narrowed(filters, key, {"output_type": output_type})
         result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)

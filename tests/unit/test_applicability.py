@@ -106,12 +106,25 @@ EXPECTED_APPLICABILITY = {
     ("get_channel_data", None): {"start_date", "end_date", "geos", "channels"},
     ("get_training_data", None): {"start_date", "end_date", "geos", "channels"},
     ("get_spend_scenario", None): {"start_date", "end_date", "geos", "use_kpi"},
+    ("get_funnel_breakdown", "channel_breakdown"): {
+        "start_date",
+        "end_date",
+        "geos",
+        "channels",
+        "use_kpi",
+    },
+    ("get_funnel_breakdown", "mediator_lift"): {
+        "start_date",
+        "end_date",
+        "geos",
+        "channels",
+    },
 }
 
 
-def test_table_has_exactly_the_expected_17_entries():
+def test_table_has_exactly_the_expected_19_entries():
     assert set(ap.FILTER_APPLICABILITY) == set(EXPECTED_APPLICABILITY)
-    assert len(ap.FILTER_APPLICABILITY) == 17
+    assert len(ap.FILTER_APPLICABILITY) == 19
 
 
 def test_every_entry_declares_the_expected_applicable_fields():
