@@ -478,6 +478,31 @@ class TestGcsFullFunnel:
             == "gs://bucket/models/exp/mediators/M1.binpb"
         )
 
+    def test_model_version_is_computed_from_blob_etags_and_tracks_a_mediator(
+        self, monkeypatch
+    ):
+        def version(m1_etag, stage2_etag="s2"):
+            provider = self._provider(
+                monkeypatch,
+                [
+                    _FakeBlob("models/exp/model.binpb", etag=stage2_etag),
+                    _FakeBlob("models/exp/mediators/M1.binpb", etag=m1_etag),
+                ],
+            )
+            (entry,) = provider.discover()
+            return entry.model_version
+
+        base = version("m1")
+        assert base
+        assert version("m1") == base  # deterministic
+        assert version("m1-replaced") != base  # only a mediator blob's etag moved
+        assert version("m1", stage2_etag="s2-replaced") != base
+        # the version is derived from the etags (not from names alone)
+        single = self._provider(
+            monkeypatch, [_FakeBlob("models/exp/model.binpb", etag="s2")]
+        ).discover()[0]
+        assert single.model_version != base
+
     def test_materialize_mediator_downloads_with_etag_sidecar(
         self, monkeypatch, tmp_path
     ):

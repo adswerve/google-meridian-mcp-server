@@ -103,3 +103,29 @@ def test_single_model_baseline_untouched(plain_facade):
     rows = plain_facade.get_baseline_summary_metrics(AnalysisFilters())
     ci = [r for r in rows if r["metric"] == "ci_lo"]
     assert ci and all(r["baseline_outcome"] is not None for r in ci)
+
+
+def test_summary_baseline_by_time_equals_label_aligned_model_fit_baseline(ff_facade):
+    times = ff_facade.get_time_values()
+    for filters in (
+        AnalysisFilters(aggregate_times=False),
+        AnalysisFilters(
+            aggregate_times=False,
+            geos=[ff_facade.geo_names()[0]],
+            start_date=date.fromisoformat(times[-6][:10]),
+            end_date=date.fromisoformat(times[-2][:10]),
+        ),
+    ):
+        rows = ff_facade.get_baseline_summary_metrics(filters)
+        by_time = {
+            str(r["time"])[:10]: r["baseline_outcome"]
+            for r in rows
+            if r["metric"] == "mean"
+        }
+        fit = ff_facade.get_model_fit(filters)
+        assert len(fit) == len(by_time) > 1
+        assert sorted(by_time) == sorted(str(r["time"])[:10] for r in fit)
+        for r in fit:
+            assert by_time[str(r["time"])[:10]] == pytest.approx(
+                r["baseline"], rel=1e-9
+            )

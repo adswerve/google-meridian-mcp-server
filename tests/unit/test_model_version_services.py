@@ -195,6 +195,30 @@ async def test_replaced_model_is_not_reused_and_record_carries_identity(tmp_path
     assert third["reused"] is False
 
 
+async def test_replaced_model_is_not_reused_by_a_future_optimization(tmp_path):
+    ff = _entry("v1", mediators=(MediatorFile("M1", "/r/m/mediators/M1.binpb", "e"),))
+    discovery = _Discovery(ff)
+    svc, reg = _opt_svc(tmp_path, discovery)
+    cfg = {
+        "scenario": {"type": "fixed_budget"},
+        "future": {"start_date": "2099-01-01", "horizon": 4},
+    }
+    first = await svc.run_future_optimization("m", cfg)
+    record = reg.get_record(first["run_id"])
+    assert (record.model_version, record.funnel) == ("v1", "full_funnel")
+    reg.write_state(
+        OptimizationRunState(run_id=first["run_id"], status=RunStatus.COMPLETED)
+    )
+    again = await svc.run_future_optimization("m", cfg)
+    assert again["reused"] is True
+    discovery.entries = [dataclasses.replace(ff, model_version="v2")]
+    third = await svc.run_future_optimization("m", cfg)
+    assert third["reused"] is False
+    assert (
+        reg.get_record(third["run_id"]).config_fingerprint != record.config_fingerprint
+    )
+
+
 def test_tool_factories_wire_the_discovery_cache(tmp_path):
     discovery = _Discovery(_entry("v1"))
     ctx = SimpleNamespace(
