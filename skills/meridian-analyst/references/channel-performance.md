@@ -26,7 +26,8 @@ result.
 | --- | --- | --- |
 | Rank/compare channels by ROI, CPIK, or marginal efficiency | `get_channel_summary` | one metric per channel; pick the `output_type` that matches the metric asked |
 | How much outcome each channel drove (share / over time) | `get_contribution` | per-channel incremental contribution, total or by time |
-| Base vs. incremental — what media caused vs. what would happen anyway | `get_contribution` | one call returns both: each channel's incremental contribution plus a `baseline` row for everything else |
+| Base vs. incremental — what media caused vs. what would happen anyway | `get_contribution` | one call returns both: each channel's incremental contribution plus a `baseline` row for everything else (on a full-funnel model, also a brand-equity row — `full-funnel.md`) |
+| Brand-building / indirect effects (full-funnel models) | `get_funnel_breakdown` | direct vs indirect per channel; mediator lift in native units |
 | Carryover / how long an effect lasts after exposure | `get_adstock_decay` | decay curve (and shape parameter) per channel |
 | Saturation / diminishing returns / "what if we spend more or less" | `get_response_curves` | outcome across a *range* of spend per channel |
 | Reach & frequency, optimal frequency | `get_reach_frequency` | ROI across frequency levels + optimal frequency (**RF models only**; on a KPI-only model this `roi` is KPI units per spend, not revenue) |
@@ -55,12 +56,15 @@ historical spend. The aggregate view gives each channel's share; the by-time vie
 gives the trend. By default the result already includes a **`baseline`** row
 alongside the channels — what would have happened with no paid media: organic
 demand, seasonality, price — so a single call covers both halves of "base vs.
-incremental." Only reach for `get_channel_summary`'s baseline summary view when
-you need the baseline's own **credible interval** (mean/median/ci_lo/ci_hi); the
-contribution view gives a point share, not a range. Note contribution is a
-**single point at historical spend** — it cannot tell you what happens if you
-spend more; that is the response curve's job (glossary: "contribution vs.
-response curve").
+incremental." On a full-funnel model, paid rows include their brand-building effect
+(with direct / indirect columns) and each brand signal appears only as its
+brand-equity rest — never add it on top of the paid channels (`full-funnel.md`).
+Only reach for `get_channel_summary`'s baseline summary view when you need the
+baseline's own **credible interval** (mean/median/ci_lo/ci_hi; on a full-funnel
+model the adjusted baseline has none); the contribution view gives a point share,
+not a range. Note contribution is a **single point at historical spend** — it cannot
+tell you what happens if you spend more; that is the response curve's job (glossary:
+"contribution vs. response curve").
 
 **`get_adstock_decay` — carryover.** Shows how fast a channel's effect fades after
 exposure: a slow decay means today's spend keeps paying out for several periods (a
@@ -72,7 +76,8 @@ from a posterior parameter with no geo or time dimension, so it cannot be filter
 to a date range or a single market. Never label a decay chart with a story's date
 window or geo. If you pass those filters, the response lists them under
 `ignored_filters`. The response always states its `scope`, whether or not you
-pass filters.
+pass filters. On a full-funnel model this is each channel's own carry-over, not
+its brand-building path.
 
 **`get_response_curves` — saturation and spend sensitivity.** Outcome across a
 *range* of spend per channel. A curve still climbing steeply = headroom; a flat curve
@@ -136,4 +141,6 @@ Meridian is Bayesian: every estimate is a distribution. `get_channel_summary`,
 report the interval with the mean.** A wide interval means low confidence, not a
 precise number — and a ranking whose channels' intervals overlap heavily is not a
 reliable ranking, so say the order is uncertain rather than presenting a false
-precise winner. (Full discipline: `glossary.md`, "credible interval".)
+precise winner. (Full discipline: `glossary.md`, "credible interval".) Exception: on
+full-funnel models the direct / indirect / brand-equity split, and the baseline
+beside it, have no interval — they are mean estimates.

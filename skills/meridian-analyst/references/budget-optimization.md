@@ -104,7 +104,10 @@ credible intervals from the analysis tools). The key fields:
   outcome / better efficiency."
 - **`channel_tables`** — `initial` and `optimized` rows per channel (spend,
   pct_of_spend, incremental_outcome, roi, mroi, cpik, effectiveness). Diff the two
-  to explain *why* the plan moves money.
+  to explain *why* the plan moves money. On a full-funnel model every row is
+  the total effect and also carries `incremental_outcome_direct` /
+  `incremental_outcome_indirect`; use them to explain moves toward awareness
+  channels (`full-funnel.md`).
 - **`allocation`** — the recommended optimized spend per channel (the answer to
   "where should the money go").
 - **`spend_delta`** — per-channel change, cuts first then increases. This is your
@@ -296,6 +299,9 @@ Channel and geo names still come from
 - The numbers are **incremental outcome under the assumed cost structure**, not
   the absolute future KPI/revenue — baseline demand and macro price shifts are
   not modeled.
+- **Full-funnel models:** the brand-building path rests on a separate model of
+  how paid media moves each brand signal, and the plan assumes that
+  relationship holds in the future period.
 - **Validate large moves with a geo or holdout experiment** before committing real
   budget; the model informs the hypothesis, the experiment confirms it.
 

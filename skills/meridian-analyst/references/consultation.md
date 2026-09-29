@@ -140,6 +140,10 @@ term entirely.
 | "`budget_source: derived_from_reference`" | "a budget carried forward from [the baseline period you picked], scaled to the plan's length" |
 | "`budget_source: determined_by_target`" | "the spend level implied by the return target you set" |
 | "poll `get_optimization_status`" | "the optimization is running — I'll check back and share results when it's done" |
+| "the `incremental_outcome_indirect` column" | "the part of the return that comes from building your brand (e.g. more branded searches that later convert)" |
+| "the mediator / stage-1 model" | "the brand signal (e.g. branded search) and how your media moves it" |
+| "`M1 (brand equity, rest)`" | "brand demand that exists anyway — not created by current campaigns" |
+| "`mediator_treatment: predicted_from_planned_spend`" | "the plan assumes your brand signal responds to the new spend the way it has historically" |
 
 When the honest answer needs a genuinely technical metric the user already knows
 (ROAS, marginal ROI, CPIK), those are fine — they are the marketer's own
