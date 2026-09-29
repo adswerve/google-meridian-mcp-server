@@ -49,7 +49,7 @@ brand-equity rest (brand demand that exists anyway) is taken out of the base and
 shown as its own row (see `full-funnel.md`). If a contribution view leaves out
 non-paid rows, its base absorbs them and is larger.
 
-**Full-funnel model** — A KPI model plus one or more brand-mediator models
+**Full-funnel model** — A KPI model plus one or more brand-signal models
 (e.g. branded search explained by video). Paid channels are credited with both
 their direct effect and what they drive through the brand signal
 (`full-funnel.md`).
@@ -63,8 +63,8 @@ demand that exists anyway. If it comes out negative, it is a modelling residual
 that keeps the numbers reconciled (paid channels credited with more brand
 building than the signal's total), not negative demand. Shown as "`<name>`
 (brand equity, rest)", and part of the contribution total; never add the brand
-signal's full effect (its raw series or mediator-lift units) on top of the paid
-channels.
+signal's full effect (its raw series, or the brand signal's own units) on top of
+the paid channels.
 
 **Credible interval (`ci_lo`/`ci_hi`)** — Meridian is Bayesian, so every estimate
 is a distribution, not a single number. The credible interval is the plausible

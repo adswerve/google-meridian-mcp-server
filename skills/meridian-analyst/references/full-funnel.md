@@ -24,6 +24,8 @@ brand model's own numbers.
   + **indirect** (what it drives through the brand signals). Rows carry
   `incremental_outcome_direct` / `incremental_outcome_indirect`, and ROI rows
   `roi_direct` / `roi_indirect`. `incremental_outcome` and `roi` are the total.
+  The split is a posterior mean, so only the `mean` row of a summary or ROI
+  view carries it; the median and interval rows leave it empty.
 - Always say which one you are quoting, and never compare a direct figure with
   a total one.
 - Example (hypothetical numbers): "Video returns $2.80 per dollar in total:
@@ -119,7 +121,7 @@ signal, and assumes that relationship holds in the plan period.*
 
 | The question | Do this |
 | --- | --- |
-| "What's video's real ROI including brand effects?" | `get_channel_summary` `roi`: quote the total, then the direct / indirect split. On a KPI-only full-funnel model ROI is unavailable; the paid summary still carries the direct / indirect incremental-outcome columns |
+| "What's video's real ROI including brand effects?" | `get_channel_summary` `roi`: quote the total, then the direct / indirect split. On a KPI-only full-funnel model ROI is unavailable; the paid summary still carries the direct / indirect incremental-outcome columns (on its `mean` row) |
 | "How much of our conversions come from brand equity?" | `get_contribution`: the brand-equity row, as a share of the total |
 | "Did video grow branded search, and by how much?" | `get_funnel_breakdown` `mediator_lift` |
 | "How much of video's return is brand-building?" | `get_funnel_breakdown` `channel_breakdown` (share of channel total) |
