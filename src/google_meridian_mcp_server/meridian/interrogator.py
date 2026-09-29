@@ -2,33 +2,113 @@
 
 from __future__ import annotations
 
+import warnings
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from google_meridian_mcp_server.domain.errors import InvalidFullFunnelModelError
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.dataset_mapper import (
     TRAINING_DATASETS,
     dataset_to_records,
 )
+from google_meridian_mcp_server.meridian.full_funnel.decomposition import rest_label
 
 
 class MeridianInterrogator:
     """Shared accessors over a loaded Meridian model."""
 
-    def __init__(self, mmm: Any) -> None:
+    def __init__(self, mmm: Any, mediators: Mapping[str, Any] | None = None) -> None:
         self._mmm = mmm
         self._analyzer = None
+        # Full funnel: stage-1 mediator models keyed by the stage-2 organic channel
+        # they model. Sorted so every derived list is deterministic.
+        self._mediators: dict[str, Any] = dict(sorted((mediators or {}).items()))
+        self._direct_analyzer = None
+        self._single_mediator_analyzers: dict[str, Any] = {}
+        self._stage1_analyzers: dict[str, Any] = {}
+
+    @property
+    def is_full_funnel(self) -> bool:
+        return bool(self._mediators)
+
+    @property
+    def mediator_names(self) -> list[str]:
+        return list(self._mediators)
+
+    def mediator_channels(self, name: str) -> list[str]:
+        """Paid channels driving this mediator, in the stage-2 model's paid order."""
+        driving = {
+            str(c) for c in self._mediators[name].input_data.get_all_paid_channels()
+        }
+        return [
+            str(c)
+            for c in self._mmm.input_data.get_all_paid_channels()
+            if str(c) in driving
+        ]
+
+    @property
+    def rest_labels(self) -> dict[str, str]:
+        return {name: rest_label(name) for name in self._mediators}
+
+    def _build_full_funnel_analyzer(self, mediators: Mapping[str, Any]):
+        from google_meridian_mcp_server.meridian.full_funnel import analyzer as ff_mod
+
+        try:
+            with warnings.catch_warnings():
+                # Google's constructor passes the deprecated `meridian` kwarg on to
+                # its own tensors builder; the warning is theirs and not actionable.
+                warnings.filterwarnings(
+                    "ignore",
+                    message="The `meridian` argument is deprecated",
+                    category=DeprecationWarning,
+                )
+                return ff_mod.AnalyzerFullFunnel(
+                    meridian=self._mmm, mediator_models=dict(mediators)
+                )
+        except ValueError as exc:  # Google's constructor validation
+            raise InvalidFullFunnelModelError(str(exc)) from exc
 
     def _get_analyzer(self):
         if self._analyzer is None:
+            if self._mediators:
+                self._analyzer = self._build_full_funnel_analyzer(self._mediators)
+            else:
+                from meridian.analysis import analyzer as analyzer_mod
+
+                self._analyzer = analyzer_mod.Analyzer(self._mmm)
+        return self._analyzer
+
+    def _get_direct_analyzer(self):
+        """Plain stage-2 analyzer (direct effects only); the analyzer itself if single."""
+        if not self._mediators:
+            return self._get_analyzer()
+        if self._direct_analyzer is None:
             from meridian.analysis import analyzer as analyzer_mod
 
-            self._analyzer = analyzer_mod.Analyzer(self._mmm)
-        return self._analyzer
+            self._direct_analyzer = analyzer_mod.Analyzer(self._mmm)
+        return self._direct_analyzer
+
+    def _get_single_mediator_analyzer(self, name: str):
+        if len(self._mediators) == 1:
+            return self._get_analyzer()  # identical; avoids a second JIT compile
+        if name not in self._single_mediator_analyzers:
+            self._single_mediator_analyzers[name] = self._build_full_funnel_analyzer(
+                {name: self._mediators[name]}
+            )
+        return self._single_mediator_analyzers[name]
+
+    def _get_stage1_analyzer(self, name: str):
+        """Plain analyzer over one mediator model (native mediator units)."""
+        if name not in self._stage1_analyzers:
+            from meridian.analysis import analyzer as analyzer_mod
+
+            self._stage1_analyzers[name] = analyzer_mod.Analyzer(self._mediators[name])
+        return self._stage1_analyzers[name]
 
     def is_national(self) -> bool:
         value = getattr(self._mmm, "is_national", False)

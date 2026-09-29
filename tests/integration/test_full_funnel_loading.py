@@ -5,6 +5,9 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.filterwarnings(
+    "ignore:The `meridian` argument is deprecated:DeprecationWarning"
+)
 def test_fixture_validates_cleanly_and_constructs_google_analyzer():
     from google_meridian_mcp_server.meridian.full_funnel.analyzer import (
         AnalyzerFullFunnel,

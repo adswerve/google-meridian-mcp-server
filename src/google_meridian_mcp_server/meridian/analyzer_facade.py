@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import functools
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -18,8 +18,8 @@ from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogato
 class AnalyzerFacade(MeridianInterrogator):
     """Provides a simplified interface over Meridian's Analyzer and MediaSummary."""
 
-    def __init__(self, mmm: Any) -> None:
-        super().__init__(mmm)
+    def __init__(self, mmm: Any, mediators: Mapping[str, Any] | None = None) -> None:
+        super().__init__(mmm, mediators)
         self._media_summary_cache: dict[tuple, Any] = {}
         self._model_fit_cache: dict[tuple, Any] = {}
 
