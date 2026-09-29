@@ -65,9 +65,12 @@ and whether it is **full-funnel** (`funnel: "full_funnel"`). See
   "brand equity, rest" row. Never add the brand signal's full effect on top of
   the paid channels, and always say whether you quote a direct or a total
   figure. Read `references/full-funnel.md`.
-- **Never present a point estimate as certain.** Analysis and optimization
-  outputs carry credible intervals (`ci_lo`/`ci_hi`). Report the interval with
-  the mean; a wide interval means low confidence, not a precise number. The one
+- **Never present a point estimate as certain.** Most analysis
+  views (channel summaries, response curves, reach & frequency, decay curves,
+  model fit, spend what-ifs) carry credible intervals (`ci_lo`/`ci_hi`);
+  contribution shares, carry-over parameters and optimization results are means
+  only. Report the interval with the mean wherever one exists; a wide interval
+  means low confidence, not a precise number. The one
   exception: the direct / indirect / brand-equity split on full-funnel models is
   a mean estimate with no interval, and so is the adjusted baseline — say so
   rather than inventing one.

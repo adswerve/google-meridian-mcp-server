@@ -59,9 +59,12 @@ indirect is the outcome it causes by building a brand signal. Total = direct +
 indirect; `roi` on a full-funnel model is the total.
 
 **Brand equity (rest)** — The part of a brand signal paid media did not build:
-demand that exists anyway. Shown as "`<name>` (brand equity, rest)", and part of
-the contribution total; never add the brand signal's full effect (its raw series
-or mediator-lift units) on top of the paid channels.
+demand that exists anyway. If it comes out negative, it is a modelling residual
+that keeps the numbers reconciled (paid channels credited with more brand
+building than the signal's total), not negative demand. Shown as "`<name>`
+(brand equity, rest)", and part of the contribution total; never add the brand
+signal's full effect (its raw series or mediator-lift units) on top of the paid
+channels.
 
 **Credible interval (`ci_lo`/`ci_hi`)** — Meridian is Bayesian, so every estimate
 is a distribution, not a single number. The credible interval is the plausible

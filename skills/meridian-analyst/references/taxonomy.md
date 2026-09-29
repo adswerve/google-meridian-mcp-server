@@ -1,7 +1,8 @@
 # Model taxonomy
 
-Two independent axes describe every Meridian model on this server, plus one
-modifier: a model can be **full-funnel** (see `full-funnel.md`). Read them off
+Three independent facts describe every Meridian model on this server: two axes
+(geographic scope and revenue capability) and whether it is **full-funnel** (see
+`full-funnel.md`). Read them off
 `get_model_overview` before choosing tools or metrics.
 
 ## Axis 1 — geographic scope

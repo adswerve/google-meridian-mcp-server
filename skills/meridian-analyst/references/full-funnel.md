@@ -38,7 +38,10 @@ A brand signal's contribution splits in two:
   indirect effect, and
 - the rest: demand for the brand that would exist anyway (built up over time,
   word of mouth, older campaigns). It appears as the row
-  "`<name>` (brand equity, rest)".
+  "`<name>` (brand equity, rest)". It is passed through as is, never clamped:
+  if it is negative, the paid channels are credited with more brand building
+  than the brand signal's total. Call that a modelling residual that keeps the
+  numbers reconciled, not negative demand.
 
 Contribution rows plus that brand-equity row plus any other non-paid rows plus
 the baseline add up to the expected outcome. The brand-equity row is the only
@@ -104,11 +107,11 @@ signal, and assumes that relationship holds in the plan period.*
   fades. They do not include the slower brand-building path. The output also
   lists the brand signals themselves as organic-media rows beside the paid
   channels: those are the brand signals' own carry-over, not paid channels.
-- One kind of model fails: a KPI model with reach & frequency channels whose
-  brand model has none. Google's full-funnel analysis code crashes there (an
-  upstream fix is expected). Other reach & frequency models are not refused.
-  When it happens, say the analysis is unavailable, not that the effect is
-  zero.
+- One kind of full-funnel model fails: one whose main (KPI) model has reach &
+  frequency channels while any of its brand models has none. Google's
+  full-funnel analysis code crashes there (an upstream fix is expected). Other
+  reach & frequency full-funnel models are not refused. When it happens, say the
+  analysis is unavailable, not that the effect is zero.
 - Large awareness bets deserve a geo or holdout experiment before real budget
   moves.
 

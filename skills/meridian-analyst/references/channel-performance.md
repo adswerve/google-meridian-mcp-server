@@ -139,10 +139,13 @@ percentage.
 ## Credible intervals — say the range, not just the point
 
 Meridian is Bayesian: every estimate is a distribution. `get_channel_summary`,
-`get_contribution`, `get_response_curves`, `get_reach_frequency`,
-`get_adstock_decay`, and `get_model_fit` report means with `ci_lo`/`ci_hi`;
+`get_response_curves`, `get_reach_frequency`, `get_adstock_decay` (the decay
+curve view), and `get_model_fit` report means with `ci_lo`/`ci_hi`;
 `get_spend_scenario`'s `base_outcome`/`new_outcome` carry the interval too
-(`get_channel_data` is a raw series, not an estimate, so it has no CI). **Always
+(`get_channel_data` is a raw series, not an estimate, so it has no CI).
+`get_contribution` shares, `get_adstock_decay`'s carry-over parameter summary,
+and optimization results are means only: no interval to report, so corroborate
+a close call with the channel summary's interval. **Always
 report the interval with the mean.** A wide interval means low confidence, not a
 precise number — and a ranking whose channels' intervals overlap heavily is not a
 reliable ranking, so say the order is uncertain rather than presenting a false
