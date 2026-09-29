@@ -10,6 +10,7 @@ import xarray as xr
 from google_meridian_mcp_server.meridian.full_funnel import decomposition as dec
 
 PAID = ["A", "B", "C"]
+DRIVERS = {"M1": ["A"], "M2": ["A", "B"]}
 
 
 class _FakeAnalyzer:
@@ -38,6 +39,7 @@ def _two_mediator_split(aggregate_times=True, **kw):
         single_mediator_analyzers=single,
         paid_channels=PAID,
         all_channels=PAID + ["M1", "M2"],
+        mediator_channels=DRIVERS,
         aggregate_times=aggregate_times,
         **kw,
     )
@@ -57,6 +59,33 @@ def test_split_values_and_additivity():
         )
     assert split.indirect == pytest.approx({"A": 30.0, "B": 10.0, "C": 0.0})
     assert split.rest_total == pytest.approx(30.0)
+
+
+def test_non_driving_channels_carry_exactly_zero_indirect():
+    # Float residue (<= 1e-6 rel) on channels that drive no mediator must not leak.
+    direct = _FakeAnalyzer([100, 50, 20], all_means=[100, 50, 20, 40, 30])
+    full = _FakeAnalyzer([130, 60, 20.000002])
+    single = {
+        "M1": _FakeAnalyzer([125, 50.000003, 20.000001]),
+        "M2": _FakeAnalyzer([105, 60, 20.000002]),
+    }
+    split = dec.compute_funnel_split(
+        direct_analyzer=direct,
+        full_analyzer=full,
+        single_mediator_analyzers=single,
+        paid_channels=PAID,
+        all_channels=PAID + ["M1", "M2"],
+        mediator_channels=DRIVERS,
+    )
+    m1, m2 = split.mediators["M1"], split.mediators["M2"]
+    assert m1.indirect_by_channel["B"] == 0.0
+    assert m1.indirect_by_channel["C"] == 0.0
+    assert m2.indirect_by_channel["C"] == 0.0
+    assert split.indirect["C"] == 0.0
+    assert split.indirect["A"] == pytest.approx(30.0)
+    assert m1.built_by_media == pytest.approx(25.0)
+    assert m1.rest == pytest.approx(40.0 - 25.0)
+    assert m2.rest == pytest.approx(30.0 - (5.0 + 10.0))
 
 
 def test_split_forwards_filters_to_meridian():
@@ -85,6 +114,7 @@ def test_channel_count_mismatch_is_loud():
             single_mediator_analyzers={},
             paid_channels=PAID,
             all_channels=PAID + ["M1"],
+            mediator_channels={},
         )
 
 

@@ -68,6 +68,9 @@ class AnalyzerFacade(MeridianInterrogator):
                 },
                 paid_channels=self.paid_channels(),
                 all_channels=self.all_channels(),
+                mediator_channels={
+                    n: self.mediator_channels(n) for n in self.mediator_names
+                },
                 selected_times=selected_times,
                 selected_geos=self._selected_geos(filters),
                 use_kpi=use_kpi,
@@ -672,12 +675,8 @@ class AnalyzerFacade(MeridianInterrogator):
             for m in self.mediator_names:
                 if not (keep_channel or m in wanted):
                     continue
-                # A channel that does not drive the mediator builds none of it.
-                value = (
-                    float(split.mediators[m].indirect_by_channel[c])
-                    if c in self.mediator_channels(m)
-                    else 0.0
-                )
+                # The split already holds exactly 0 for a non-driving channel.
+                value = float(split.mediators[m].indirect_by_channel[c])
                 rows.append(self._breakdown_row(c, "indirect", m, value, total))
         for m in self.mediator_names:
             if not wanted or m in wanted:

@@ -6,6 +6,9 @@ here is subtraction of posterior means (mean of a difference == difference of me
     indirect[m][c] = FF_m(c) - D(c)      FF_m: full-funnel analyzer over mediator m only
     rest[m]        = O_m - sum_c indirect[m][c]
 
+A channel outside a mediator's driving set builds none of it: its indirect[m][c] is set to
+exactly 0 (the subtraction would otherwise leave float residue), so every view agrees.
+
 Valid because stage 2 models each mediator with saturation "none" (linear -> additive).
 Derived values carry no credible interval; their median/CI/prior cells are set to NaN.
 """
@@ -44,11 +47,17 @@ class FunnelSplit:
     direct: dict[str, Value]
     total: dict[str, Value]
     mediators: dict[str, MediatorSplit]
+    # Paid channels that drive no mediator: their indirect effect is exactly zero.
+    undriven: frozenset[str] = frozenset()
 
     @property
     def indirect(self) -> dict[str, Value]:
         return {
-            c: _as_value(np.asarray(self.total[c]) - np.asarray(self.direct[c]))
+            c: _as_value(
+                np.zeros_like(np.asarray(self.direct[c], dtype=float))
+                if c in self.undriven
+                else np.asarray(self.total[c]) - np.asarray(self.direct[c])
+            )
             for c in self.direct
         }
 
@@ -85,11 +94,13 @@ def compute_funnel_split(
     single_mediator_analyzers: Mapping[str, Any],
     paid_channels: Sequence[str],
     all_channels: Sequence[str],
+    mediator_channels: Mapping[str, Sequence[str]],
     selected_times: Sequence[str] | None = None,
     selected_geos: Sequence[str] | None = None,
     use_kpi: bool = False,
     aggregate_times: bool = True,
 ) -> FunnelSplit:
+    """`mediator_channels` maps each mediator to the paid channels that drive it."""
     common = {
         "selected_times": list(selected_times) if selected_times else None,
         "selected_geos": list(selected_geos) if selected_geos else None,
@@ -111,8 +122,13 @@ def compute_funnel_split(
             include_non_paid_channels=False,
             **common,
         )
+        driving = set(mediator_channels[name])
         indirect = {
-            c: _as_value(np.asarray(ff_m[c]) - np.asarray(direct[c]))
+            c: _as_value(
+                np.asarray(ff_m[c]) - np.asarray(direct[c])
+                if c in driving
+                else np.zeros_like(np.asarray(direct[c], dtype=float))
+            )
             for c in paid_channels
         }
         built = _as_value(sum((np.asarray(v) for v in indirect.values()), 0.0))
@@ -124,7 +140,13 @@ def compute_funnel_split(
             rest=_as_value(np.asarray(organic) - np.asarray(built)),
             indirect_by_channel=indirect,
         )
-    return FunnelSplit(direct=direct, total=total, mediators=mediators)
+    driven = {c for name in mediators for c in mediator_channels[name]}
+    return FunnelSplit(
+        direct=direct,
+        total=total,
+        mediators=mediators,
+        undriven=frozenset(c for c in paid_channels if c not in driven),
+    )
 
 
 def _null_derived(out: xr.Dataset, var: str, channels: Sequence[str]) -> None:
