@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import scripts.generate_validation_models as gen
-from scripts.validation import fixture_probe
+from scripts.validation import fixture_probe, fixtures
 from scripts.validation.matrix import fixture_specs
 
 
@@ -60,3 +62,12 @@ def test_fixture_probe_reads_model_binpb_not_first_sorted_file(tmp_path, monkeyp
     (tmp_path / "model.binpb").write_bytes(b"s2")
     monkeypatch.setattr(fixture_probe, "_read_provenance", lambda p: {"read": p.name})
     assert fixture_probe.probe(tmp_path)["read"] == "model.binpb"
+
+
+def test_ensure_fixture_model_refuses_full_funnel_before_building(monkeypatch):
+    def _no_build(*args, **kwargs):
+        raise AssertionError("must refuse before building fixtures")
+
+    monkeypatch.setattr(fixtures, "build_all", _no_build)
+    with pytest.raises(ValueError, match="ensure_full_funnel_fixture"):
+        fixtures.ensure_fixture_model("geo-full-funnel")
