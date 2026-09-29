@@ -236,6 +236,8 @@ class OptimizationRun(BaseModel):
     created_at: str
     meridian_version: str
     server_version: str
+    model_version: str | None = None
+    funnel: str = "single"
 
 
 class OptimizationRunState(BaseModel):
@@ -276,16 +278,18 @@ class OptimizationRunSummary(BaseModel):
 
 
 def config_fingerprint(
-    model_id: str, config: BaseOptimizationConfig, *, meridian_version: str
+    model_id: str,
+    config: BaseOptimizationConfig,
+    *,
+    meridian_version: str,
+    model_version: str | None = None,
 ) -> str:
-    """Stable, order-insensitive fingerprint of (model_id, config, engine).
+    """Stable, order-insensitive fingerprint of (model_id, config, engine, model bytes).
 
-    D10: the Meridian version enters as a third KEYWORD parameter rather than
-    being read here. `importlib.metadata` in `domain/` would violate the layer
-    boundary AGENTS.md sets out, so the service layer supplies it.
-
-    Without it, a run computed by Meridian 1.7 would be silently reused after
-    the upgrade to 2.0.
+    D10: the Meridian version enters as a KEYWORD parameter rather than being read here
+    (no importlib.metadata in domain/). ``model_version`` (the catalog's hash of every
+    stage file's etag) makes a replaced model -- or a replaced mediator -- miss reuse
+    instead of silently serving a run computed from the old bytes.
     """
     payload = config.model_dump(mode="json")
     if payload.get("selected_geos"):
@@ -295,6 +299,7 @@ def config_fingerprint(
             "model_id": model_id,
             "config": payload,
             "meridian_version": meridian_version,
+            "model_version": model_version,
         },
         sort_keys=True,
     )
