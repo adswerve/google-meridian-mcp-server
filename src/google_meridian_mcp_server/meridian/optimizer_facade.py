@@ -59,7 +59,12 @@ class OptimizerFacade(MeridianInterrogator):
         from meridian.analysis import optimizer as optimizer_mod
 
         use_kpi = self.resolve_use_kpi(config)
-        opt = optimizer_mod.BudgetOptimizer(self._mmm)
+        if self.is_full_funnel:
+            opt = optimizer_mod.BudgetOptimizer(
+                self._mmm, analyzer=self._get_analyzer()
+            )
+        else:
+            opt = optimizer_mod.BudgetOptimizer(self._mmm)
         kwargs = build_kwargs(config, opt, use_kpi)
         assumptions = kwargs.pop("_assumptions", None)
         results = opt.optimize(**kwargs)
@@ -68,13 +73,70 @@ class OptimizerFacade(MeridianInterrogator):
             if enrich_curves
             else None
         )
+        direct = None
+        if self.is_full_funnel:
+            direct = {
+                "initial": self._direct_incremental(
+                    results, results.nonoptimized_data, kwargs, use_kpi
+                ),
+                "optimized": self._direct_incremental(
+                    results, results.optimized_data, kwargs, use_kpi
+                ),
+            }
         return self.build_result(
             results.nonoptimized_data,
             results.optimized_data,
             use_kpi=use_kpi,
             response_curves=curves,
             assumptions=assumptions,
+            direct=direct,
         )
+
+    def _direct_incremental(
+        self, results, spend_ds, kwargs, use_kpi
+    ) -> dict[str, float]:
+        """Direct-only (plain stage-2) outcome of an allocation, scored exactly like
+        BudgetOptimizer._create_budget_dataset (meridian 2.1.x optimizer.py:2452-2508)."""
+        from meridian import constants as c
+        from meridian.analysis import optimizer as optimizer_mod
+        from meridian.analysis import tensors
+
+        direct_analyzer = self._get_direct_analyzer()
+        model_context = direct_analyzer.model_context
+        new_data = results.new_data or tensors.DataTensors()
+        filled = new_data.validate_and_fill_missing_data(
+            required_tensors_names=c.PAID_DATA + (c.TIME,),
+            model_context=model_context,
+        )
+        selected_times = optimizer_mod._expand_selected_times(
+            model_context=model_context,
+            start_date=kwargs.get("start_date"),
+            end_date=kwargs.get("end_date"),
+            new_data=new_data,
+        )
+        plain = optimizer_mod.BudgetOptimizer(self._mmm)
+        media, reach, frequency = plain._get_incremental_outcome_tensors(
+            results.optimization_grid.historical_spend,
+            np.asarray(spend_ds["spend"].values, dtype=float),
+            new_data=filled.filter_fields(c.PAID_CHANNELS),
+            optimal_frequency=None,
+        )
+        scored = direct_analyzer.incremental_outcome(
+            use_posterior=True,
+            new_data=tensors.DataTensors(
+                media=media,
+                reach=reach,
+                frequency=frequency,
+                revenue_per_kpi=filled.revenue_per_kpi,
+                time=filled.time,
+            ),
+            selected_geos=kwargs.get("selected_geos"),
+            selected_times=selected_times,
+            use_kpi=use_kpi,
+            include_non_paid_channels=False,
+        )
+        means = np.asarray(scored, dtype=float).mean(axis=(0, 1))
+        return {ch: float(means[i]) for i, ch in enumerate(self.channel_order())}
 
     def run(self, config: OptimizationConfig) -> dict[str, Any]:
         return self._run(config, self._historical_kwargs)
@@ -273,6 +335,11 @@ class OptimizerFacade(MeridianInterrogator):
             "reference_mode": f.reference.mode,
             "excluded_channels": list(f.excluded_channels or []),
         }
+        if self.is_full_funnel:
+            kwargs["_assumptions"]["full_funnel"] = {
+                "mediators": self.mediator_names,
+                "mediator_treatment": "predicted_from_planned_spend",
+            }
         return kwargs
 
     # -- private seed helpers (read self._mmm.input_data as NumPy) ------------
@@ -400,15 +467,25 @@ class OptimizerFacade(MeridianInterrogator):
 
     @staticmethod
     def build_result(
-        nonopt, opt, *, use_kpi: bool, response_curves=None, assumptions=None
+        nonopt,
+        opt,
+        *,
+        use_kpi: bool,
+        response_curves=None,
+        assumptions=None,
+        direct=None,
     ) -> dict[str, Any]:
         outcome_mode = "kpi" if use_kpi else "revenue"
         result = {
             "outcome_mode": outcome_mode,
             "summary": OptimizerFacade._summary(nonopt, opt, use_kpi),
             "channel_tables": {
-                "initial": OptimizerFacade._channel_rows(nonopt, use_kpi),
-                "optimized": OptimizerFacade._channel_rows(opt, use_kpi),
+                "initial": OptimizerFacade._channel_rows(
+                    nonopt, use_kpi, direct=(direct or {}).get("initial")
+                ),
+                "optimized": OptimizerFacade._channel_rows(
+                    opt, use_kpi, direct=(direct or {}).get("optimized")
+                ),
             },
             "allocation": OptimizerFacade._allocation(opt),
             "spend_delta": OptimizerFacade._spend_delta(nonopt, opt),
@@ -473,7 +550,9 @@ class OptimizerFacade(MeridianInterrogator):
         }
 
     @staticmethod
-    def _channel_rows(data, use_kpi: bool) -> list[dict[str, Any]]:
+    def _channel_rows(
+        data, use_kpi: bool, direct: dict[str, float] | None = None
+    ) -> list[dict[str, Any]]:
         channels = [str(c) for c in data.coords["channel"].values.tolist()]
         rows: list[dict[str, Any]] = []
         for channel in channels:
@@ -491,18 +570,20 @@ class OptimizerFacade(MeridianInterrogator):
             eff = float(
                 data["effectiveness"].sel(channel=channel, metric="mean").values
             )
-            rows.append(
-                {
-                    "channel": channel,
-                    "spend": _sig6(spend),
-                    "pct_of_spend": _sig6(pct),
-                    "incremental_outcome": _sig6(inc),
-                    "roi": _sig6(roi),
-                    "mroi": _sig6(mroi),
-                    "cpik": _sig6(cpik),
-                    "effectiveness": _sig6(eff),
-                }
-            )
+            row = {
+                "channel": channel,
+                "spend": _sig6(spend),
+                "pct_of_spend": _sig6(pct),
+                "incremental_outcome": _sig6(inc),
+                "roi": _sig6(roi),
+                "mroi": _sig6(mroi),
+                "cpik": _sig6(cpik),
+                "effectiveness": _sig6(eff),
+            }
+            if direct is not None:
+                row["incremental_outcome_direct"] = _sig6(direct[channel])
+                row["incremental_outcome_indirect"] = _sig6(inc - direct[channel])
+            rows.append(row)
         return rows
 
     @staticmethod

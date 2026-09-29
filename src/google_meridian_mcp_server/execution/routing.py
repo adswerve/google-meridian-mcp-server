@@ -30,12 +30,15 @@ def model_size_features(interrogator: Any) -> dict[str, int]:
     posterior = interrogator._mmm.inference_data.posterior
     sizes = dict(posterior.sizes)
     n_posterior_samples = int(sizes.get("chain", 1)) * int(sizes.get("draw", 1))
-    return {
+    features = {
         "n_geos": max(1, len(interrogator.geo_names())),
         "n_time_units": max(1, len(interrogator.get_time_values())),
         "n_channels": max(1, n_channels),
         "n_posterior_samples": max(1, n_posterior_samples),
     }
+    if getattr(interrogator, "is_full_funnel", False):
+        features["n_models"] = 1 + len(interrogator.mediator_names)
+    return features
 
 
 def size_score(features: dict[str, int]) -> int:
@@ -44,6 +47,7 @@ def size_score(features: dict[str, int]) -> int:
         * features["n_time_units"]
         * features["n_channels"]
         * features["n_posterior_samples"]
+        * features.get("n_models", 1)
     )
 
 

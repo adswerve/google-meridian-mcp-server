@@ -288,6 +288,7 @@ def test_run_enriches_curves_but_run_future_does_not(monkeypatch):
 
     facade = OptimizerFacade.__new__(OptimizerFacade)
     facade._mmm = MagicMock()
+    facade._mediators = {}
     facade.resolve_use_kpi = MagicMock(return_value=False)
     build_kwargs = lambda config, opt, use_kpi: {}  # noqa: E731
 
@@ -579,3 +580,210 @@ def test_validate_future_passes_when_dark_channel_excluded():
         }
     )
     facade.validate_future(cfg)  # must not raise
+
+
+def test_channel_rows_add_split_only_when_direct_given():
+    metrics = ["mean", "median"]
+    ds = xr.Dataset(
+        {
+            "spend": (("channel",), [10.0]),
+            "pct_of_spend": (("channel",), [1.0]),
+            "incremental_outcome": (("channel", "metric"), [[30.0, 29.0]]),
+            "roi": (("channel", "metric"), [[3.0, 2.9]]),
+            "mroi": (("channel", "metric"), [[1.0, 1.0]]),
+            "cpik": (("channel", "metric"), [[0.3, 0.3]]),
+            "effectiveness": (("channel", "metric"), [[0.1, 0.1]]),
+        },
+        coords={"channel": ["A"], "metric": metrics},
+    )
+    plain = OptimizerFacade._channel_rows(ds, use_kpi=False)[0]
+    assert "incremental_outcome_direct" not in plain
+    assert "incremental_outcome_indirect" not in plain
+    split = OptimizerFacade._channel_rows(ds, use_kpi=False, direct={"A": 20.0})[0]
+    assert split["incremental_outcome_direct"] == 20.0
+    assert split["incremental_outcome_indirect"] == 10.0
+
+
+def _run_datasets():
+    channels = ["tv"]
+    stats = ["mean", "median", "ci_lo", "ci_hi"]
+
+    def build(inc):
+        return _dataset(
+            channels,
+            budget=100.0,
+            total_outcome=inc,
+            total_roi=3.0,
+            spend=[100.0],
+            roi={m: _const(channels, 3.0) for m in stats},
+            mroi={m: _const(channels, 2.0) for m in stats},
+            cpik={m: _const(channels, 0.5) for m in stats},
+            eff={m: _const(channels, 0.1) for m in stats},
+            inc={m: _const(channels, inc) for m in stats},
+        )
+
+    return build(100.0), build(140.0)
+
+
+def _recording_optimizer(monkeypatch, results):
+    """Replace BudgetOptimizer with a fake that records how it was constructed."""
+    import meridian.analysis.optimizer as optimizer_mod
+
+    constructed = []
+
+    class RecordingBudgetOptimizer:
+        def __init__(self, *args, **kwargs):
+            constructed.append((args, kwargs))
+
+        def optimize(self, **kwargs):
+            return results
+
+    monkeypatch.setattr(optimizer_mod, "BudgetOptimizer", RecordingBudgetOptimizer)
+    return constructed
+
+
+def _fake_results():
+    nonopt, opt = _run_datasets()
+    results = MagicMock()
+    results.nonoptimized_data = nonopt
+    results.optimized_data = opt
+    results.get_response_curves.return_value = _fake_response_curves()
+    return results
+
+
+def test_run_hands_the_full_funnel_analyzer_to_the_optimizer_and_splits(monkeypatch):
+    results = _fake_results()
+    constructed = _recording_optimizer(monkeypatch, results)
+    analyzer = object()
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    facade._mmm = mmm = MagicMock()
+    facade._mediators = {"M1": object()}
+    facade.resolve_use_kpi = MagicMock(return_value=False)
+    facade._get_analyzer = MagicMock(return_value=analyzer)
+    facade._direct_incremental = MagicMock(side_effect=[{"tv": 30.0}, {"tv": 50.0}])
+    build_kwargs = lambda config, opt, use_kpi: {"start_date": None}  # noqa: E731
+
+    result = facade._run(None, build_kwargs)
+
+    assert constructed == [((mmm,), {"analyzer": analyzer})]
+    initial_call, optimized_call = facade._direct_incremental.call_args_list
+    assert initial_call.args[:2] == (results, results.nonoptimized_data)
+    assert optimized_call.args[:2] == (results, results.optimized_data)
+    assert initial_call.args[2] == {"start_date": None}  # the optimize() kwargs
+    assert initial_call.args[3] is False  # use_kpi
+    (initial,) = result["channel_tables"]["initial"]
+    (optimized,) = result["channel_tables"]["optimized"]
+    assert (
+        initial["incremental_outcome_direct"],
+        initial["incremental_outcome_indirect"],
+    ) == (30.0, 70.0)
+    assert (
+        optimized["incremental_outcome_direct"],
+        optimized["incremental_outcome_indirect"],
+    ) == (50.0, 90.0)
+
+
+def test_run_on_a_single_model_builds_the_optimizer_as_before(monkeypatch):
+    results = _fake_results()
+    constructed = _recording_optimizer(monkeypatch, results)
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    facade._mmm = mmm = MagicMock()
+    facade._mediators = {}
+    facade.resolve_use_kpi = MagicMock(return_value=False)
+    facade._get_analyzer = MagicMock()
+    facade._direct_incremental = MagicMock()
+
+    result = facade._run(None, lambda config, opt, use_kpi: {})
+
+    assert constructed == [((mmm,), {})]
+    facade._get_analyzer.assert_not_called()
+    facade._direct_incremental.assert_not_called()
+    (row,) = result["channel_tables"]["optimized"]
+    assert "incremental_outcome_direct" not in row
+    assert "incremental_outcome_indirect" not in row
+
+
+def _future_facade(mediators):
+    """A facade whose future-kwargs inputs are faked: weekly history, two channels."""
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    facade._mediators = mediators
+    facade.get_time_values = lambda: [
+        "2026-01-05",
+        "2026-01-12",
+        "2026-01-19",
+        "2026-01-26",
+    ]
+    facade.get_data_inputs = lambda: {"media": ["A", "B"], "rf_media": []}
+    facade.has_revenue_per_kpi = lambda: False
+    facade._seed_cpmu = lambda window, excluded=frozenset(): np.ones(2)
+    facade._seed_spend_flighting = lambda kind, window, horizon, average: np.full(
+        (1, horizon, 2), 5.0
+    )
+    facade._carried_allocation = lambda window: {"A": 1.0, "B": 1.0}
+    return facade
+
+
+def _future_config(**future):
+    return FutureOptimizationConfig.model_validate(
+        {
+            "scenario": {"type": "fixed_budget"},
+            "future": {"start_date": "2026-02-02", "horizon": 3, **future},
+        }
+    )
+
+
+def test_future_kwargs_select_the_whole_future_window():
+    """AnalyzerFullFunnel supports only the whole future window, never a sub-window."""
+    facade = _future_facade({"M1": object()})
+    kwargs = facade._future_kwargs(_future_config(), MagicMock(), False)
+    assert kwargs["start_date"] == "2026-02-02"
+    assert kwargs["end_date"] == "2026-02-16"
+
+
+def test_future_assumptions_carry_full_funnel_only_on_full_funnel_models():
+    config = _future_config()
+    full = _future_facade({"M1": object(), "M2": object()})
+    assumptions = full._future_kwargs(config, MagicMock(), False)["_assumptions"]
+    assert assumptions["full_funnel"] == {
+        "mediators": ["M1", "M2"],
+        "mediator_treatment": "predicted_from_planned_spend",
+    }
+    single = _future_facade({})
+    assumptions = single._future_kwargs(config, MagicMock(), False)["_assumptions"]
+    assert "full_funnel" not in assumptions
+    assert set(assumptions) == {
+        "budget",
+        "budget_source",
+        "reference_mode",
+        "excluded_channels",
+    }
+
+
+def test_full_funnel_sizing_multiplier_is_applied_only_to_full_funnel():
+    from types import SimpleNamespace
+
+    from google_meridian_mcp_server.execution.routing import model_size_features
+
+    def interrogator(mediators):
+        return SimpleNamespace(
+            is_full_funnel=bool(mediators),
+            mediator_names=list(mediators),
+            get_data_inputs=lambda: {"media": ["A", "B"], "rf_media": ["C"]},
+            _mmm=SimpleNamespace(
+                inference_data=SimpleNamespace(
+                    posterior=SimpleNamespace(sizes={"chain": 2, "draw": 10})
+                )
+            ),
+            geo_names=lambda: ["g1", "g2"],
+            get_time_values=lambda: ["t"] * 5,
+        )
+
+    single = model_size_features(interrogator({}))
+    assert single == {
+        "n_geos": 2,
+        "n_time_units": 5,
+        "n_channels": 3,
+        "n_posterior_samples": 20,
+    }
+    full = model_size_features(interrogator({"M1": 1, "M2": 2}))
+    assert full == {**single, "n_models": 3}
