@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import inspect
+import json
 import tomllib
 from pathlib import Path
 
@@ -25,6 +26,11 @@ def test_vendored_body_is_byte_identical_to_upstream():
 
 def test_meridian_dependency_is_pinned_below_2_2():
     deps = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
+    assert "google-meridian[schema,geox]>=2.1,<2.2" in deps
+
+
+def test_fastmcp_json_pins_the_same_meridian_range_as_pyproject():
+    deps = json.loads(Path("fastmcp.json").read_text())["environment"]["dependencies"]
     assert "google-meridian[schema,geox]>=2.1,<2.2" in deps
 
 
