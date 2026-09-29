@@ -14,8 +14,13 @@ from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.dataset_mapper import dataset_to_records
 from google_meridian_mcp_server.meridian.full_funnel.decomposition import (
     ALL_CHANNELS,
+    adjust_baseline_summary,
+    adjust_model_fit_baseline,
     compute_funnel_split,
     relabel_mediator_rows,
+)
+from google_meridian_mcp_server.meridian.full_funnel.visualizers import (
+    FullFunnelModelFit,
 )
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
@@ -326,6 +331,9 @@ class AnalyzerFacade(MeridianInterrogator):
             aggregate_times=filters.aggregate_times,
             use_kpi=self.resolve_use_kpi(filters),
         )
+        if self.is_full_funnel:
+            split = self._funnel_split(filters, aggregate_times=filters.aggregate_times)
+            ds = adjust_baseline_summary(ds, split.rest_total)
         return self._records_from_output(ds)
 
     def get_roi(self, filters: AnalysisFilters) -> list[dict]:
@@ -662,13 +670,21 @@ class AnalyzerFacade(MeridianInterrogator):
         use_kpi = self.resolve_use_kpi(filters)
         key = (use_kpi, confidence_level)
         if key not in self._model_fit_cache:
-            from meridian.analysis import visualizer as visualizer_mod
+            if self.is_full_funnel:
+                self._model_fit_cache[key] = FullFunnelModelFit(
+                    self._mmm,
+                    self._get_analyzer(),
+                    use_kpi=use_kpi,
+                    confidence_level=confidence_level,
+                )
+            else:
+                from meridian.analysis import visualizer as visualizer_mod
 
-            self._model_fit_cache[key] = visualizer_mod.ModelFit(
-                self._mmm,
-                use_kpi=use_kpi,
-                confidence_level=confidence_level,
-            )
+                self._model_fit_cache[key] = visualizer_mod.ModelFit(
+                    self._mmm,
+                    use_kpi=use_kpi,
+                    confidence_level=confidence_level,
+                )
         return self._model_fit_cache[key]
 
     def get_model_fit(self, filters: AnalysisFilters) -> list[dict]:
@@ -677,7 +693,25 @@ class AnalyzerFacade(MeridianInterrogator):
             selected_times=self._expand_selected_times(filters),
             selected_geos=self._selected_geos(filters),
         )
-        return dataset_to_records(self._reshape_model_fit(df))
+        reshaped = self._reshape_model_fit(df)
+        if self.is_full_funnel:
+            reshaped = adjust_model_fit_baseline(
+                reshaped, self._rest_by_fit_period(filters, reshaped["time"])
+            )
+        return dataset_to_records(reshaped)
+
+    def _rest_by_fit_period(self, filters: AnalysisFilters, times: pd.Series):
+        """Per-period sum(rest), in the row order of the reshaped model fit.
+
+        adjust_model_fit_baseline is positional, so the split (same geos, window and
+        use_kpi, aggregate_times=False) is looked up by time label rather than assumed
+        to share the model-fit row order.
+        """
+        rest = np.asarray(
+            self._funnel_split(filters, aggregate_times=False).rest_total, dtype=float
+        )
+        index = {t[:10]: i for i, t in enumerate(self._split_times(filters))}
+        return rest[[index[str(t)[:10]] for t in times]]
 
     @staticmethod
     def _reshape_model_fit(df: pd.DataFrame) -> pd.DataFrame:

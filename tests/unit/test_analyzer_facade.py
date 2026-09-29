@@ -801,6 +801,59 @@ def test_model_fit_is_cached_by_use_kpi_and_confidence_level():
     assert model_fit_ctor.call_count == 1
 
 
+def test_full_funnel_model_fit_is_built_with_the_facades_full_funnel_analyzer(
+    monkeypatch,
+):
+    from google_meridian_mcp_server.meridian import analyzer_facade as facade_mod
+
+    built = []
+
+    class _RecordingFullFunnelModelFit:
+        def __init__(self, meridian, analyzer, use_kpi, confidence_level):
+            built.append((meridian, analyzer, use_kpi, confidence_level))
+
+    monkeypatch.setattr(facade_mod, "FullFunnelModelFit", _RecordingFullFunnelModelFit)
+    monkeypatch.setattr(
+        visualizer_mod,
+        "ModelFit",
+        lambda *a, **k: pytest.fail("plain ModelFit used on a full-funnel model"),
+    )
+    mmm = SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None))
+    facade = AnalyzerFacade(mmm, {"M1": object()})
+    ff_analyzer = object()
+    facade._analyzer = (
+        ff_analyzer  # what _get_analyzer() returns for a full-funnel model
+    )
+
+    fit = facade._get_model_fit(AnalysisFilters(), confidence_level=0.8)
+
+    assert built == [(mmm, ff_analyzer, True, 0.8)]
+    assert isinstance(fit, _RecordingFullFunnelModelFit)
+
+
+def test_single_model_fit_still_uses_meridians_own_model_fit(monkeypatch):
+    from google_meridian_mcp_server.meridian import analyzer_facade as facade_mod
+
+    constructed = []
+
+    class _OwnModelFit:
+        def __init__(self, *args, **kwargs):
+            constructed.append((args, kwargs))
+
+    monkeypatch.setattr(visualizer_mod, "ModelFit", _OwnModelFit)
+    monkeypatch.setattr(
+        facade_mod,
+        "FullFunnelModelFit",
+        lambda *a, **k: pytest.fail("FullFunnelModelFit used on a single model"),
+    )
+    mmm = SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None))
+
+    fit = AnalyzerFacade(mmm)._get_model_fit(AnalysisFilters())
+
+    assert isinstance(fit, _OwnModelFit)
+    assert constructed == [((mmm,), {"use_kpi": True, "confidence_level": 0.9})]
+
+
 def _stub_media_summary(monkeypatch):
     """Replace Meridian's MediaSummary with a recorder that owns a plain analyzer."""
     constructed = []
