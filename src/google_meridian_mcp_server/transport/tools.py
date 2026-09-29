@@ -18,6 +18,7 @@ from google_meridian_mcp_server.domain.filters import (
     AnalysisFilters,
     ChannelSummaryType,
     ContributionType,
+    FunnelBreakdownType,
     ResponseCurveType,
     ResponseDynamicsType,
     TrainingDataset,
@@ -309,6 +310,37 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get the spend-response relationship for each channel — how KPI changes as spend increases or decreases. Use this to answer 'what happens if we double search spend?' or 'which channels show diminishing returns?'."""
         return await _analysis_service(ctx).get_response_curves(
+            model_id,
+            output_type,
+            filters,
+        )
+
+    @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
+    @_guarded
+    async def get_funnel_breakdown(
+        model_id: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Model identifier from list_models (e.g. 'model-2026-Q1').",
+            ),
+        ],
+        output_type: Annotated[
+            FunnelBreakdownType,
+            Field(
+                description="'channel_breakdown': per paid channel, the direct effect, the indirect effect through each brand mediator, and each mediator's 'brand equity (rest)' row (the part paid media did not build) — posterior means, no intervals. 'mediator_lift': how much each paid channel moved each mediator in the mediator's own units (e.g. branded searches), with credible intervals, spend, and cost per incremental unit.",
+            ),
+        ],
+        ctx: Context,
+        filters: Annotated[
+            AnalysisFilters | None,
+            Field(
+                description="Optional filters: start_date/end_date/geos slice the model; channels accepts paid channel names and mediator names (a mediator name keeps its indirect, brand-equity and lift rows); use_kpi applies to channel_breakdown only.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Explain a FULL-FUNNEL model's paid-media effect path by path: how much each channel drives the KPI directly versus indirectly by building brand mediators (e.g. video -> branded search -> conversions), and how much each mediator is brand equity paid media did not build. Only available when get_model_overview lists it in available_tool_options (funnel='full_funnel')."""
+        return await _analysis_service(ctx).get_funnel_breakdown(
             model_id,
             output_type,
             filters,

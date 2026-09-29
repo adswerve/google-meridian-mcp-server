@@ -66,6 +66,11 @@ RESPONSE_CURVE_DISPATCH = {
     "response_curve_summary": "get_response_curve_summary",
 }
 
+FUNNEL_BREAKDOWN_DISPATCH = {
+    "channel_breakdown": "get_funnel_channel_breakdown",
+    "mediator_lift": "get_funnel_mediator_lift",
+}
+
 
 def sanitize_nan(obj: Any) -> Any:
     """Recursively replace non-finite floats (nan/inf/-inf) with None, and
@@ -145,6 +150,29 @@ def _get_adstock_decay(catalog: Any, model_id: str, params: dict) -> dict:
 
 def _get_response_curves(catalog: Any, model_id: str, params: dict) -> dict:
     return _dispatch_facade_query(catalog, model_id, params, RESPONSE_CURVE_DISPATCH)
+
+
+def _get_funnel_breakdown(catalog: Any, model_id: str, params: dict) -> dict:
+    output_type = params["output_type"]
+    if output_type not in FUNNEL_BREAKDOWN_DISPATCH:
+        raise InvalidOutputTypeError(output_type, sorted(FUNNEL_BREAKDOWN_DISPATCH))
+    facade = catalog.get_facade(model_id)
+    if not facade.is_full_funnel:
+        raise MetricNotSupportedError(
+            model_id,
+            output_type,
+            "model is not a full-funnel model: it has no mediators/ folder of "
+            "brand-mediator models",
+        )
+    filters = normalize_filters(params["filters"])
+    valid = facade.paid_channels() + list(facade.mediator_names)
+    unknown = [c for c in filters.channels if c not in valid]
+    if unknown:
+        raise MissingModelDataError(
+            model_id,
+            f"unknown channel(s) {', '.join(unknown)}; valid: {', '.join(valid)}",
+        )
+    return _dispatch_facade_query(catalog, model_id, params, FUNNEL_BREAKDOWN_DISPATCH)
 
 
 def _get_reach_frequency(catalog: Any, model_id: str, params: dict) -> dict:
@@ -338,6 +366,7 @@ ANALYSIS_OPS: dict[str, Callable[[Any, str, dict], dict]] = {
     "get_channel_summary": _get_channel_summary,
     "get_adstock_decay": _get_adstock_decay,
     "get_response_curves": _get_response_curves,
+    "get_funnel_breakdown": _get_funnel_breakdown,
     "get_reach_frequency": _get_reach_frequency,
     "get_model_fit": _get_model_fit,
     "get_model_overview": _get_model_overview,

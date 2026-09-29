@@ -18,6 +18,7 @@ from google_meridian_mcp_server.meridian.full_funnel.decomposition import (
     adjust_model_fit_baseline,
     compute_funnel_split,
     relabel_mediator_rows,
+    rest_label,
 )
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
@@ -630,6 +631,101 @@ class AnalyzerFacade(MeridianInterrogator):
         )
         df.columns.name = None
         return dataset_to_records(df)
+
+    # -- Full-funnel breakdown methods -----------------------------------------
+
+    @staticmethod
+    def _breakdown_row(
+        channel: str,
+        component: str,
+        mediator: str | None,
+        value: float,
+        channel_total: float | None,
+    ) -> dict:
+        """One channel_breakdown row; the share is null without a channel total."""
+        return {
+            "channel": channel,
+            "component": component,
+            "mediator": mediator,
+            "incremental_outcome": value,
+            "share_of_channel_total": value / channel_total if channel_total else None,
+        }
+
+    def get_funnel_channel_breakdown(self, filters: AnalysisFilters) -> list[dict]:
+        """Direct, per-mediator indirect and brand-equity rest rows (posterior means).
+
+        A `channels` filter keeps a paid channel's rows, or a mediator's indirect and
+        rest rows; a mixed list is the union.
+        """
+        split = self._funnel_split(filters, aggregate_times=True)
+        wanted = set(filters.channels)
+        rows: list[dict] = []
+        for c in self.paid_channels():
+            total = float(split.total[c])
+            keep_channel = not wanted or c in wanted
+            if keep_channel:
+                rows.append(
+                    self._breakdown_row(
+                        c, "direct", None, float(split.direct[c]), total
+                    )
+                )
+            for m in self.mediator_names:
+                if not (keep_channel or m in wanted):
+                    continue
+                # A channel that does not drive the mediator builds none of it.
+                value = (
+                    float(split.mediators[m].indirect_by_channel[c])
+                    if c in self.mediator_channels(m)
+                    else 0.0
+                )
+                rows.append(self._breakdown_row(c, "indirect", m, value, total))
+        for m in self.mediator_names:
+            if not wanted or m in wanted:
+                rows.append(
+                    self._breakdown_row(
+                        rest_label(m),
+                        "brand_equity_rest",
+                        m,
+                        float(split.mediators[m].rest),
+                        None,
+                    )
+                )
+        return rows
+
+    def get_funnel_mediator_lift(self, filters: AnalysisFilters) -> list[dict]:
+        """Stage-1 posterior lift per mediator and driving paid channel (native units)."""
+        wanted = set(filters.channels)
+        rows: list[dict] = []
+        for m in self.mediator_names:
+            channels = self.mediator_channels(m)
+            if wanted and m not in wanted:
+                channels = [c for c in channels if c in wanted]
+            if not channels:
+                continue
+            ds = self._get_stage1_analyzer(m).summary_metrics(
+                selected_geos=self._selected_geos(filters),
+                selected_times=self._expand_selected_times(filters),
+                use_kpi=True,
+                include_non_paid_channels=False,
+                confidence_level=0.9,
+            )
+            post = ds.sel(distribution="posterior")
+            for c in channels:
+                io = post["incremental_outcome"].sel(channel=c)
+                rows.append(
+                    {
+                        "mediator": m,
+                        "channel": c,
+                        "incremental_units": float(io.sel(metric="mean")),
+                        "incremental_units_ci_lo": float(io.sel(metric="ci_lo")),
+                        "incremental_units_ci_hi": float(io.sel(metric="ci_hi")),
+                        "spend": float(post["spend"].sel(channel=c)),
+                        "cost_per_incremental_unit": float(
+                            post["cpik"].sel(channel=c, metric="mean")
+                        ),
+                    }
+                )
+        return rows
 
     # -- Reach & frequency methods ---------------------------------------------
 

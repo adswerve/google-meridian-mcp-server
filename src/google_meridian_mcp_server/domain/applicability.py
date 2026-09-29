@@ -72,6 +72,10 @@ FILTER_APPLICABILITY: dict[Key, frozenset[str]] = {
     ("get_channel_data", None): frozenset((*_DATES_GEOS, "channels")),
     ("get_training_data", None): frozenset((*_DATES_GEOS, "channels")),
     ("get_spend_scenario", None): frozenset((*_DATES_GEOS, "use_kpi")),
+    ("get_funnel_breakdown", "channel_breakdown"): frozenset(
+        (*_DATES_GEOS, "channels", "use_kpi")
+    ),
+    ("get_funnel_breakdown", "mediator_lift"): frozenset((*_DATES_GEOS, "channels")),
 }
 
 # Every string must be TRUE UNDER BOTH VALUES of its filter (spec 4): it
@@ -209,6 +213,30 @@ IGNORED_REASONS: dict[Key, dict[str, str]] = {
         "include_non_paid": (
             "the scenario applies to a paid media or RF channel by "
             "construction; include_non_paid is not read"
+        ),
+    },
+    ("get_funnel_breakdown", "channel_breakdown"): {
+        "aggregate_times": (
+            "the funnel breakdown is always aggregated over the selected window; "
+            "aggregate_times is not read"
+        ),
+        "include_non_paid": (
+            "the breakdown always lists the paid channels and each brand mediator's "
+            "brand-equity row; include_non_paid is not read"
+        ),
+    },
+    ("get_funnel_breakdown", "mediator_lift"): {
+        "aggregate_times": (
+            "mediator lift is always aggregated over the selected window; "
+            "aggregate_times is not read"
+        ),
+        "include_non_paid": (
+            "mediator lift is measured for the paid channels that drive each "
+            "mediator; include_non_paid is not read"
+        ),
+        "use_kpi": (
+            "mediator lift is always in the mediator's own units (e.g. searches), "
+            "never revenue or KPI; use_kpi is not read"
         ),
     },
 }

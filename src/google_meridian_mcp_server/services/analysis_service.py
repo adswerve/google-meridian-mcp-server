@@ -49,6 +49,9 @@ RESPONSE_DYNAMICS_TYPES = frozenset(RESPONSE_DYNAMICS_TYPE_ORDER)
 RESPONSE_CURVE_TYPE_ORDER = ("response_curves", "response_curve_summary")
 RESPONSE_CURVE_TYPES = frozenset(RESPONSE_CURVE_TYPE_ORDER)
 
+FUNNEL_BREAKDOWN_TYPE_ORDER = ("channel_breakdown", "mediator_lift")
+FUNNEL_BREAKDOWN_TYPES = frozenset(FUNNEL_BREAKDOWN_TYPE_ORDER)
+
 
 class AnalysisService:
     """Orchestrates grouped analysis queries via the subprocess runner.
@@ -254,6 +257,15 @@ class AnalysisService:
         }
         if overview.get("rf_channels"):
             overview["available_tool_options"]["get_reach_frequency"] = {}
+        if overview.get("funnel") == "full_funnel":
+            mediators = [m["name"] for m in overview["full_funnel"]["mediators"]]
+            overview["available_tool_options"]["get_funnel_breakdown"] = {
+                "output_type": list(FUNNEL_BREAKDOWN_TYPE_ORDER),
+                "channels": overview.get("media_channels", [])
+                + overview.get("rf_channels", [])
+                + mediators,
+                "mediators": mediators,
+            }
         return {"model_id": model_id, **overview}
 
     async def get_channel_summary(
@@ -304,6 +316,19 @@ class AnalysisService:
         if output_type not in RESPONSE_CURVE_TYPES:
             raise InvalidOutputTypeError(output_type, sorted(RESPONSE_CURVE_TYPES))
         key = ("get_response_curves", output_type)
+        params, ignored = self._narrowed(filters, key, {"output_type": output_type})
+        result = await self._cached(key[0], model_id, params)
+        return insert_note(result, key, ignored)
+
+    async def get_funnel_breakdown(
+        self,
+        model_id: str,
+        output_type: str,
+        filters: AnalysisFilters | dict | None,
+    ) -> dict[str, Any]:
+        if output_type not in FUNNEL_BREAKDOWN_TYPES:
+            raise InvalidOutputTypeError(output_type, sorted(FUNNEL_BREAKDOWN_TYPES))
+        key = ("get_funnel_breakdown", output_type)
         params, ignored = self._narrowed(filters, key, {"output_type": output_type})
         result = await self._cached(key[0], model_id, params)
         return insert_note(result, key, ignored)

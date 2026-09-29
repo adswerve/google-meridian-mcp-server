@@ -808,3 +808,58 @@ async def test_regression_windowed_adstock_returns_national_rows_and_says_so():
     assert windowed["scope"] == "national, full training window"
     assert set(windowed["ignored_filters"]) == {"start_date", "end_date", "geos"}
     assert "time-invariant" in windowed["ignored_filters"]["end_date"]
+
+
+def test_overview_advertises_funnel_breakdown_only_on_full_funnel():
+    raw_ff = {
+        "available_training_datasets": ["kpi"],
+        "has_revenue_per_kpi": True,
+        "media_channels": ["A", "B", "C"],
+        "rf_channels": [],
+        "geo_names": ["g1"],
+        "funnel": "full_funnel",
+        "full_funnel": {
+            "mediators": [
+                {
+                    "name": "M1",
+                    "driven_by": ["A"],
+                    "brand_equity_label": "M1 (brand equity, rest)",
+                }
+            ]
+        },
+    }
+    ff = AnalysisService._decorate_overview("exp", raw_ff)
+    assert ff["available_tool_options"]["get_funnel_breakdown"] == {
+        "output_type": ["channel_breakdown", "mediator_lift"],
+        "channels": ["A", "B", "C", "M1"],
+        "mediators": ["M1"],
+    }
+    single = AnalysisService._decorate_overview("flat", {**raw_ff, "funnel": "single"})
+    assert "get_funnel_breakdown" not in single["available_tool_options"]
+
+
+async def test_get_funnel_breakdown_routes_and_rejects_bad_output_type():
+    runner = FakeRunner()
+    service = AnalysisService(runner=runner)
+    await service.get_funnel_breakdown("exp", "channel_breakdown", {"channels": ["A"]})
+    op, model_id, params = runner.calls[0]
+    assert (op, model_id, params["output_type"]) == (
+        "get_funnel_breakdown",
+        "exp",
+        "channel_breakdown",
+    )
+    with pytest.raises(InvalidOutputTypeError):
+        await service.get_funnel_breakdown("exp", "nope", None)
+    assert len(runner.calls) == 1
+
+
+async def test_funnel_breakdown_reports_the_filters_it_does_not_read():
+    service = AnalysisService(runner=FakeRunner())
+    lift = await service.get_funnel_breakdown(
+        "exp", "mediator_lift", {"use_kpi": True, "aggregate_times": False}
+    )
+    assert set(lift["ignored_filters"]) == {"use_kpi", "aggregate_times"}
+    breakdown = await service.get_funnel_breakdown(
+        "exp", "channel_breakdown", {"use_kpi": True, "include_non_paid": True}
+    )
+    assert set(breakdown["ignored_filters"]) == {"include_non_paid"}

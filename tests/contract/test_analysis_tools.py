@@ -98,6 +98,7 @@ class TestAnalysisToolContracts:
         from google_meridian_mcp_server.domain.filters import (
             ChannelSummaryType,
             ContributionType,
+            FunnelBreakdownType,
             ResponseCurveType,
             ResponseDynamicsType,
         )
@@ -111,6 +112,7 @@ class TestAnalysisToolContracts:
             ("get_contribution", ContributionType),
             ("get_adstock_decay", ResponseDynamicsType),
             ("get_response_curves", ResponseCurveType),
+            ("get_funnel_breakdown", FunnelBreakdownType),
         ):
             for output_type in typing.get_args(alias):
                 expected.add((tool, output_type))
@@ -128,7 +130,7 @@ class TestAnalysisToolContracts:
         # Surface-size canary, not arithmetic: bump this deliberately when a
         # tool or output type is added or removed, alongside its
         # FILTER_APPLICABILITY / IGNORED_REASONS entries.
-        assert len(expected) == 17
+        assert len(expected) == 19
 
     # test_spend_scenario_summary_contract (the "get_spend_scenario returns
     # exactly the 15 documented summary keys" contract) moved to
