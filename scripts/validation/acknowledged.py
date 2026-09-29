@@ -106,6 +106,8 @@ class Acknowledged:
     pointer: str  # the field's CANONICAL (case-root) pointer, e.g. "/backend"
     change: str  # "removed" | "added" | "changed"
     reason: str
+    # True: acknowledged only at the case root, never one level under an envelope key.
+    root_only: bool = False
 
 
 ACKNOWLEDGED: tuple[Acknowledged, ...] = (
@@ -160,6 +162,7 @@ ACKNOWLEDGED: tuple[Acknowledged, ...] = (
         pointer="/funnel",
         change="added",
         reason="v0.4.0: get_model_overview reports funnel='single' on single models.",
+        root_only=True,
     ),
 )
 
@@ -179,6 +182,8 @@ def match(pointer: str, change: str) -> Acknowledged | None:
                 and f"/{parts[2]}" == entry.pointer[2:]
             ):
                 return entry
+            continue
+        if entry.root_only:
             continue
         if any(pointer == f"/{key}{entry.pointer}" for key in _KNOWN_ENVELOPE_KEYS):
             return entry
