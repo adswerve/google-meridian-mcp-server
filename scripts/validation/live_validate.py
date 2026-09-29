@@ -296,11 +296,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--force", action="store_true", help="Rebuild fixtures first")
     args = parser.parse_args()
-    if (
-        not (DEFAULT_OUT_ROOT.exists() and any(DEFAULT_OUT_ROOT.iterdir()))
-        or args.force
-    ):
-        _ensure_fixtures(args.force)
+    _ensure_fixtures(args.force)  # skips fixtures that already exist
     sys.exit(asyncio.run(_run()))
 
 

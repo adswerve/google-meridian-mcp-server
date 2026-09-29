@@ -97,7 +97,9 @@ def adversarial_cases(variant) -> list[AdversarialCase]:
 # shape in ways the other variants would expose, so -- exactly as
 # live_validate already does -- only these two variants carry optimization
 # cases.
-OPTIMIZATION_VARIANTS = frozenset({"national-revenue", "geo-revenue"})
+OPTIMIZATION_VARIANTS = frozenset(
+    {"national-revenue", "geo-revenue", "geo-full-funnel"}
+)
 
 FAR_FUTURE = "2099-01-01"
 
@@ -136,6 +138,8 @@ def variant_capabilities(variant) -> frozenset[str]:
         caps.add("geo")
     if variant.key in OPTIMIZATION_VARIANTS:
         caps.add("optimize")
+    if getattr(variant, "mediators", ()):
+        caps.add("funnel")
     return frozenset(caps)
 
 
