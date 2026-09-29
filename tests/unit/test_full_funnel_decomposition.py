@@ -243,6 +243,18 @@ def test_adjust_baseline_summary_subtracts_rest_and_rescales_pct():
         assert np.isnan(float(cell))
 
 
+def test_adjust_baseline_summary_nulls_every_prior_cell():
+    out = dec.adjust_baseline_summary(_baseline_summary_ds(), 30.0)
+    for var in ("baseline_outcome", "pct_of_contribution"):
+        prior = out[var].sel(channel="baseline", distribution="prior")
+        assert prior.notnull().sum() == 0
+        assert prior.metric.values.tolist() == ["mean", "median", "ci_lo", "ci_hi"]
+        posterior_mean = out[var].sel(channel="baseline", **PM)
+        assert float(posterior_mean) == pytest.approx(
+            760.0 if var == "baseline_outcome" else 79.0 * 760.0 / 790.0
+        )
+
+
 def test_adjust_baseline_summary_per_period():
     out = dec.adjust_baseline_summary(
         _baseline_summary_ds([0.25, 0.75]), np.array([10.0, 20.0])

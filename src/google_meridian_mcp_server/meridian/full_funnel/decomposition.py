@@ -186,6 +186,8 @@ def relabel_mediator_rows(
 def adjust_baseline_summary(ds: xr.Dataset, rest_total: Value) -> xr.Dataset:
     """Lower baseline_summary_metrics' posterior-mean baseline by sum(rest).
 
+    Median, CI and every prior cell of the adjusted baseline are set to NaN.
+
     Google's zero-media counterfactual keeps each mediator at stage 1's no-media level,
     so its baseline still contains the brand-equity rest the contribution table lists as
     its own row. Subtracting it gives one baseline everywhere.
@@ -207,6 +209,8 @@ def adjust_baseline_summary(ds: xr.Dataset, rest_total: Value) -> xr.Dataset:
     for var in ("baseline_outcome", "pct_of_contribution"):
         for met in _DERIVED_METRICS:
             out[var].loc[{"distribution": "posterior", "metric": met}] = np.nan
+        if "prior" in out.distribution.values:
+            out[var].loc[{"distribution": "prior"}] = np.nan
     return out
 
 
