@@ -98,7 +98,10 @@ class MeridianInterrogator:
         if self._direct_analyzer is None:
             from meridian.analysis import analyzer as analyzer_mod
 
-            self._direct_analyzer = analyzer_mod.Analyzer(self._mmm)
+            self._direct_analyzer = analyzer_mod.Analyzer(
+                model_context=self._mmm.model_context,
+                inference_data=self._mmm.inference_data,
+            )
         return self._direct_analyzer
 
     def _get_single_mediator_analyzer(self, name: str):
@@ -115,7 +118,11 @@ class MeridianInterrogator:
         if name not in self._stage1_analyzers:
             from meridian.analysis import analyzer as analyzer_mod
 
-            self._stage1_analyzers[name] = analyzer_mod.Analyzer(self._mediators[name])
+            mediator = self._mediators[name]
+            self._stage1_analyzers[name] = analyzer_mod.Analyzer(
+                model_context=mediator.model_context,
+                inference_data=mediator.inference_data,
+            )
         return self._stage1_analyzers[name]
 
     def is_national(self) -> bool:

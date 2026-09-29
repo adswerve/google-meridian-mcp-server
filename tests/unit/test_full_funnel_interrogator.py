@@ -15,7 +15,9 @@ from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogato
 
 def _model(paid):
     return SimpleNamespace(
-        input_data=SimpleNamespace(get_all_paid_channels=lambda: np.asarray(paid))
+        input_data=SimpleNamespace(get_all_paid_channels=lambda: np.asarray(paid)),
+        model_context=object(),
+        inference_data=object(),
     )
 
 
@@ -82,15 +84,24 @@ def test_google_value_error_becomes_domain_error(monkeypatch):
         mmm._get_analyzer()
 
 
-def test_direct_analyzer_is_plain(monkeypatch):
+def test_direct_and_stage1_analyzers_are_plain(monkeypatch):
     built = []
     import meridian.analysis.analyzer as analyzer_mod
 
-    monkeypatch.setattr(analyzer_mod, "Analyzer", lambda m: built.append(m) or "plain")
+    def fake_analyzer(*, model_context, inference_data):
+        built.append((model_context, inference_data))
+        return "plain"
+
+    monkeypatch.setattr(analyzer_mod, "Analyzer", fake_analyzer)
     s2 = _model(["A"])
-    mmm = MeridianInterrogator(s2, {"M1": _model(["A"])})
+    m1 = _model(["A"])
+    mmm = MeridianInterrogator(s2, {"M1": m1})
     assert mmm._get_direct_analyzer() == "plain"
-    assert built == [s2]
+    assert mmm._get_stage1_analyzer("M1") == "plain"
+    assert built == [
+        (s2.model_context, s2.inference_data),
+        (m1.model_context, m1.inference_data),
+    ]
 
 
 def test_mediator_channels_follow_stage2_paid_order():
