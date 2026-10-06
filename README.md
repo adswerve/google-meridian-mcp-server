@@ -214,6 +214,13 @@ See [Full-funnel models](#full-funnel-models) below.
 python -m google_meridian_mcp_server.server
 ```
 
+Over HTTP the server runs **stateless** by default: it keeps no per-client session, so a
+client that reconnects, or that still holds a session id from before a restart, is served
+normally instead of being refused with 404 "Session not found". No tool depends on session
+state. To run stateful (FastMCP's own default) set `FASTMCP_STATELESS_HTTP=false`. This
+applies when the server is started with the command above, which is also what the Docker
+image runs; `fastmcp run` with `fastmcp.json` starts it through FastMCP's CLI instead.
+
 ### MCP Inspector
 
 For interactive Inspector testing, the repository includes `fastmcp.json`. The most reliable way to test with your local environment is to start the server yourself and connect the Inspector to `http://localhost:8000/mcp`:

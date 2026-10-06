@@ -169,8 +169,58 @@ def test_run_server_uses_http_transport_and_env_host_port(
     server.run_server()
 
     run.assert_called_once_with(
-        transport="http", host="127.0.0.1", port=9000, json_response=True
+        transport="http",
+        host="127.0.0.1",
+        port=9000,
+        json_response=True,
+        stateless_http=True,
     )
+
+
+@pytest.fixture
+def no_stateless_override(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """No FASTMCP_STATELESS_HTTP anywhere: not in the environment, and no .env
+    in the working directory for fastmcp's settings to pick it up from."""
+    monkeypatch.delenv("FASTMCP_STATELESS_HTTP", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.mark.usefixtures("no_stateless_override")
+def test_http_transport_is_stateless_by_default():
+    """A stateful server strands every client across a restart: the client's
+    old session id is unknown to the new process and every call is answered
+    404 "Session not found". fastmcp defaults to stateful; this server must not.
+    """
+    assert server.stateless_http_enabled() is True
+    assert server.http_app_options() == {
+        "json_response": True,
+        "stateless_http": True,
+    }
+
+
+@pytest.mark.usefixtures("no_stateless_override")
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("false", False), ("0", False), ("true", True), ("1", True)],
+)
+def test_stateless_http_honours_explicit_env_override(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
+):
+    monkeypatch.setenv("FASTMCP_STATELESS_HTTP", value)
+
+    assert server.stateless_http_enabled() is expected
+    assert server.http_app_options()["stateless_http"] is expected
+
+
+def test_stateless_http_override_in_working_directory_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """fastmcp also reads FASTMCP_* from a .env in the working directory."""
+    monkeypatch.delenv("FASTMCP_STATELESS_HTTP", raising=False)
+    (tmp_path / ".env").write_text("FASTMCP_STATELESS_HTTP=false\n")
+    monkeypatch.chdir(tmp_path)
+
+    assert server.stateless_http_enabled() is False
 
 
 def test_server_instructions_point_at_full_funnel_guidance():

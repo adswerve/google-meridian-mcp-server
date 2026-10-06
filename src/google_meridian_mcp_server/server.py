@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 from fastmcp.server.providers.skills import SkillsDirectoryProvider
+from fastmcp.settings import Settings as FastMCPSettings
 
 from google_meridian_mcp_server.bootstrap import (
     build_discovery_cache,
@@ -149,6 +150,38 @@ mcp = create_server()
 server = mcp
 
 
+def stateless_http_enabled() -> bool:
+    """Whether streamable HTTP runs stateless. True unless the operator says no.
+
+    Stateful mode keeps each client's session id in this process's memory, so
+    after any restart (a deploy, a crash, Cloud Run moving the instance) a client
+    still holding its old id is answered 404 "Session not found" on every call
+    and never recovers by itself. No tool keeps per-session state -- everything
+    shared lives in the lifespan context -- so stateless costs nothing here.
+
+    fastmcp's own default is stateful, and its setting cannot tell "unset" from
+    "false", so the default is flipped only when FASTMCP_STATELESS_HTTP was not
+    given. ``FASTMCP_STATELESS_HTTP=false`` still turns it off. The settings are
+    re-read here rather than taken from ``fastmcp.settings``, which was built at
+    import, before ``config.py`` loaded the project ``.env``.
+    """
+    settings = FastMCPSettings()
+    if "stateless_http" in settings.model_fields_set:
+        return settings.stateless_http
+    return True
+
+
+def http_app_options() -> dict[str, bool]:
+    """Options for the streamable HTTP app, shared by run_server and its tests."""
+    # json_response=True keeps every tools/call reply on the uncapped
+    # application/json branch. Without it, any handler running longer than
+    # mcp's 15s mode-switch window commits the reply to a single SSE frame,
+    # which httpx2 clients reject above 1 MiB with the misleading error
+    # "SSE stream ended without a response". See
+    # tests/integration/test_json_response_mode.py.
+    return {"json_response": True, "stateless_http": stateless_http_enabled()}
+
+
 def run_server() -> None:
     """Run the configured server using the selected transport."""
     cfg = load_config()
@@ -159,13 +192,7 @@ def run_server() -> None:
 
     host = os.getenv("MCP_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
-    # json_response=True keeps every tools/call reply on the uncapped
-    # application/json branch. Without it, any handler running longer than
-    # mcp's 15s mode-switch window commits the reply to a single SSE frame,
-    # which httpx2 clients reject above 1 MiB with the misleading error
-    # "SSE stream ended without a response". See
-    # tests/integration/test_json_response_mode.py.
-    mcp.run(transport="http", host=host, port=port, json_response=True)
+    mcp.run(transport="http", host=host, port=port, **http_app_options())
 
 
 if __name__ == "__main__":
