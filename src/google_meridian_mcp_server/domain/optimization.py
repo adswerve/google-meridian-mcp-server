@@ -283,6 +283,19 @@ class OptimizationRunSummary(BaseModel):
     headline: str | None = None
 
 
+# Version of the rule that turns a future config's planned_allocation into
+# shares. It is added to the run fingerprint of every future config that
+# carries planned_allocation, so a run computed under an older rule is never
+# reused. Bump it whenever that rule changes meaning.
+#   1 (implicit, never hashed): channels left out were filled with their raw
+#     reference-window spend in currency and normalised together with the
+#     entered shares, which left the named channels almost none of the plan.
+#   2: entered shares are kept; the rest is split among the channels left out
+#     by reference-window spend (see future_data.normalize_planned_allocation).
+# Configs without planned_allocation are not salted and keep their fingerprint.
+PLANNED_ALLOCATION_RULE_VERSION = 2
+
+
 def config_fingerprint(
     model_id: str,
     config: BaseOptimizationConfig,
@@ -295,20 +308,22 @@ def config_fingerprint(
     D10: the Meridian version enters as a KEYWORD parameter rather than being read here
     (no importlib.metadata in domain/). ``model_version`` (the catalog's hash of every
     stage file's etag) makes a replaced model -- or a replaced mediator -- miss reuse
-    instead of silently serving a run computed from the old bytes.
+    instead of silently serving a run computed from the old bytes. A future
+    config with planned_allocation also hashes PLANNED_ALLOCATION_RULE_VERSION.
     """
     payload = config.model_dump(mode="json")
     if payload.get("selected_geos"):
         payload["selected_geos"] = sorted(payload["selected_geos"])
-    raw = json.dumps(
-        {
-            "model_id": model_id,
-            "config": payload,
-            "meridian_version": meridian_version,
-            "model_version": model_version,
-        },
-        sort_keys=True,
-    )
+    fields = {
+        "model_id": model_id,
+        "config": payload,
+        "meridian_version": meridian_version,
+        "model_version": model_version,
+    }
+    future = getattr(config, "future", None)
+    if future is not None and future.planned_allocation is not None:
+        fields["planned_allocation_rule"] = PLANNED_ALLOCATION_RULE_VERSION
+    raw = json.dumps(fields, sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
