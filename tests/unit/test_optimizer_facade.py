@@ -937,3 +937,23 @@ def test_naming_every_non_excluded_channel_is_a_full_mix():
         excluded_channels=["Display"],
     )
     assert pct == pytest.approx([0.6, 0.2, 0.2, 0.0])
+
+
+@pytest.mark.parametrize(
+    "planned",
+    [
+        {"Search": float("nan"), "TV": 0.3},  # partial
+        {"Search": float("inf"), "TV": 1, "Social": 1, "Display": 1},  # full
+        {"Search": float("nan"), "TV": 1, "Social": 1, "Display": 1},  # full
+    ],
+)
+def test_planned_mix_with_a_nan_or_infinite_share_is_refused(planned):
+    """pydantic lets NaN and Infinity through `> 0`; without this refusal they
+    become NaN shares that Meridian rejects inside the worker, a FAILED run."""
+    facade = _planned_mix_facade(_EXPERT_SPEND)
+    config = _future_config(reference={"mode": "trailing"}, planned_allocation=planned)
+    match = r"planned_allocation shares must be finite numbers; got \['Search'\]"
+    with pytest.raises(ValueError, match=match):
+        facade.validate_future(config)  # refused at submit
+    with pytest.raises(ValueError, match=match):
+        facade._future_kwargs(config, MagicMock(), False)

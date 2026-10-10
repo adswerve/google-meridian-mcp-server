@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 
 import numpy as np
@@ -96,6 +97,13 @@ def normalize_planned_allocation(
     unknown = [ch for ch in planned if ch not in channel_order]
     if unknown:
         raise ValueError(f"planned_allocation has unknown channels: {unknown}")
+    # The domain validator only checks `> 0`, which NaN and Infinity pass.
+    not_finite = [ch for ch, share in planned.items() if not math.isfinite(share)]
+    if not_finite:
+        raise ValueError(
+            f"planned_allocation shares must be finite numbers; got {not_finite} "
+            "set to NaN or Infinity. Give each a share of the budget, such as 0.4."
+        )
     excluded_set = set(excluded or ())
     named_total = sum(planned.values())
     omitted = [
