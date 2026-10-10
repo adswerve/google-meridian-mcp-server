@@ -68,21 +68,66 @@ def validate_channel_keys(
         raise ValueError(f"unknown channels: {unknown}")
 
 
+# A partial mix whose shares sum to within this of 1 leaves nothing for the
+# channels it omits (sum([0.01, 0.29, 0.7]) is 1 - 1.1e-16 in floats).
+_NOTHING_LEFT_TOLERANCE = 1e-9
+
+
 def normalize_planned_allocation(
     planned: dict[str, float] | None,
-    carried: dict[str, float],
+    carried_spend: dict[str, float],
     channel_order: list[str],
+    excluded: list[str] | None = None,
 ) -> list[float] | None:
+    """Turn a submitted planned mix into one share per channel, in channel_order.
+
+    ``carried_spend`` is each channel's spend over the reference window, in
+    currency; only its proportions among the omitted channels are used.
+    Excluded channels get 0 and count as neither named nor omitted.
+
+    - Every non-excluded channel named: the shares are scaled to sum to 1.
+    - Some omitted: the named shares are kept exactly as given, and what is left
+      (1 minus their sum) is split among the omitted channels in proportion to
+      their reference-window spend. Refused when the named shares already sum
+      to 1 or more, or when the omitted channels had no reference-window spend.
+    """
     if planned is None:
         return None
     unknown = [ch for ch in planned if ch not in channel_order]
     if unknown:
         raise ValueError(f"planned_allocation has unknown channels: {unknown}")
-    merged = {ch: planned.get(ch, carried.get(ch, 0.0)) for ch in channel_order}
-    total = sum(merged.values())
-    if total <= 0:
-        raise ValueError("planned_allocation weights sum to zero.")
-    return [merged[ch] / total for ch in channel_order]
+    excluded_set = set(excluded or ())
+    named_total = sum(planned.values())
+    omitted = [
+        ch for ch in channel_order if ch not in planned and ch not in excluded_set
+    ]
+    if not omitted:
+        if named_total <= 0:
+            raise ValueError("planned_allocation weights sum to zero.")
+        return [planned.get(ch, 0.0) / named_total for ch in channel_order]
+
+    remainder = 1.0 - named_total
+    if remainder <= _NOTHING_LEFT_TOLERANCE:
+        raise ValueError(
+            f"planned_allocation leaves out {omitted}, but the shares it names "
+            f"add up to 1 or more ({named_total:g}), so nothing is left for the "
+            "channels it leaves out. Give shares as fractions of 1 (0.4 = 40%) "
+            "that add up to less than 1, or name every channel (the shares are "
+            "then scaled to add up to 1)."
+        )
+    omitted_spend = sum(carried_spend.get(ch, 0.0) for ch in omitted)
+    if omitted_spend <= 0:
+        raise ValueError(
+            f"planned_allocation leaves out {omitted}, but {omitted} had no spend "
+            "in the reference window, so there is no reference mix to split the "
+            f"remaining {remainder:g} of the plan by. Name those channels, exclude "
+            "them (excluded_channels), or pick a different reference window."
+        )
+    shares = {ch: 0.0 for ch in channel_order}  # excluded channels stay at 0
+    shares.update(planned)
+    for ch in omitted:
+        shares[ch] = remainder * carried_spend.get(ch, 0.0) / omitted_spend
+    return [shares[ch] for ch in channel_order]
 
 
 def apply_cost_multipliers(

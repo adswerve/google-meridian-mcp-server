@@ -181,10 +181,16 @@ class FutureBlock(BaseModel):
     )
     planned_allocation: dict[str, float] | None = Field(
         default=None,
-        description="Optional planned spend mix (the center that spend constraints "
-        "bound around, and the 'current' baseline in the result). Partial/unnormalized "
-        "dicts are accepted: missing channels are filled from the carried-forward mix "
-        "and the whole vector is renormalized to sum to 1. Example: {'TV': 0.4, 'Search': 0.35}.",
+        description="Optional planned spend mix as shares of the budget (0.4 = 40%): "
+        "the center that spend constraints bound around, and the 'current' baseline "
+        "in the result. Naming every non-excluded channel: the shares are scaled to "
+        "sum to 1. Naming only some: the named shares are kept exactly as given, and "
+        "the rest (1 minus their sum) is split among the channels left out in "
+        "proportion to their spend in the reference window. A partial mix whose "
+        "shares sum to 1 or more, or whose left-out channels had no spend in the "
+        "reference window, is refused (invalid_optimization_config). Excluded "
+        "channels get 0 and are not counted as left out. Example: {'TV': 0.4, "
+        "'Search': 0.35} leaves 0.25 for the other channels.",
         examples=[{"TV": 0.4, "Search": 0.35, "Social": 0.25}],
     )
     excluded_channels: list[str] | None = Field(

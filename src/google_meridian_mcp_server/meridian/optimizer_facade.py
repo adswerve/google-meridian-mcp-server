@@ -217,6 +217,15 @@ class OptimizerFacade(MeridianInterrogator):
                 self._rf_impression_sum(window), "rf", skip=rf_excluded_idx
             )
 
+        # Fail fast: a planned mix that cannot be turned into shares is refused
+        # at submit rather than as a FAILED run.
+        fd.normalize_planned_allocation(
+            f.planned_allocation,
+            self._carried_allocation(window),
+            self.channel_order(),
+            f.excluded_channels,
+        )
+
     def _future_kwargs(self, config, opt, use_kpi) -> dict[str, Any]:
         from google_meridian_mcp_server.meridian import future_data as fd
 
@@ -276,9 +285,12 @@ class OptimizerFacade(MeridianInterrogator):
 
         new_data = opt.create_optimization_tensors(**tensor_kwargs)
 
-        carried = self._carried_allocation(window)  # {channel: weight}
+        carried = self._carried_allocation(window)  # {channel: spend, currency}
         pct = fd.normalize_planned_allocation(
-            f.planned_allocation, carried, self.channel_order()
+            f.planned_allocation,
+            carried,
+            self.channel_order(),
+            f.excluded_channels,
         )
 
         if f.excluded_channels:
