@@ -237,9 +237,18 @@ optimization lifecycle" above), plus one additional required block: `future`.
   carried-forward mix, **values must be `> 0`**) — your intended future spend
   mix; it is the center that spend constraints bound around, and shows up as
   the "current"/baseline mix in the result (comparable to `channel_tables.initial`
-  in a historical run). Partial dicts are accepted — unlisted channels are
-  filled from the carried-forward mix and the whole vector is renormalized to
-  sum to 1.
+  in a historical run). Values are shares of the budget (`0.4` = 40%). If you
+  name every channel that is not excluded, the shares are scaled to sum to 1.
+  If you name only some, the shares you name are kept exactly as given, and
+  the rest (1 minus their sum) is split among the channels left out in
+  proportion to their spend in the reference window; a left-out channel with
+  no spend there gets 0. A partial mix is **refused**
+  (`invalid_optimization_config`) when its shares sum to 1 or more, or when
+  every channel left out had no spend in the reference window. Excluded
+  channels get 0 and do not count as left out. So `{"TV": 0.4, "Search":
+  0.35}` keeps TV at 40% and Search at 35% and spreads the other 25%; a
+  partial `{"TV": 60, "Search": 40}` is refused — send `0.6`/`0.4`, or name
+  every channel.
 - **`excluded_channels`** (optional `list[str]`, default none) — channels to
   fully pause for the future window; their spend is forced to 0 (they still
   appear in the result with spend 0) and their share of the budget is

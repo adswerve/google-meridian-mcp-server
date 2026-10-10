@@ -792,3 +792,200 @@ def test_full_funnel_sizing_multiplier_is_applied_only_to_full_funnel():
     }
     full = model_size_features(interrogator({"M1": 1, "M2": 2}))
     assert full == {**single, "n_models": 3}
+
+
+# --- planned_allocation: entered shares are kept; the rest is split by spend ---
+
+_MIX_CHANNELS = ["Search", "TV", "Social", "Display"]
+
+
+def _planned_mix_facade(window_spend, *, outside_window=None):
+    """A facade whose `_carried_allocation` and `_spend_np` are REAL.
+
+    Two geos, four weekly periods; a trailing horizon of 3 makes the reference
+    window periods 1-3. `window_spend` is each channel's total spend over that
+    window in currency, split evenly across the 2 geos x 3 periods.
+    `outside_window` puts extra spend in period 0, which must not count.
+    """
+    spend = np.zeros((2, 4, len(_MIX_CHANNELS)))
+    for i, channel in enumerate(_MIX_CHANNELS):
+        spend[:, 1:, i] = window_spend[channel] / 6
+        spend[:, 0, i] = (outside_window or {}).get(channel, 0.0) / 2
+    input_data = MagicMock()
+    input_data.media_spend.values = spend
+    input_data.media.values = np.ones_like(spend)
+    facade = OptimizerFacade.__new__(OptimizerFacade)
+    facade._mmm = MagicMock(input_data=input_data)
+    facade._mediators = {}
+    facade.get_time_values = lambda: [
+        "2026-01-05",
+        "2026-01-12",
+        "2026-01-19",
+        "2026-01-26",
+    ]
+    facade.get_data_inputs = lambda: {"media": list(_MIX_CHANNELS), "rf_media": []}
+    facade.has_revenue_per_kpi = lambda: False
+    return facade
+
+
+_EXPERT_SPEND = {
+    "Search": 50_000.0,
+    "TV": 80_000.0,
+    "Social": 200_000.0,
+    "Display": 100_000.0,
+}
+
+
+def _pct(facade, **future):
+    config = _future_config(reference={"mode": "trailing"}, **future)
+    return facade._future_kwargs(config, MagicMock(), False)["pct_of_spend"]
+
+
+def test_partial_planned_mix_keeps_entered_shares_and_splits_rest_by_spend():
+    """The expert's four-channel case. Social and Display are left out, with
+    $200,000 and $100,000 of spend in the reference window. Search 0.6 and TV 0.3
+    stay as entered, and the 0.1 left over is split 2:1 between Social and
+    Display. (Search 0.6 + TV 0.4 leaves nothing over: that case is refused,
+    below.) Display's big spend OUTSIDE the window must not move the split."""
+    facade = _planned_mix_facade(_EXPERT_SPEND, outside_window={"Display": 9_000_000.0})
+    pct = _pct(facade, planned_allocation={"Search": 0.6, "TV": 0.3})
+    assert pct == pytest.approx([0.6, 0.3, 0.1 * 2 / 3, 0.1 / 3])
+
+
+def test_partial_planned_mix_expert_example_with_room_left():
+    """Search 0.6 and TV 0.2 entered; 0.2 left for Social ($200k) and Display
+    ($100k) -> Social 0.1333, Display 0.0667. Before the fix the entered shares
+    were divided by ~$300,000 and came out near zero."""
+    pct = _pct(
+        _planned_mix_facade(_EXPERT_SPEND),
+        planned_allocation={"Search": 0.6, "TV": 0.2},
+    )
+    assert pct == pytest.approx([0.6, 0.2, 0.2 * 2 / 3, 0.2 / 3])
+
+
+def test_full_planned_mix_is_scaled_to_sum_to_one():
+    pct = _pct(
+        _planned_mix_facade(_EXPERT_SPEND),
+        planned_allocation={"Search": 3, "TV": 1, "Social": 4, "Display": 2},
+    )
+    assert pct == pytest.approx([0.3, 0.1, 0.4, 0.2])
+
+
+@pytest.mark.parametrize(
+    "planned",
+    [
+        {"Search": 0.6, "TV": 0.4},  # exactly 1
+        {"Search": 0.01, "TV": 0.29, "Social": 0.7},  # sums to 1 - 1.1e-16
+        {"Search": 60, "TV": 40},  # percentages typed as numbers
+    ],
+)
+def test_partial_planned_mix_with_nothing_left_is_refused(planned):
+    facade = _planned_mix_facade(_EXPERT_SPEND)
+    config = _future_config(reference={"mode": "trailing"}, planned_allocation=planned)
+    match = r"planned_allocation leaves out \[.*'Display'\].*add up to 1 or more"
+    with pytest.raises(ValueError, match=match):
+        facade.validate_future(config)  # refused at submit, not as a failed run
+    with pytest.raises(ValueError, match=match):
+        facade._future_kwargs(config, MagicMock(), False)
+
+
+def test_partial_planned_mix_whose_missing_channels_had_no_spend_is_refused():
+    spend = {**_EXPERT_SPEND, "Social": 0.0, "Display": 0.0}
+    facade = _planned_mix_facade(spend, outside_window={"Social": 1_000.0})
+    config = _future_config(
+        reference={"mode": "trailing"},
+        planned_allocation={"Search": 0.6, "TV": 0.2},
+    )
+    match = r"\['Social', 'Display'\] had no spend in the reference window"
+    with pytest.raises(ValueError, match=match):
+        facade.validate_future(config)
+    with pytest.raises(ValueError, match=match):
+        facade._future_kwargs(config, MagicMock(), False)
+
+
+def test_partial_planned_mix_missing_channel_with_no_spend_gets_zero():
+    """Only SOME missing channels had no spend: they get 0, the rest takes it all."""
+    pct = _pct(
+        _planned_mix_facade({**_EXPERT_SPEND, "Display": 0.0}),
+        planned_allocation={"Search": 0.6, "TV": 0.2},
+    )
+    assert pct == pytest.approx([0.6, 0.2, 0.2, 0.0])
+
+
+def test_excluded_channel_is_neither_named_nor_filled():
+    """Display is excluded: it gets 0 and takes nothing from the remainder, so
+    Social alone takes the 0.1 left over and the entered shares are untouched."""
+    facade = _planned_mix_facade(_EXPERT_SPEND)
+    config = _future_config(
+        reference={"mode": "trailing"},
+        planned_allocation={"Search": 0.6, "TV": 0.3},
+        excluded_channels=["Display"],
+    )
+    facade.validate_future(config)
+    kwargs = facade._future_kwargs(config, MagicMock(), False)
+    assert kwargs["pct_of_spend"] == pytest.approx([0.6, 0.3, 0.1, 0.0])
+    assert kwargs["spend_constraint_lower"][3] == 0.0
+    assert kwargs["spend_constraint_upper"][3] == 0.0
+
+
+def test_naming_every_non_excluded_channel_is_a_full_mix():
+    """With Display excluded, naming the other three is the whole mix: scaled
+    to 1 even though the entered shares sum past 1, never refused."""
+    pct = _pct(
+        _planned_mix_facade(_EXPERT_SPEND),
+        planned_allocation={"Search": 60, "TV": 20, "Social": 20},
+        excluded_channels=["Display"],
+    )
+    assert pct == pytest.approx([0.6, 0.2, 0.2, 0.0])
+
+
+@pytest.mark.parametrize(
+    "planned",
+    [
+        {"Search": float("nan"), "TV": 0.3},  # partial
+        {"Search": float("inf"), "TV": 1, "Social": 1, "Display": 1},  # full
+        {"Search": float("nan"), "TV": 1, "Social": 1, "Display": 1},  # full
+    ],
+)
+def test_planned_mix_with_a_nan_or_infinite_share_is_refused(planned):
+    """pydantic lets NaN and Infinity through `> 0`; without this refusal they
+    become NaN shares that Meridian rejects inside the worker, a FAILED run."""
+    facade = _planned_mix_facade(_EXPERT_SPEND)
+    config = _future_config(reference={"mode": "trailing"}, planned_allocation=planned)
+    match = r"planned_allocation shares must be finite numbers; got \['Search'\]"
+    with pytest.raises(ValueError, match=match):
+        facade.validate_future(config)  # refused at submit
+    with pytest.raises(ValueError, match=match):
+        facade._future_kwargs(config, MagicMock(), False)
+
+
+def test_left_out_rf_channel_is_filled_from_rf_spend():
+    """A reach-and-frequency channel left out takes its part of the remainder
+    from rf_spend, alongside a media channel's media_spend."""
+
+    def window_only(per_channel):
+        # (2 geos, 4 periods, n channels); spend only in the window (1-3).
+        arr = np.zeros((2, 4, len(per_channel)))
+        arr[:, 1:, :] = np.array(per_channel) / 6
+        return arr
+
+    input_data = MagicMock()
+    input_data.media_spend.values = window_only([50_000.0, 80_000.0, 100_000.0])
+    input_data.media.values = np.ones((2, 4, 3))
+    input_data.rf_spend.values = window_only([300_000.0])
+    input_data.reach.values = np.ones((2, 4, 1))
+    input_data.frequency.values = np.ones((2, 4, 1))
+    facade = _planned_mix_facade(_EXPERT_SPEND)
+    facade._mmm = MagicMock(input_data=input_data)
+    facade.get_data_inputs = lambda: {
+        "media": ["Search", "TV", "Social"],
+        "rf_media": ["YouTube"],
+    }
+    config = _future_config(
+        reference={"mode": "trailing"},
+        planned_allocation={"Search": 0.6, "TV": 0.2},
+    )
+    facade.validate_future(config)
+    pct = facade._future_kwargs(config, MagicMock(), False)["pct_of_spend"]
+    # Order is media then rf: Search, TV, Social, YouTube. 0.2 left, split 1:3.
+    assert pct == pytest.approx([0.6, 0.2, 0.05, 0.15])

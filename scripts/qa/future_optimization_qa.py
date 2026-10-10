@@ -338,7 +338,7 @@ async def scenario_f1(client, national_overview: dict) -> dict:
 
 async def scenario_f2(client, geo_overview: dict) -> dict:
     """same_period_last_year (start=next_period) + cost_multipliers + partial
-    planned_allocation (friendly-normalize) -> happy."""
+    planned_allocation (named share kept, rest split by spend) -> happy."""
     _, next_period = compute_cadence_and_next_period(geo_overview)
     channels = geo_overview["media_channels"] + geo_overview["rf_channels"]
     target = channels[0]
@@ -349,7 +349,7 @@ async def scenario_f2(client, geo_overview: dict) -> dict:
             "horizon": 4,
             "reference": {"mode": "same_period_last_year"},
             "cost_multipliers": {target: 1.15},
-            "planned_allocation": {target: 0.5},  # partial dict: exercises normalize
+            "planned_allocation": {target: 0.5},  # partial: 0.5 kept, rest by spend
         },
     }
     submit = await call(

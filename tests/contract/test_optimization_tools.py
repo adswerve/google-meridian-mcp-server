@@ -247,3 +247,16 @@ async def test_run_future_optimization_exclude_all_errors(client):
         },
     )
     assert res.data["error_code"] == "invalid_optimization_config"
+
+
+@pytest.mark.asyncio
+async def test_run_future_optimization_description_names_every_planned_mix_refusal():
+    mcp = create_server()
+    by_name = {t.name: t for t in await mcp.list_tools()}
+    config = _prop(
+        by_name["run_future_optimization"].to_mcp_tool().inputSchema, "config"
+    )
+    text = " ".join(config["description"].split())
+    assert "channels are left out and the shares already sum to 1 or more" in text
+    assert "every channel left out had no reference-window spend" in text
+    assert "any share is NaN or infinite" in text
