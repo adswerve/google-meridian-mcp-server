@@ -124,6 +124,11 @@ def normalize_planned_allocation(
             "then scaled to add up to 1)."
         )
     omitted_spend = sum(carried_spend.get(ch, 0.0) for ch in omitted)
+    # Refused rather than split equally: Meridian turns planned spend into media
+    # as divide_no_nan(spend, hist_spend) * media (optimizer.py,
+    # _get_incremental_outcome_tensors), and hist_spend is the seeded flighting,
+    # which is 0 for a channel with no reference-window spend. Budget put there
+    # buys no media and no outcome.
     if omitted_spend <= 0:
         raise ValueError(
             f"planned_allocation leaves out {omitted}, but {omitted} had no spend "

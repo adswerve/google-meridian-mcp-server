@@ -186,3 +186,11 @@ def test_a_planned_allocation_run_from_before_the_rule_change_is_not_reused(name
 @pytest.mark.parametrize("name", ["future_none", "historical"])
 def test_configs_without_planned_allocation_keep_their_fingerprint(name):
     assert _fingerprint_case(name) == _PRE_RULE_FINGERPRINTS[name]
+
+
+def test_planned_allocation_description_states_the_zero_spend_cases():
+    from google_meridian_mcp_server.domain.optimization import FutureBlock
+
+    text = FutureBlock.model_fields["planned_allocation"].description
+    assert "a left-out channel with no spend there gets 0" in text
+    assert "every channel left out had no spend in the reference window" in text

@@ -186,9 +186,10 @@ class FutureBlock(BaseModel):
         "in the result. Naming every non-excluded channel: the shares are scaled to "
         "sum to 1. Naming only some: the named shares are kept exactly as given, and "
         "the rest (1 minus their sum) is split among the channels left out in "
-        "proportion to their spend in the reference window. A partial mix whose "
-        "shares sum to 1 or more, or whose left-out channels had no spend in the "
-        "reference window, is refused (invalid_optimization_config). Excluded "
+        "proportion to their spend in the reference window; a left-out channel "
+        "with no spend there gets 0. A partial mix is refused "
+        "(invalid_optimization_config) when its shares sum to 1 or more, or when "
+        "every channel left out had no spend in the reference window. Excluded "
         "channels get 0 and are not counted as left out. Example: {'TV': 0.4, "
         "'Search': 0.35} leaves 0.25 for the other channels.",
         examples=[{"TV": 0.4, "Search": 0.35, "Social": 0.25}],
