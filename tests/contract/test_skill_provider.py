@@ -40,3 +40,32 @@ async def test_full_funnel_reference_is_served_and_states_the_double_counting_ru
         assert "it belongs in that sum" in flat  # the rest row IS in the identity
         skill = (await client.read_resource(SKILL_URI))[0].text
         assert "references/full-funnel.md" in skill
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("uri", "kept"),
+    [
+        (
+            "skill://meridian-analyst/references/budget-optimization.md",
+            "the shares you name are kept exactly as given",
+        ),
+        (
+            "skill://meridian-analyst/references/glossary.md",
+            "the named shares are kept as given",
+        ),
+    ],
+)
+async def test_skill_states_the_planned_allocation_rule(uri, kept):
+    """The skill must state the current planned-mix rule, never the old
+    fill-with-spend-and-renormalise one."""
+    mcp = create_server()
+    async with Client(mcp) as client:
+        contents = await client.read_resource(uri)
+        flat = " ".join(contents[0].text.split())
+        assert kept in flat
+        assert "split among the channels left out in proportion to their" in flat
+        assert "a left-out channel with no spend there gets 0" in flat
+        assert "when its shares sum to 1 or more" in flat
+        assert "every channel left out had no" in flat
+        assert "renormalized" not in flat

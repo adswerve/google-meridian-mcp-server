@@ -96,8 +96,14 @@ chosen reference window — it is not something you set directly.
 **Planned allocation (`planned_allocation`)** — Your intended future spend mix,
 supplied to `run_future_optimization`. It is the center that spend constraints
 bound around, and it appears as the "current"/baseline mix in the result (the
-future-run counterpart of `channel_tables.initial`). Unlisted channels are filled
-from the carried-forward mix and the vector is renormalized to sum to 1.
+future-run counterpart of `channel_tables.initial`). Values are shares of the
+budget (`0.4` = 40%). Naming every non-excluded channel: the shares are scaled to
+sum to 1. Naming only some: the named shares are kept as given, and the rest
+(1 minus their sum) is split among the channels left out in proportion to their
+reference-window spend; a left-out channel with no spend there gets 0. A partial
+mix is refused when its shares sum to 1 or more, or when every channel left out
+had no reference-window spend. Excluded channels get 0 and do not count as left
+out.
 
 **Excluded channels (`excluded_channels`)** — A list of channels to fully pause
 in a future optimization: their spend is forced to 0 and reallocated across the

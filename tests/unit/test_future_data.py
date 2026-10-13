@@ -115,13 +115,13 @@ def test_reference_indices_same_period_last_year_window_runs_past_end():
     assert "data covers 2024-01-01 to 2025-12-28" in msg
 
 
-def test_normalize_planned_allocation_fills_and_renormalizes():
-    carried = {"tv": 0.5, "search": 0.3, "social": 0.2}
+def test_normalize_planned_allocation_keeps_shares_and_splits_rest_by_spend():
+    # carried is reference-window SPEND in currency, as the facade passes it.
+    carried = {"tv": 500_000.0, "search": 300_000.0, "social": 100_000.0}
     out = fd.normalize_planned_allocation(
         {"tv": 0.4}, carried, ["tv", "search", "social"]
     )
-    assert pytest.approx(sum(out)) == 1.0
-    assert out[0] == pytest.approx(0.4 / (0.4 + 0.3 + 0.2))
+    assert out == pytest.approx([0.4, 0.6 * 3 / 4, 0.6 * 1 / 4])
 
 
 def test_normalize_planned_allocation_none_passthrough():
