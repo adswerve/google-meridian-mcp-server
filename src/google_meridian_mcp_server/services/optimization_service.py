@@ -73,15 +73,15 @@ def _default_label(model_id: str, config: BaseOptimizationConfig) -> str:
 def _raise_from_validation_error(payload: dict[str, Any]) -> None:
     """Reconstruct a typed error from preflight's ``validation_error`` payload.
 
-    The worker-side op only ever populates this with error_code
-    "invalid_optimization_config" today (validate_future/to_optimize_kwargs
-    raise plain ValueError, pydantic raises ValidationError -- both land in
-    the generic except branch of ``_preflight_optimization``). Branch on the
-    error_code defensively rather than hardcoding the subclass: if a future
-    change makes the worker surface a *different* typed MeridianMcpError here
-    (caught via its own `except MeridianMcpError` branch, whose payload
-    message may already carry its own prefix), reconstructing it as
-    InvalidOptimizationConfigError would double-prefix the message.
+    The worker-side op populates this with ``invalid_optimization_config``
+    (validate_future/to_optimize_kwargs raise plain ValueError, pydantic raises
+    ValidationError -- both land in the generic except branch of
+    ``_preflight_optimization``) or with the code of a typed MeridianMcpError it
+    caught, today ``objective_not_available`` (a revenue objective asked of a model
+    with no revenue per KPI). A typed payload's message already carries its own
+    wording, so it is rebuilt as the base error; only ``invalid_optimization_config``
+    gets its prefix, and reconstructing a typed one as
+    InvalidOptimizationConfigError would double-prefix it.
     """
     if payload.get("error_code") == "invalid_optimization_config":
         raise InvalidOptimizationConfigError(payload["message"])

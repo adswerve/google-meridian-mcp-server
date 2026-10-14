@@ -116,7 +116,7 @@ class ObjectiveNotAvailableError(MeridianMcpError):
                 "This model has no revenue per KPI, so it cannot be optimized for a "
                 "revenue objective (use_kpi=false). Omit use_kpi, or set it to true: on "
                 "this model both optimize the KPI, and a target_roas or target_mroas "
-                "figure is read as a cost per KPI."
+                "figure is read as a cost per incremental KPI (CPIK)."
             ),
             details={"use_kpi": False, "use_kpi_togglable": False},
         )
