@@ -107,17 +107,36 @@ class MetricNotSupportedError(MeridianMcpError):
 
 
 class ObjectiveNotAvailableError(MeridianMcpError):
-    """A revenue objective was requested of a model that has no revenue per KPI."""
+    """A revenue objective was requested of a model that has no revenue per KPI.
 
-    def __init__(self) -> None:
+    The sentence is one template with two phrasings of what the caller was doing: an
+    optimization says it cannot be optimized for a revenue objective, an analysis says
+    the model cannot answer in revenue. Both carry the same code and the same advice.
+    """
+
+    _TEMPLATE = (
+        "This model has no revenue per KPI, so it cannot {cannot} (use_kpi=false). "
+        "Omit use_kpi, or set it to true: on this model both {both}, and {target}a "
+        "target_roas or target_mroas figure is read as a cost per incremental KPI "
+        "(CPIK)."
+    )
+
+    def __init__(self, purpose: str = "analysis") -> None:
+        if purpose == "optimization":
+            phrasing = {
+                "cannot": "be optimized for a revenue objective",
+                "both": "optimize the KPI",
+                "target": "",
+            }
+        else:
+            phrasing = {
+                "cannot": "answer in revenue",
+                "both": "give KPI figures",
+                "target": "in an optimization ",
+            }
         super().__init__(
             error_code="objective_not_available",
-            message=(
-                "This model has no revenue per KPI, so it cannot be optimized for a "
-                "revenue objective (use_kpi=false). Omit use_kpi, or set it to true: on "
-                "this model both optimize the KPI, and a target_roas or target_mroas "
-                "figure is read as a cost per incremental KPI (CPIK)."
-            ),
+            message=self._TEMPLATE.format(**phrasing),
             details={"use_kpi": False, "use_kpi_togglable": False},
         )
 

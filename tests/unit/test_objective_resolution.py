@@ -62,7 +62,12 @@ def test_a_revenue_objective_on_a_model_with_no_revenue_is_refused(kind, scenari
         _facade(has_revenue=False).resolve_use_kpi(_config(kind, scenario, False))
 
     assert refused.value.error_code == "objective_not_available"
-    assert "Omit use_kpi, or set it to true" in str(refused.value)
+    assert str(refused.value) == (
+        "This model has no revenue per KPI, so it cannot be optimized for a revenue "
+        "objective (use_kpi=false). Omit use_kpi, or set it to true: on this model both "
+        "optimize the KPI, and a target_roas or target_mroas figure is read as a cost per "
+        "incremental KPI (CPIK)."
+    )
 
 
 @pytest.mark.parametrize("kind", ["historical", "future"])
@@ -113,6 +118,7 @@ class _NoRevenueFacade(FakeOptimizerFacade):
     def has_revenue_per_kpi(self):
         return False
 
+    objective_purpose = OptimizerFacade.objective_purpose
     resolve_use_kpi = OptimizerFacade.resolve_use_kpi
 
 

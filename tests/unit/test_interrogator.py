@@ -48,8 +48,16 @@ def test_resolve_use_kpi_defaults_from_revenue_capability():
     assert revenue.resolve_use_kpi(AnalysisFilters(use_kpi=True)) is True
     assert revenue.resolve_use_kpi(AnalysisFilters(use_kpi=False)) is False
     assert kpi_only.resolve_use_kpi(AnalysisFilters(use_kpi=True)) is True
-    with pytest.raises(ObjectiveNotAvailableError):
+    with pytest.raises(ObjectiveNotAvailableError) as refused:
         kpi_only.resolve_use_kpi(AnalysisFilters(use_kpi=False))
+    # An analysis is not an optimization, so the refusal says what it was asked for.
+    assert str(refused.value) == (
+        "This model has no revenue per KPI, so it cannot answer in revenue (use_kpi=false). "
+        "Omit use_kpi, or set it to true: on this model both give KPI figures, and in an "
+        "optimization a target_roas or target_mroas figure is read as a cost per "
+        "incremental KPI (CPIK)."
+    )
+    assert refused.value.error_code == "objective_not_available"
 
 
 def _build_full_model(is_national=False):

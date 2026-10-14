@@ -335,18 +335,24 @@ def config_fingerprint(
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def resolve_use_kpi(requested: bool | None, *, has_revenue_per_kpi: bool) -> bool:
+def resolve_use_kpi(
+    requested: bool | None,
+    *,
+    has_revenue_per_kpi: bool,
+    purpose: Literal["analysis", "optimization"] = "analysis",
+) -> bool:
     """The objective a run is optimized for, decided once, before anything reads it.
 
     ``None`` takes the model's native objective (KPI when it has no revenue per KPI).
     An explicit ``False`` on a model without revenue per KPI is refused: Meridian's
     analyzer would run the KPI analysis anyway, but the target would not be inverted,
     so a ROAS figure would be used as KPI-per-dollar where a cost per KPI was meant.
+    ``purpose`` only words the refusal for the caller's own question.
     """
     if requested is None:
         return not has_revenue_per_kpi
     if requested is False and not has_revenue_per_kpi:
-        raise ObjectiveNotAvailableError()
+        raise ObjectiveNotAvailableError(purpose)
     return requested
 
 

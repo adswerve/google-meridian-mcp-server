@@ -38,6 +38,8 @@ def _sig6(value: float | None) -> float | None:
 class OptimizerFacade(MeridianInterrogator):
     """Runs BudgetOptimizer and shapes its OptimizationResults into JSON."""
 
+    objective_purpose = "optimization"
+
     def channel_order(self) -> list[str]:
         inputs = self.get_data_inputs()
         return list(inputs["media"]) + list(inputs["rf_media"])

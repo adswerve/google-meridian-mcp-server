@@ -5,7 +5,7 @@ from __future__ import annotations
 import warnings
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import numpy as np
 import pandas as pd
@@ -141,6 +141,9 @@ class MeridianInterrogator:
     def has_rf_channels(self) -> bool:
         return len(self.get_data_inputs()["rf_media"]) > 0
 
+    # What this interrogator is asked for, which only words a refused objective.
+    objective_purpose: Literal["analysis", "optimization"] = "analysis"
+
     def resolve_use_kpi(self, request: _AsksForAnObjective) -> bool:
         """The objective every analysis and optimization of this model runs under.
 
@@ -149,7 +152,9 @@ class MeridianInterrogator:
         model without revenue per KPI is refused with ``objective_not_available``.
         """
         return resolve_use_kpi(
-            request.use_kpi, has_revenue_per_kpi=self.has_revenue_per_kpi()
+            request.use_kpi,
+            has_revenue_per_kpi=self.has_revenue_per_kpi(),
+            purpose=self.objective_purpose,
         )
 
     def get_geos_info(self) -> pd.DataFrame:
