@@ -10,6 +10,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
+from google_meridian_mcp_server.domain.errors import ObjectiveNotAvailableError
+
 
 class RunStatus(str, Enum):
     QUEUED = "queued"
@@ -56,7 +58,10 @@ class TargetRoasScenario(BaseModel):
 class TargetMroasScenario(BaseModel):
     type: Literal["target_mroas"]
     target_value: float = Field(
-        gt=0, description="Target marginal ROAS (mROAS).", examples=[1.5]
+        gt=0,
+        description="Target marginal ROAS (mROAS). For KPI/no-revenue models this is "
+        "read as a marginal CPIK target and inverted internally.",
+        examples=[1.5],
     )
 
 
@@ -128,7 +133,9 @@ class BaseOptimizationConfig(BaseModel):
         default=None,
         description="Objective family: false = revenue-based (ROAS/ROI), "
         "true = KPI-based (CPIK). Omit/null to use the model's native objective "
-        "(revenue models -> ROAS, no-revenue models -> CPIK).",
+        "(revenue models -> ROAS, no-revenue models -> CPIK). false on a model with "
+        "no revenue per KPI is refused (objective_not_available): omit it or set it "
+        "true there.",
     )
 
 
@@ -326,6 +333,27 @@ def config_fingerprint(
         fields["planned_allocation_rule"] = PLANNED_ALLOCATION_RULE_VERSION
     raw = json.dumps(fields, sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def resolve_use_kpi(
+    requested: bool | None,
+    *,
+    has_revenue_per_kpi: bool,
+    purpose: Literal["analysis", "optimization"] = "analysis",
+) -> bool:
+    """The objective a run is optimized for, decided once, before anything reads it.
+
+    ``None`` takes the model's native objective (KPI when it has no revenue per KPI).
+    An explicit ``False`` on a model without revenue per KPI is refused: Meridian's
+    analyzer would run the KPI analysis anyway, but the target would not be inverted,
+    so a ROAS figure would be used as KPI-per-dollar where a cost per KPI was meant.
+    ``purpose`` only words the refusal for the caller's own question.
+    """
+    if requested is None:
+        return not has_revenue_per_kpi
+    if requested is False and not has_revenue_per_kpi:
+        raise ObjectiveNotAvailableError(purpose)
+    return requested
 
 
 def _invert(value: float) -> float:

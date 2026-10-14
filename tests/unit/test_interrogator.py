@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 import xarray as xr
 
+from google_meridian_mcp_server.domain.errors import ObjectiveNotAvailableError
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
 
@@ -41,9 +43,21 @@ def test_resolve_use_kpi_defaults_from_revenue_capability():
     # No explicit use_kpi -> revenue model queries revenue (False), kpi-only queries kpi (True).
     assert revenue.resolve_use_kpi(AnalysisFilters()) is False
     assert kpi_only.resolve_use_kpi(AnalysisFilters()) is True
-    # Explicit use_kpi is honored.
+    # Explicit use_kpi is honored, except a revenue objective on a model with no revenue per
+    # KPI, which is refused (it used to be answered with KPI figures labelled revenue).
     assert revenue.resolve_use_kpi(AnalysisFilters(use_kpi=True)) is True
-    assert kpi_only.resolve_use_kpi(AnalysisFilters(use_kpi=False)) is False
+    assert revenue.resolve_use_kpi(AnalysisFilters(use_kpi=False)) is False
+    assert kpi_only.resolve_use_kpi(AnalysisFilters(use_kpi=True)) is True
+    with pytest.raises(ObjectiveNotAvailableError) as refused:
+        kpi_only.resolve_use_kpi(AnalysisFilters(use_kpi=False))
+    # An analysis is not an optimization, so the refusal says what it was asked for.
+    assert str(refused.value) == (
+        "This model has no revenue per KPI, so it cannot answer in revenue (use_kpi=false). "
+        "Omit use_kpi, or set it to true: on this model both give KPI figures, and in an "
+        "optimization a target_roas or target_mroas figure is read as a cost per "
+        "incremental KPI (CPIK)."
+    )
+    assert refused.value.error_code == "objective_not_available"
 
 
 def _build_full_model(is_national=False):

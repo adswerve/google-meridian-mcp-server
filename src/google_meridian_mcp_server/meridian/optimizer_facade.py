@@ -8,7 +8,6 @@ from typing import Any
 import numpy as np
 
 from google_meridian_mcp_server.domain.optimization import (
-    BaseOptimizationConfig,
     OptimizationConfig,
     to_optimize_kwargs,
 )
@@ -39,14 +38,11 @@ def _sig6(value: float | None) -> float | None:
 class OptimizerFacade(MeridianInterrogator):
     """Runs BudgetOptimizer and shapes its OptimizationResults into JSON."""
 
+    objective_purpose = "optimization"
+
     def channel_order(self) -> list[str]:
         inputs = self.get_data_inputs()
         return list(inputs["media"]) + list(inputs["rf_media"])
-
-    def resolve_use_kpi(self, config: BaseOptimizationConfig) -> bool:
-        if config.use_kpi is not None:
-            return config.use_kpi
-        return not self.has_revenue_per_kpi()
 
     def execute(self, config) -> dict[str, Any]:
         if getattr(config, "kind", "historical") == "future":

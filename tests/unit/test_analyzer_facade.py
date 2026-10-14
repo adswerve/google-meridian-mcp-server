@@ -13,6 +13,7 @@ import pytest
 import xarray as xr
 from meridian.analysis import visualizer as visualizer_mod
 
+from google_meridian_mcp_server.domain.errors import ObjectiveNotAvailableError
 from google_meridian_mcp_server.domain.filters import AnalysisFilters
 from google_meridian_mcp_server.meridian.analyzer_facade import AnalyzerFacade
 from google_meridian_mcp_server.meridian.full_funnel import (
@@ -284,7 +285,10 @@ def test_media_summary_is_cached_by_use_kpi_and_confidence_level():
     meridian_module = ModuleType("meridian")
     meridian_module.analysis = analysis_module
 
-    facade = AnalyzerFacade(SimpleNamespace(input_data=SimpleNamespace()))
+    # A model with revenue per KPI, the only kind that can be asked for use_kpi=False.
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=object()))
+    )
 
     with mock.patch.dict(
         sys.modules,
@@ -297,7 +301,7 @@ def test_media_summary_is_cached_by_use_kpi_and_confidence_level():
         first = facade._get_media_summary(AnalysisFilters(), confidence_level=0.9)
         second = facade._get_media_summary(AnalysisFilters(), confidence_level=0.9)
         third = facade._get_media_summary(
-            AnalysisFilters(use_kpi=False), confidence_level=0.9
+            AnalysisFilters(use_kpi=True), confidence_level=0.9
         )
 
     assert first is second
@@ -897,3 +901,28 @@ def test_full_funnel_media_summary_uses_the_facades_full_funnel_analyzer(monkeyp
     assert ms._analyzer != "own-plain-analyzer"
     assert ms._ff_facade is facade
     assert ms._split_filters is filters
+
+
+def test_the_funnel_breakdown_refuses_a_revenue_objective_before_it_computes_anything():
+    """``get_funnel_breakdown`` reads the objective through the one rule
+    (``_funnel_split`` -> ``resolve_use_kpi``), so a full-funnel model with no revenue per KPI
+    refuses ``use_kpi=false`` before the split is computed. A fake, because no fitted
+    full-funnel fixture lacks revenue.
+
+    Break the source: have ``_funnel_split`` read ``filters.use_kpi`` itself -- the split is
+    computed and this goes red."""
+    facade = AnalyzerFacade.__new__(AnalyzerFacade)
+    facade._mmm = SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=None))
+    facade._funnel_split_cache = {}
+    facade._expand_selected_times = lambda filters: None
+    compute = mock.Mock(name="compute_funnel_split")
+
+    with mock.patch(
+        "google_meridian_mcp_server.meridian.analyzer_facade.compute_funnel_split",
+        compute,
+    ):
+        with pytest.raises(ObjectiveNotAvailableError) as refused:
+            facade.get_funnel_channel_breakdown(AnalysisFilters(use_kpi=False))
+
+    assert refused.value.error_code == "objective_not_available"
+    compute.assert_not_called()
