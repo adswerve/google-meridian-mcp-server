@@ -268,7 +268,7 @@ def register_tools(mcp: FastMCP) -> None:
         output_type: Annotated[
             ResponseDynamicsType,
             Field(
-                description="Which adstock metric to compute. 'adstock_decay': how media effect decays over time after exposure (carryover curves per channel). 'alpha_summary': the shape parameter controlling how quickly diminishing returns set in per channel.",
+                description="Which adstock metric to compute. 'adstock_decay': how media effect decays over time after exposure (carryover curves per channel). 'alpha_summary': the adstock decay-rate parameter (alpha) per channel, summarised from the posterior -- how fast the channel's effect fades after exposure. It says nothing about saturation or diminishing returns; those come from get_response_curves (Meridian's Hill saturation parameters ec and slope are not exposed by any tool).",
             ),
         ],
         ctx: Context,
@@ -279,7 +279,7 @@ def register_tools(mcp: FastMCP) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Get media carryover (adstock) dynamics — how long a channel's effect persists after exposure. Use this to answer 'how quickly does TV advertising effect decay?' or 'which channels have the longest-lasting impact?'."""
+        """Get media carryover (adstock) dynamics — how long a channel's effect persists after exposure. Use this to answer 'how quickly does TV advertising effect decay?' or 'which channels have the longest-lasting impact?'. It does not answer 'how quickly do returns diminish?' -- that is saturation, and comes from get_response_curves."""
         return await _analysis_service(ctx).get_adstock_decay(
             model_id,
             output_type,
@@ -310,7 +310,7 @@ def register_tools(mcp: FastMCP) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Get the spend-response relationship for each channel — how KPI changes as spend increases or decreases. Use this to answer 'what happens if we double search spend?' or 'which channels show diminishing returns?'."""
+        """Get the spend-response relationship for each channel — how KPI changes as spend increases or decreases. Use this to answer 'what happens if we double search spend?' or 'which channels show diminishing returns?'. Saturation (diminishing returns) is read from the shape of these curves, not from get_adstock_decay, which covers carry-over timing only."""
         return await _analysis_service(ctx).get_response_curves(
             model_id,
             output_type,
