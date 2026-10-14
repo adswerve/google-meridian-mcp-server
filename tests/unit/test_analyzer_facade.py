@@ -284,7 +284,10 @@ def test_media_summary_is_cached_by_use_kpi_and_confidence_level():
     meridian_module = ModuleType("meridian")
     meridian_module.analysis = analysis_module
 
-    facade = AnalyzerFacade(SimpleNamespace(input_data=SimpleNamespace()))
+    # A model with revenue per KPI, the only kind that can be asked for use_kpi=False.
+    facade = AnalyzerFacade(
+        SimpleNamespace(input_data=SimpleNamespace(revenue_per_kpi=object()))
+    )
 
     with mock.patch.dict(
         sys.modules,
@@ -297,7 +300,7 @@ def test_media_summary_is_cached_by_use_kpi_and_confidence_level():
         first = facade._get_media_summary(AnalysisFilters(), confidence_level=0.9)
         second = facade._get_media_summary(AnalysisFilters(), confidence_level=0.9)
         third = facade._get_media_summary(
-            AnalysisFilters(use_kpi=False), confidence_level=0.9
+            AnalysisFilters(use_kpi=True), confidence_level=0.9
         )
 
     assert first is second

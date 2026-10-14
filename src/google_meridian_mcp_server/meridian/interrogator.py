@@ -5,18 +5,24 @@ from __future__ import annotations
 import warnings
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
 
 from google_meridian_mcp_server.domain.errors import InvalidFullFunnelModelError
-from google_meridian_mcp_server.domain.filters import AnalysisFilters
+from google_meridian_mcp_server.domain.optimization import resolve_use_kpi
 from google_meridian_mcp_server.meridian.dataset_mapper import (
     TRAINING_DATASETS,
     dataset_to_records,
 )
 from google_meridian_mcp_server.meridian.full_funnel.decomposition import rest_label
+
+
+class _AsksForAnObjective(Protocol):
+    """Anything that carries a ``use_kpi``: analysis filters and optimization configs."""
+
+    use_kpi: bool | None
 
 
 class MeridianInterrogator:
@@ -135,10 +141,16 @@ class MeridianInterrogator:
     def has_rf_channels(self) -> bool:
         return len(self.get_data_inputs()["rf_media"]) > 0
 
-    def resolve_use_kpi(self, filters: AnalysisFilters) -> bool:
-        if filters.use_kpi is not None:
-            return filters.use_kpi
-        return not self.has_revenue_per_kpi()
+    def resolve_use_kpi(self, request: _AsksForAnObjective) -> bool:
+        """The objective every analysis and optimization of this model runs under.
+
+        The one resolution (``domain.optimization.resolve_use_kpi``): an omitted
+        ``use_kpi`` takes the model's native objective, and an explicit ``false`` on a
+        model without revenue per KPI is refused with ``objective_not_available``.
+        """
+        return resolve_use_kpi(
+            request.use_kpi, has_revenue_per_kpi=self.has_revenue_per_kpi()
+        )
 
     def get_geos_info(self) -> pd.DataFrame:
         input_data = self._mmm.input_data
