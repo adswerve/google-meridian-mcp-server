@@ -268,7 +268,7 @@ def register_tools(mcp: FastMCP) -> None:
         output_type: Annotated[
             ResponseDynamicsType,
             Field(
-                description="Which adstock metric to compute. 'adstock_decay': how media effect decays over time after exposure (carryover curves per channel). 'alpha_summary': the adstock decay-rate parameter (alpha) per channel, summarised from the posterior -- how fast the channel's effect fades after exposure. It says nothing about saturation or diminishing returns; those come from get_response_curves (Meridian's Hill saturation parameters ec and slope are not exposed by any tool).",
+                description="Which adstock metric to compute. 'adstock_decay': how media effect decays over time after exposure (carryover curves per channel). 'alpha_summary': the adstock decay-rate parameter (alpha) per channel, summarised from the posterior -- how fast the channel's effect fades after exposure (columns alpha_mean, alpha_median, alpha_std). A higher alpha means a SLOWER fade: the effect lasts longer; a lower alpha means it is mostly immediate. It says nothing about saturation or diminishing returns; those come from get_response_curves (Meridian's Hill saturation parameters ec and slope are not exposed by any tool).",
             ),
         ],
         ctx: Context,

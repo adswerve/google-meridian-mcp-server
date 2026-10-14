@@ -28,7 +28,7 @@ result.
 | How much outcome each channel drove (share / over time) | `get_contribution` | per-channel incremental contribution, total or by time |
 | Base vs. incremental — what media caused vs. what would happen anyway | `get_contribution` | one call returns both: each channel's incremental contribution plus a `baseline` row for everything else (on a full-funnel model, also a brand-equity row — `full-funnel.md`) |
 | Brand-building / indirect effects (full-funnel models) | `get_funnel_breakdown` | direct vs indirect per channel; mediator lift in native units |
-| Carryover / how long an effect lasts after exposure | `get_adstock_decay` | decay curve (`adstock_decay`) or decay-rate parameter alpha (`alpha_summary`) per channel; never a saturation measure |
+| Carryover / how long an effect lasts after exposure | `get_adstock_decay` | decay curve (`adstock_decay`) or decay-rate parameter alpha (`alpha_summary`; fields `alpha_mean` etc.) per channel, where a higher alpha means a slower fade (longer-lasting effect); never a saturation measure |
 | Saturation / diminishing returns / "what if we spend more or less" | `get_response_curves` | outcome across a *range* of spend per channel |
 | Reach & frequency, optimal frequency | `get_reach_frequency` | ROI across frequency levels + optimal frequency (**RF models only**; on a KPI-only model this `roi` is KPI units per spend, not revenue) |
 | Single-channel spend what-if ("add $X/week to search → ROI?") | `get_spend_scenario` | base vs. new outcome + the efficiency triplet |
