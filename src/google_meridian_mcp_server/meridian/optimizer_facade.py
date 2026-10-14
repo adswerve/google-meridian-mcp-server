@@ -10,6 +10,7 @@ import numpy as np
 from google_meridian_mcp_server.domain.optimization import (
     BaseOptimizationConfig,
     OptimizationConfig,
+    resolve_use_kpi,
     to_optimize_kwargs,
 )
 from google_meridian_mcp_server.meridian.interrogator import MeridianInterrogator
@@ -44,9 +45,9 @@ class OptimizerFacade(MeridianInterrogator):
         return list(inputs["media"]) + list(inputs["rf_media"])
 
     def resolve_use_kpi(self, config: BaseOptimizationConfig) -> bool:
-        if config.use_kpi is not None:
-            return config.use_kpi
-        return not self.has_revenue_per_kpi()
+        return resolve_use_kpi(
+            config.use_kpi, has_revenue_per_kpi=self.has_revenue_per_kpi()
+        )
 
     def execute(self, config) -> dict[str, Any]:
         if getattr(config, "kind", "historical") == "future":

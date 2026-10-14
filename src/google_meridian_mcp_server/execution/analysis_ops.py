@@ -328,17 +328,22 @@ def _preflight_optimization(catalog: Any, model_id: str, params: dict) -> dict:
     facade = catalog.get_optimizer_facade(model_id)
 
     validation_error: dict[str, Any] | None = None
+    use_kpi: bool | None = None
     try:
         if config_dict.get("kind") == "future":
             config = FutureOptimizationConfig.model_validate(config_dict)
+            # The one resolution of the objective, before anything reads it: a
+            # revenue objective the model cannot give is refused here, ahead of
+            # the fingerprint, the reuse lookup and the queue.
+            use_kpi = facade.resolve_use_kpi(config)
             facade.validate_future(config)  # pure guards, no optimize()
         else:
             config = OptimizationConfig.model_validate(config_dict)
-            use_kpi_for_kwargs = facade.resolve_use_kpi(config)
+            use_kpi = facade.resolve_use_kpi(config)
             to_optimize_kwargs(
                 config,
                 channel_order=facade.channel_order(),
-                use_kpi=use_kpi_for_kwargs,
+                use_kpi=use_kpi,
             )
     except MeridianMcpError as exc:
         validation_error = exc.to_payload()
@@ -349,18 +354,10 @@ def _preflight_optimization(catalog: Any, model_id: str, params: dict) -> dict:
             "details": {},
         }
 
-    # use_kpi mirrors OptimizerFacade.resolve_use_kpi's logic but is derived
-    # straight from the raw config dict so it's available even when
-    # validation_error is set (e.g. a per_channel constraint error is still
-    # actionable together with channel_order/use_kpi).
-    raw_use_kpi = config_dict.get("use_kpi")
-    use_kpi = (
-        raw_use_kpi if raw_use_kpi is not None else not facade.has_revenue_per_kpi()
-    )
-
     return {
         "channel_order": facade.channel_order(),
         "has_revenue_per_kpi": facade.has_revenue_per_kpi(),
+        # None when the request was refused before its objective was resolved.
         "use_kpi": use_kpi,
         "size_features": routing.model_size_features(facade),
         "validation_error": validation_error,

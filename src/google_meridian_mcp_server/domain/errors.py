@@ -106,6 +106,22 @@ class MetricNotSupportedError(MeridianMcpError):
         )
 
 
+class ObjectiveNotAvailableError(MeridianMcpError):
+    """A revenue objective was requested of a model that has no revenue per KPI."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            error_code="objective_not_available",
+            message=(
+                "This model has no revenue per KPI, so it cannot be optimized for a "
+                "revenue objective (use_kpi=false). Omit use_kpi, or set it to true: on "
+                "this model both optimize the KPI, and a target_roas or target_mroas "
+                "figure is read as a cost per KPI."
+            ),
+            details={"use_kpi": False, "use_kpi_togglable": False},
+        )
+
+
 class UnsupportedModelFormatError(MeridianMcpError):
     """Raised when a model file cannot be loaded because of its extension.
 
