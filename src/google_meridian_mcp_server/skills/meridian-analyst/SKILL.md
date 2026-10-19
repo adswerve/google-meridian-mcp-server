@@ -26,10 +26,10 @@ numbers correctly — uncertainty included.
    on their answer. With exactly one ready model, use it.
 2. `get_model_overview` for **that** model only — your map of the model. Open
    another model's overview only when the user asks to switch or compare.
-   Before calling anything else, read its `available_tool_options`: it lists exactly which tools and metrics
-   are **legal for this specific model**, computed from the model's real
-   capabilities. Treat it as ground truth; never call a tool or metric it does
-   not list.
+   Before calling anything else, read its `available_tool_options`: it lists
+   exactly which tools and metrics are **legal for this specific model**,
+   computed from the model's real capabilities. Treat it as ground truth; never
+   call a tool or metric it does not list.
 
 The overview also gives you the three facts that drive every downstream choice:
 whether the model is **national or geo**, whether it **can measure revenue**,
