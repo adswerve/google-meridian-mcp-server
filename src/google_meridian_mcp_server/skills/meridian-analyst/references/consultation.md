@@ -22,6 +22,9 @@ response curves, model fit) — those answer questions directly and carry no
 
 **1. Elicit only genuinely-unknowable gaps.** You cannot infer these from the
 model — they are business facts only the user has:
+- **Which model**, when none is named or selected and more than one could fit.
+  Make it the first question, with the choices from `list_models`, before you
+  open any overview.
 - The **goal**, and which objective it implies: grow volume (accept lower
   efficiency → `target_mroas` / larger budget), maximize efficiency (`fixed_budget`
   reallocation), or hit a specific return (`target_roas`). Growth vs. efficiency vs.
@@ -169,7 +172,9 @@ dumbing down real marketing metrics.
   option back to the user.
 - **Asking for facts `get_model_overview` already answers** — channel/geo names,
   whether the model is revenue-capable, the training date range. Look these up;
-  don't make the user repeat them.
+  don't make the user repeat them. Which
+  model to analyze is not such a fact: when it is unnamed and unselected, ask
+  rather than opening every overview to guess.
 - **Running a high-stakes or ambiguous request on silent defaults** — e.g.
   launching a future optimization with the default `trailing` reference without
   ever telling the user that's what determines the assumed cost structure.
