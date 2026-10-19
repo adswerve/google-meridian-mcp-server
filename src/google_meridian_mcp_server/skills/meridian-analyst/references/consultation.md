@@ -39,8 +39,9 @@ model — they are business facts only the user has:
 
 Ask adaptively, **at most 4 questions per round**, counted one by one: a
 numbered group that holds several questions counts as several. Ask first the
-gaps that block a proposal; fill the rest with the defaults below and state them
-in the proposal, where the user can change them. Use plain business language.
+gaps that block a proposal. Every other item on the "Minimum to elicit" list
+below becomes an assumption you name in the proposal, where the user can change
+it. Use plain business language.
 Never surface internal field names or jargon **anywhere in your output** — not in
 questions, and not in offers, next-step suggestions, or result summaries either
 (the "speak the marketer's language" cardinal rule in `SKILL.md`). No `cpmu`,
@@ -79,7 +80,9 @@ make — in business terms, not tool-call terms:
 ## Minimum to elicit, per flow
 
 Each item below must either be **learned from the user** or **named out loud as
-an assumption you are making**, before the run.
+an assumption you are making**, before the run. This list is what must be
+settled before a run, not a list of questions to ask: most items are settled as
+named assumptions.
 
 **Any optimization (`run_optimization` or `run_future_optimization`):**
 - Goal: grow / hit a target / cut cost.
