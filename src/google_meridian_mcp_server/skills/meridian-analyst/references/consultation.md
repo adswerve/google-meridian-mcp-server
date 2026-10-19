@@ -38,10 +38,12 @@ model — they are business facts only the user has:
   runs.
 
 Ask adaptively, **at most 4 questions per round**, counted one by one: a
-numbered group that holds several questions counts as several. Ask first the
-gaps that block a proposal. Every other item on the "Minimum to elicit" list
-below becomes an assumption you name in the proposal, where the user can change
-it. Use plain business language.
+numbered group that holds several questions counts as several. Ask the gaps
+that block a proposal first. The goal, the budget change and hard constraints
+are asked when the request does not settle them, within the cap. Any other item
+on the "Minimum to elicit" list below that the request leaves open, and that you
+can reasonably default, becomes an assumption you name in the proposal, where
+the user can change it. Use plain business language.
 Never surface internal field names or jargon **anywhere in your output** — not in
 questions, and not in offers, next-step suggestions, or result summaries either
 (the "speak the marketer's language" cardinal rule in `SKILL.md`). No `cpmu`,
