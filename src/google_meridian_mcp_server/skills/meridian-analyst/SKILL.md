@@ -19,11 +19,11 @@ numbers correctly — uncertainty included.
 
 ## Golden path — always start here
 
-1. **Settle the `model_id` without browsing.** If the request names or has
-   selected a `model_id`, use it — don't list or open other models to choose.
-   Only if no model is given and more than one is ready: call `list_models`
-   once and ask the user which model (offer the display names), then continue
-   on their answer. With exactly one ready model, use it.
+1. **Settle the `model_id` without browsing.** If the request names a
+   `model_id`, or the user has one selected, use it — don't list or open other
+   models to choose. If none is given, call `list_models` once: one listed, use
+   it; more, ask the user which model (offer the display names), then continue
+   on their answer.
 2. `get_model_overview` for **that** model only — your map of the model. Open
    another model's overview only when the user asks to switch or compare.
    Before calling anything else, read its `available_tool_options`: it lists

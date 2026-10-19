@@ -172,9 +172,9 @@ dumbing down real marketing metrics.
   option back to the user.
 - **Asking for facts `get_model_overview` already answers** — channel/geo names,
   whether the model is revenue-capable, the training date range. Look these up;
-  don't make the user repeat them. Which
-  model to analyze is not such a fact: when it is unnamed and unselected, ask
-  rather than opening every overview to guess.
+  don't make the user repeat them. Which model to analyze is not such a fact:
+  when it is unnamed and unselected, ask rather than opening every overview to
+  guess.
 - **Running a high-stakes or ambiguous request on silent defaults** — e.g.
   launching a future optimization with the default `trailing` reference without
   ever telling the user that's what determines the assumed cost structure.
