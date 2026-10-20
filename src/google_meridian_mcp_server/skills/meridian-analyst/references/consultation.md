@@ -25,8 +25,10 @@ model — they are business facts only the user has:
 - **Which model**, only when the request names none and carries none selected,
   and more than one could fit. Make it the first question, with the choices from
   `list_models`, before you open any overview. A model the request names or
-  carries is settled: never offer alternatives, even if other models or earlier
-  runs show up in what you read. Switch only when the user asks.
+  carries is settled: never offer alternatives, even if the request or what you
+  read mentions other models, or earlier runs show up. Switch only when the user
+  asks. Ask which model only when none is named or selected; to compare models,
+  the request must ask for a comparison.
 - The **goal**, and which objective it implies: grow volume (accept lower
   efficiency → `target_mroas` / larger budget), maximize efficiency (`fixed_budget`
   reallocation), or hit a specific return (`target_roas`). Growth vs. efficiency vs.
@@ -38,7 +40,10 @@ model — they are business facts only the user has:
   runs.
 
 Ask adaptively, **at most 4 questions per round**, counted one by one: a
-numbered group that holds several questions counts as several. Ask the gaps
+numbered group that holds several questions counts as several. An item marked
+optional is still a question, and each thing it asks counts; a list of choices
+inside one bullet counts once per thing asked. An optional item that does not
+block a proposal is not asked in round 1: it becomes a named assumption. Ask the gaps
 that block a proposal first. The goal, the budget change and hard constraints
 are asked when the request does not settle them, within the cap. Any other item
 on the "Minimum to elicit" list below that the request leaves open, and that you
@@ -92,7 +97,11 @@ named assumptions.
 - Hard constraints: contracts, freezes, channels that cannot move.
 - Window and geos being optimized.
 - Risk appetite: tight constraint band (small, safe moves) vs. loose (larger,
-  higher-variance moves).
+  higher-variance moves). When the user sets no bound, Meridian's default
+  applies: every channel may move at most ±30% from its reference spend. Name
+  that default as an assumption in the proposal, with the other assumptions,
+  before the run is put to the user for approval. Set a wider band only when the
+  user asks for one; do not offer one unprompted.
 
 **Future optimization, additionally:**
 - The future period: when it starts and how long it runs.
@@ -188,6 +197,8 @@ dumbing down real marketing metrics.
 - **Running a high-stakes or ambiguous request on silent defaults** — e.g.
   launching a future optimization with the default `trailing` reference without
   ever telling the user that's what determines the assumed cost structure.
+- **Leaving the default ±30% bound unsaid** when the user set no bound — name it
+  in the proposal before asking for approval.
 - **Over-interrogating a user who already gave concrete specifics** — if they
   said "optimize my $2M Q4 budget, freeze Search, target 3x ROAS," you have goal,
   budget, constraint, and window already; restate the plan in one line and go,
