@@ -39,7 +39,7 @@ On a full-funnel model every tool reports full-funnel effects; paid rows carry `
 
 The server bundles a `meridian-analyst` Agent Skill. When a connecting client supports the MCP skills provider, it's discoverable over the resource URI `skill://meridian-analyst/SKILL.md`.
 
-For clients that don't yet surface MCP skill resources, use the folder-drop fallback: copy the `skills/meridian-analyst/` directory verbatim into the client's skills folder (e.g. `.claude/skills/`). It's a standards-compliant Agent Skill (agentskills.io format) and needs no conversion.
+For clients that don't yet surface MCP skill resources, use the folder-drop fallback: copy the `src/google_meridian_mcp_server/skills/meridian-analyst/` directory verbatim into the client's skills folder (e.g. `.claude/skills/`). It's a standards-compliant Agent Skill (agentskills.io format) and needs no conversion.
 
 The skill teaches orchestration, model taxonomy, budget optimization and reallocation (both **historical** `run_optimization` and **future** `run_future_optimization`), channel-performance workflows, and full-funnel (brand-building) interpretation.
 

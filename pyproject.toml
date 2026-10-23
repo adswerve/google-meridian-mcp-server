@@ -29,6 +29,10 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# The skills are served as MCP resources, so they ship inside the installed package.
+google_meridian_mcp_server = ["skills/**/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

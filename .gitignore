@@ -28,8 +28,8 @@ references/*
 !references/research-deferred-work.md
 docs/
 # Skill references are served as MCP resources and must be tracked.
-!skills/meridian-analyst/references/
-!skills/meridian-analyst/references/**
+!src/google_meridian_mcp_server/skills/meridian-analyst/references/
+!src/google_meridian_mcp_server/skills/meridian-analyst/references/**
 .superpowers/
 .vscode/
 models/
