@@ -52,16 +52,17 @@ def _build_wheel(tmp_path: Path) -> Path:
     )
     out = tmp_path / "dist"
     out.mkdir()
-    subprocess.run(
+    build = subprocess.run(
         [
             sys.executable,
             "-c",
             "import setuptools.build_meta as b; b.build_wheel(r'%s')" % out,
         ],
         cwd=source,
-        check=True,
         capture_output=True,
+        text=True,
     )
+    assert build.returncode == 0, f"wheel build failed:\n{build.stdout}\n{build.stderr}"
     return next(out.glob("*.whl"))
 
 

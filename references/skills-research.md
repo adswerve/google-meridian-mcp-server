@@ -10,7 +10,7 @@ not a committed artifact. The durable record is `reports/skills-audit.md`.
 ## 1. The audit method — and why it's worth repeating as-is
 
 `reports/skills-audit.md` (Task 22, Phase 6b) inventoried **35 behavioural
-claims** made across `skills/meridian-analyst/SKILL.md` and its
+claims** made across `src/google_meridian_mcp_server/skills/meridian-analyst/SKILL.md` and its
 `references/*.md` files, then verified **every one of the 35 against a real
 tool call** on a running server, against the refit Meridian 2.0 fixtures —
 not by reading the claim and judging whether it sounded plausible. The
@@ -33,7 +33,7 @@ version bump, rather than doing a lighter-touch read-through.
 
 ## 2. The one wrong claim — and why it's instructive
 
-`skills/meridian-analyst/references/channel-performance.md` claimed that
+`src/google_meridian_mcp_server/skills/meridian-analyst/references/channel-performance.md` claimed that
 `get_contribution`'s baseline (the organic/non-media portion of the outcome)
 "is not a channel here," and that seeing it required a **second** call to
 `get_channel_summary`. A real call
@@ -83,10 +83,10 @@ supports the skills-provider mechanism, it's discoverable at the resource URI
 `tests/contract/test_skill_provider.py`, which also checks for a
 `skill://meridian-analyst/_manifest` resource). For a client that doesn't
 support MCP skill resources, the fallback is a manual folder-drop: copy
-`skills/meridian-analyst/` into wherever the client looks for skills (e.g.
+`src/google_meridian_mcp_server/skills/meridian-analyst/` into wherever the client looks for skills (e.g.
 `.claude/skills/`).
 
-This is exactly why `skills/meridian-analyst/references/` carries an explicit
+This is exactly why `src/google_meridian_mcp_server/skills/meridian-analyst/references/` carries an explicit
 un-ignore exception in `.gitignore` (line just above it: "Skill references
 are served as MCP resources and must be tracked") even though the
 project-root `references/` (this file's own directory) is gitignored — the
@@ -182,6 +182,6 @@ decision, not a finding to act on now.
   symmetry with `trailing`, which was the only one actually run.
 - The skill's `references/` files are the only gitignore exception in the
   whole repo — a reminder that any new skill reference file added under
-  `skills/meridian-analyst/references/` is committed and shipped as an MCP
+  `src/google_meridian_mcp_server/skills/meridian-analyst/references/` is committed and shipped as an MCP
   resource, unlike everything else placed under a bare `references/` at the
   repo root.
