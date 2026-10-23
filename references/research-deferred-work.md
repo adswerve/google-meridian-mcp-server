@@ -8,7 +8,7 @@ follow the pointers for the real evidence; nothing here is re-derived or
 estimated independently.
 
 This file lives in `references/`, which is gitignored in this repository
-(`.gitignore:22`) except for `skills/meridian-analyst/references/`. That means
+(`.gitignore:22`) except for `src/google_meridian_mcp_server/skills/meridian-analyst/references/`. That means
 this file itself is **local, uncommitted scratch material** — it will not
 survive a fresh clone or `git worktree add`. The durable record of this
 research is the reports it points to. Re-run this synthesis (or regenerate

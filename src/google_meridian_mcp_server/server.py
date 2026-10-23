@@ -29,7 +29,7 @@ from google_meridian_mcp_server.transport.tools import register_tools
 
 log = logging.getLogger(__name__)
 
-_SKILLS_ROOT = Path(__file__).resolve().parents[2] / "skills"
+_SKILLS_ROOT = Path(__file__).resolve().parent / "skills"
 
 _SERVER_INSTRUCTIONS = (
     "Google Meridian marketing-mix-model analysis and budget optimization tools. "
@@ -133,8 +133,18 @@ async def _lifespan(server: FastMCP):
         await analysis_runner.shutdown()
 
 
+def _require_skills(root: Path) -> None:
+    """Refuse to start when no skill is found, instead of serving an empty list."""
+    if not any(root.glob("*/SKILL.md")):
+        raise RuntimeError(
+            f"No skills found under {root} (expected <skill>/SKILL.md). "
+            "The package was built without its skills folder."
+        )
+
+
 def create_server() -> FastMCP:
     """Build and return a configured FastMCP server instance."""
+    _require_skills(_SKILLS_ROOT)
     mcp = FastMCP(
         "Google Meridian MCP Server",
         instructions=_SERVER_INSTRUCTIONS,
