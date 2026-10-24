@@ -58,6 +58,17 @@ and whether it is **full-funnel** (`funnel: "full_funnel"`). See
 - **Revenue metrics are conditional; CPIK is universal.** `roi`/`marginal_roi`
   exist only for revenue-capable models — requesting them on a KPI-only model
   returns `metric_not_supported`. `cpik`/`marginal_cpik` are valid on every model.
+- **ROI exists only over a time window, never per week.** ROI, marginal ROI and
+  CPIK are one figure per channel over the window you ask about; the model gives
+  no weekly (per-period) series of them, because a week's media keeps working in
+  later weeks (carryover), so spend and effect do not line up week by week.
+  Setting the per-period switch (`aggregate_times=false`) on these returns no ROI
+  rows. If asked for weekly ROI, or a weekly incremental-outcome-to-spend ratio,
+  say so at once, before running any code or further calls, and do not try to
+  rebuild it. Offer what is real: ROI over chosen windows (one call per window,
+  with `start_date`/`end_date`, e.g. each quarter), or weekly spend
+  (`get_channel_data`) next to weekly incremental outcome (`get_contribution`,
+  by-time view), shown as two series and not divided.
 - **Reach & frequency is RF-only.** `get_reach_frequency` applies only to models
   with reach/frequency channels; otherwise it is absent from
   `available_tool_options` and returns `metric_not_supported`.

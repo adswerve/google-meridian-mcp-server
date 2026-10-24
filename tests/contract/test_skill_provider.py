@@ -69,3 +69,15 @@ async def test_skill_states_the_planned_allocation_rule(uri, kept):
         assert "when its shares sum to 1 or more" in flat
         assert "every channel left out had no" in flat
         assert "renormalized" not in flat
+
+
+@pytest.mark.asyncio
+async def test_skill_says_roi_exists_only_over_a_window():
+    """Weekly ROI does not exist; the skill says so up front, with the options."""
+    mcp = create_server()
+    async with Client(mcp) as client:
+        flat = " ".join((await client.read_resource(SKILL_URI))[0].text.split())
+        assert "ROI exists only over a time window, never per week" in flat
+        assert "say so at once, before running any code" in flat
+        assert "one call per window" in flat
+        assert "shown as two series and not divided" in flat

@@ -42,8 +42,9 @@ metric you request. `roi`/`marginal_roi` exist **only on revenue-capable models*
 on a KPI-only model they return `metric_not_supported` — fall back to
 `cpik`/`marginal_cpik`, which are valid everywhere (`taxonomy.md`).
 Direction depends on the metric: **ROI higher is better; CPIK lower is better** —
-state which you ranked on, because they sort in opposite directions. Average ROI
-answers "which channel paid off historically"; **marginal** ROI answers "where does
+state which you ranked on, because they sort in opposite directions. ROI, marginal ROI and CPIK are window-only: ask once per
+window (`start_date`/`end_date`), never per week (see the rule in SKILL.md).
+Average ROI answers "which channel paid off historically"; **marginal** ROI answers "where does
 the *next* dollar work" — do not use average ROI to argue for adding budget. This
 tool's paid summary view also carries per-channel **KPI lift**, so you can rank by
 contribution *magnitude* here; reach for `get_contribution` when the question is
