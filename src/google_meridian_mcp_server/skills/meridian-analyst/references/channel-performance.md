@@ -49,6 +49,8 @@ tool's paid summary view also carries per-channel **KPI lift**, so you can rank 
 contribution *magnitude* here; reach for `get_contribution` when the question is
 specifically about contribution *share* or its trend over time. To explain *why* a
 channel ranks where it does, pair this with the response curve.
+ROI, marginal ROI, CPIK and marginal CPIK come as one figure per time window, not a weekly
+series; follow the "one figure per time window" rule in `SKILL.md`.
 
 **`get_contribution` — base vs. incremental in one call.** Contribution is the
 **incremental** outcome each channel drove — the lift media caused, at its
