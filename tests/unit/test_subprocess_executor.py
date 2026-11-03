@@ -1,11 +1,15 @@
 import asyncio
 import subprocess
+import time
 from datetime import datetime, timezone
 from unittest.mock import patch
+
+import pytest
 
 from google_meridian_mcp_server.domain.optimization import (
     OptimizationConfig,
     OptimizationRun,
+    OptimizationRunDispatch,
     OptimizationRunState,
     RunStatus,
 )
@@ -346,33 +350,187 @@ def test_launch_redirects_and_new_session(monkeypatch, tmp_path):
     assert captured["stdout"] is not None
 
 
-def test_reconcile_orphans_fails_running_and_queued_unconditionally(tmp_path):
-    """F1: a server restart must not strand a local-tier RUNNING/QUEUED run.
+class _FakeLocalExecutor(AsyncSubprocessExecutor):
+    """The local tier's real reconcile and claim logic over fake workers."""
 
-    `_handles`/`_queue` are in-memory, so a fresh server starts with neither;
-    the PID-1 parent-death guard (worker.py) guarantees a local worker cannot
-    survive its parent server, so AsyncSubprocessExecutor.reconcile_orphans
-    must fail BOTH RUNNING and QUEUED unconditionally -- no heartbeat-staleness
-    grace period, even with a perfectly fresh heartbeat."""
+    def __init__(self, registry, **kw):
+        super().__init__(registry, **kw)
+        self.launched: list[str] = []
+
+    def _launch(self, run):
+        self.launched.append(run.run_id)
+        return _Handle()
+
+    def _is_alive(self, handle):
+        return handle.alive
+
+    def _terminate(self, handle) -> None:
+        handle.alive = False
+
+
+def _beat(reg, run_id, at):
+    """What a live worker writes: RUNNING with a heartbeat."""
+    reg.write_state(
+        OptimizationRunState(run_id=run_id, status=RunStatus.RUNNING, heartbeat_at=at)
+    )
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+_LONG_AGO = "1970-01-01T00:00:00+00:00"
+
+
+def test_reconcile_orphans_fails_runs_whose_worker_has_gone_silent(tmp_path):
+    """F1: a server restart must not strand a local-tier run whose worker died.
+
+    A RUNNING run whose heartbeat is stale, and a QUEUED run that was
+    launched (claimed) long ago but never reached RUNNING, are both dead: the
+    PID-1 parent-death guard (worker.py) means a local worker cannot outlive
+    its server. Both fail at startup with worker_lost."""
     reg = LocalOptimizationRunRegistry(str(tmp_path))
     reg.create(_run("running-run"))
+    _beat(reg, "running-run", _LONG_AGO)
+    reg.create(_run("launched-run"))
     reg.write_state(
-        OptimizationRunState(
-            run_id="running-run",
-            status=RunStatus.RUNNING,
-            heartbeat_at=datetime.now(timezone.utc).isoformat(),  # FRESH heartbeat
-        )
+        OptimizationRunState(run_id="launched-run", status=RunStatus.QUEUED)
     )
-    reg.create(_run("queued-run"))
-    reg.write_state(OptimizationRunState(run_id="queued-run", status=RunStatus.QUEUED))
+    reg.claim_dispatch(
+        OptimizationRunDispatch(run_id="launched-run", claimed_at=_LONG_AGO)
+    )
 
-    ex = AsyncSubprocessExecutor(reg, max_parallel=2, heartbeat_stale_seconds=60)
+    ex = _FakeLocalExecutor(reg, max_parallel=2, heartbeat_stale_seconds=60)
     ex.reconcile_orphans()
 
-    for run_id in ("running-run", "queued-run"):
+    for run_id in ("running-run", "launched-run"):
         state = reg.get_state(run_id)
         assert state.status == RunStatus.FAILED
         assert state.error["code"] == "worker_lost"
+    assert ex.launched == []
+
+
+def test_lone_restart_launches_a_queued_run_instead_of_failing_it(tmp_path):
+    """A QUEUED run nobody launched is adopted into the new server's queue,
+    as the cloud tier already does, rather than failed."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run("queued-run"))
+    reg.write_state(OptimizationRunState(run_id="queued-run", status=RunStatus.QUEUED))
+
+    ex = _FakeLocalExecutor(reg, max_parallel=2, heartbeat_stale_seconds=60)
+    ex.reconcile_orphans()
+
+    assert reg.get_state("queued-run").status == RunStatus.QUEUED
+    assert ex.launched == ["queued-run"]
+
+
+def test_lone_restart_fails_a_running_run_once_its_heartbeat_goes_stale(tmp_path):
+    """A RUNNING run with a fresh heartbeat is not failed at startup (a live
+    peer may own it), but it is not stranded either: once its heartbeat goes
+    stale, a later pump() fails it."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    reg.create(_run("a"))
+    _beat(reg, "a", _now())
+
+    ex = _FakeLocalExecutor(reg, max_parallel=2, heartbeat_stale_seconds=1)
+    ex.reconcile_orphans()
+    assert reg.get_state("a").status == RunStatus.RUNNING
+
+    time.sleep(1.2)  # the dead worker writes no more heartbeats
+    ex.pump()
+
+    state = reg.get_state("a")
+    assert state.status == RunStatus.FAILED
+    assert state.error["code"] == "worker_lost"
+    assert ex.launched == []
+
+
+def test_starting_instance_does_not_fail_a_run_queued_on_a_live_peer(tmp_path):
+    """Two server instances share one run registry. A starting instance must
+    not fail a run another live instance holds in its queue, and the run is
+    launched exactly once across both."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    owner = _FakeLocalExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    reg.create(_run("a"))
+    owner.submit(_run("a"))
+    _beat(reg, "a", _now())
+    reg.create(_run("b"))
+    owner.submit(_run("b"))  # queued on the owner behind "a"
+    assert reg.get_state("b").status == RunStatus.QUEUED
+
+    newcomer = _FakeLocalExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    newcomer.reconcile_orphans()
+
+    assert reg.get_state("b").status == RunStatus.QUEUED
+    assert reg.get_state("b").error is None
+
+    owner._handles["a"].alive = False
+    reg.write_state(OptimizationRunState(run_id="a", status=RunStatus.COMPLETED))
+    owner.pump()
+    newcomer.pump()
+
+    assert (owner.launched + newcomer.launched).count("b") == 1
+
+
+def test_starting_instance_does_not_fail_a_run_running_on_a_live_peer(tmp_path):
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    owner = _FakeLocalExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    reg.create(_run("a"))
+    owner.submit(_run("a"))
+    _beat(reg, "a", _now())  # the owner's worker is beating
+
+    newcomer = _FakeLocalExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    newcomer.reconcile_orphans()
+
+    state = reg.get_state("a")
+    assert state.status == RunStatus.RUNNING
+    assert state.error is None
+    assert newcomer.launched == []
+
+
+def test_starting_instance_leaves_a_peer_launch_in_progress_alone(tmp_path):
+    """The peer has launched the worker (claimed the run) but the worker has
+    not yet written RUNNING. The starting instance neither fails nor
+    relaunches it."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    owner = _FakeLocalExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    reg.create(_run("a"))
+    owner.submit(_run("a"))
+    assert owner.launched == ["a"]
+    assert reg.get_state("a").status == RunStatus.QUEUED
+
+    newcomer = _FakeLocalExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    newcomer.reconcile_orphans()
+    newcomer.pump()
+
+    assert reg.get_state("a").status == RunStatus.QUEUED
+    assert newcomer.launched == []
+
+
+@pytest.mark.parametrize("ended", [RunStatus.FAILED, RunStatus.CANCELED])
+def test_pump_does_not_launch_a_run_whose_stored_state_has_ended(tmp_path, ended):
+    """Another instance failed or canceled a run this instance still holds in
+    its in-memory queue. pump() must not launch it and must not overwrite the
+    stored state."""
+    reg = LocalOptimizationRunRegistry(str(tmp_path))
+    ex = _FakeExecutor(reg, max_parallel=1, heartbeat_stale_seconds=60)
+    reg.create(_run("a"))
+    ex.submit(_run("a"))
+    reg.create(_run("b"))
+    ex.submit(_run("b"))  # queued behind "a"
+    reg.write_state(
+        OptimizationRunState(
+            run_id="b", status=ended, error={"code": "worker_lost", "message": "x"}
+        )
+    )
+
+    ex._handles["a"].alive = False
+    reg.write_state(OptimizationRunState(run_id="a", status=RunStatus.COMPLETED))
+    ex.pump()
+
+    assert ex.launched == ["a"]
+    assert "b" not in ex._queue
+    assert reg.get_state("b").status == ended
 
 
 def test_reconcile_orphans_does_not_touch_terminal_runs(tmp_path):
