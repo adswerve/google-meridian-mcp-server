@@ -131,6 +131,13 @@ class BaseExecutor(abc.ABC):
                     # nothing to launch, and this must not escape into whatever
                     # unrelated tool call happened to trigger this pump().
                     continue
+                if self._registry.get_state(run_id).status is not RunStatus.QUEUED:
+                    # Ended or launched elsewhere since it was queued here: a
+                    # cancel or reconcile on another instance (the registry is
+                    # shared), or a peer that dispatched it first. The worker
+                    # writes RUNNING unconditionally, so launching would
+                    # overwrite a FAILED or CANCELED state with a live run.
+                    continue
                 claim = self._claim(run_id)
                 if claim is None:
                     # Another instance owns this run. Do NOT re-enqueue and do
@@ -166,8 +173,9 @@ class BaseExecutor(abc.ABC):
     def _claim(self, run_id: str) -> Any | None:
         """Hook: claim the right to dispatch, returning an opaque token.
 
-        Returns None when another instance owns the run. The local tier is
-        single-process, so the run_id itself is a sufficient truthy token.
+        Returns None when another instance owns the run. Default: no claim,
+        the run_id itself is the truthy token. Both real executors override
+        this with a create-if-absent dispatch claim.
         """
         return run_id
 

@@ -526,6 +526,13 @@ starts, and executions already in flight are re-adopted rather than relaunched.
 `OPTIMIZATION_MAX_PARALLEL` bounds concurrent job launches per instance, so a
 submission over the cap waits rather than failing.
 
+On the `local` tier a worker dies with its server. After a restart, a queued run
+that never started is queued again; a run whose worker had started is failed
+(`worker_lost`) once its heartbeat is more than 60 s old. A starting instance
+does not fail a run that another live instance sharing the same registry is
+still queuing or running. The local tier is still meant for one instance: a
+cancel only stops a worker on the instance that launched it.
+
 A run that waits is drained by a background poller: the server lifespan pumps
 the queue every `OPTIMIZATION_POLL_INTERVAL_SECONDS` (default `30`; a positive
 number) and stops the timer at shutdown. It calls the same `pump()` a tool

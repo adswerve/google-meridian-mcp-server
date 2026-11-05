@@ -176,10 +176,11 @@ async def stop_queue_poller(task: asyncio.Task) -> None:
 def reconcile_orphans(registry: OptimizationRunRegistry, executor) -> None:
     """On startup, reconcile in-flight runs left over by a stopped server.
 
-    Delegates to the executor: the local subprocess tier unconditionally
-    fails any run still RUNNING or QUEUED (the PID-1 parent-death guard in
-    worker.py guarantees a local worker cannot survive its parent server, so
-    such a run is provably dead); the cloud tier fails RUNNING runs whose
+    Delegates to the executor: the local subprocess tier re-queues QUEUED
+    runs nobody launched and fails launched runs whose worker has gone silent
+    (the PID-1 parent-death guard in worker.py guarantees a local worker
+    cannot survive its parent server), watching the rest in case a live peer
+    instance owns them; the cloud tier fails RUNNING runs whose
     heartbeat has gone stale, since a cloud worker CAN outlive the server
     process, and additionally rebuilds its in-memory queue from QUEUED runs
     and re-adopts in-flight executions by their recorded execution_name, so
