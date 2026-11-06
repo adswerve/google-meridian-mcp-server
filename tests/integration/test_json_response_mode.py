@@ -112,7 +112,7 @@ def require_modern_handler(monkeypatch):
     MCP-Protocol-Version is in HANDSHAKE_PROTOCOL_VERSIONS, and the legacy
     transport honours json_response too -- so the application/json assertion
     below would pass without ever exercising the modern short-circuit this
-    test exists to pin. fastmcp 4.0.3's Client negotiates a modern version
+    test exists to pin. fastmcp 4.1.6's Client negotiates a modern version
     today; this fixture fails loudly if that ever stops being true.
 
     The manager imports the symbol into its own namespace
@@ -162,5 +162,7 @@ async def test_control_slow_large_reply_fails_on_sse_branch(
             async with Client(StreamableHttpTransport(url)) as client:
                 await client.call_tool("slow_big", {})
 
-    assert "SSE stream ended without a response" in str(excinfo.value)
+    # mcp 2.3.0 names the cause; 2.2.0 only said "SSE stream ended without a
+    # response". Either way the reply was lost on the capped SSE branch.
+    assert "exceeded the 1048576 byte limit" in str(excinfo.value)
     assert "text/event-stream" in record_branch["content_type"]

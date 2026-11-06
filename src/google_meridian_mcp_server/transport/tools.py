@@ -36,9 +36,9 @@ from google_meridian_mcp_server.services.optimization_service import Optimizatio
 log = logging.getLogger(__name__)
 
 READ_ONLY_TOOL_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint=True,
-    idempotentHint=True,
-    openWorldHint=False,
+    read_only_hint=True,
+    idempotent_hint=True,
+    open_world_hint=False,
 )
 
 
