@@ -57,12 +57,12 @@ async def test_run_optimization_annotations_not_readonly():
     by_name = {t.name: t for t in await mcp.list_tools()}
     # run_optimization has no annotations (bare @mcp.tool) — not read-only
     run_opt_annotations = by_name["run_optimization"].annotations
-    assert run_opt_annotations is None or run_opt_annotations.readOnlyHint is not True
-    assert by_name["get_optimization_status"].annotations.readOnlyHint is True
-    assert by_name["get_optimization_result"].annotations.readOnlyHint is True
-    assert by_name["list_optimizations"].annotations.readOnlyHint is True
+    assert run_opt_annotations is None or run_opt_annotations.read_only_hint is not True
+    assert by_name["get_optimization_status"].annotations.read_only_hint is True
+    assert by_name["get_optimization_result"].annotations.read_only_hint is True
+    assert by_name["list_optimizations"].annotations.read_only_hint is True
     delete_ann = by_name["delete_optimization"].annotations
-    assert delete_ann is None or delete_ann.readOnlyHint is not True
+    assert delete_ann is None or delete_ann.read_only_hint is not True
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_cancel_tool_registered_not_readonly():
     by_name = {t.name: t for t in await mcp.list_tools()}
     assert "cancel_optimization" in by_name
     cancel_ann = by_name["cancel_optimization"].annotations
-    assert cancel_ann is None or cancel_ann.readOnlyHint is not True
+    assert cancel_ann is None or cancel_ann.read_only_hint is not True
 
 
 def _prop(schema: dict, name: str) -> dict:
@@ -94,11 +94,11 @@ async def test_compute_tier_and_status_are_enums():
     mcp = create_server()
     by_name = {t.name: t for t in await mcp.list_tools()}
 
-    tier = _prop(by_name["run_optimization"].to_mcp_tool().inputSchema, "compute_tier")
+    tier = _prop(by_name["run_optimization"].to_mcp_tool().input_schema, "compute_tier")
     assert _enum_values(tier) == {"auto", "local", "cloud_cpu", "cloud_gpu"}
     assert tier.get("default") == "auto"
 
-    status = _prop(by_name["list_optimizations"].to_mcp_tool().inputSchema, "status")
+    status = _prop(by_name["list_optimizations"].to_mcp_tool().input_schema, "status")
     assert _enum_values(status) == {
         "queued",
         "running",
@@ -254,7 +254,7 @@ async def test_run_future_optimization_description_names_every_planned_mix_refus
     mcp = create_server()
     by_name = {t.name: t for t in await mcp.list_tools()}
     config = _prop(
-        by_name["run_future_optimization"].to_mcp_tool().inputSchema, "config"
+        by_name["run_future_optimization"].to_mcp_tool().input_schema, "config"
     )
     text = " ".join(config["description"].split())
     assert "channels are left out and the shares already sum to 1 or more" in text
