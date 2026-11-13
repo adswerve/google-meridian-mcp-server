@@ -53,8 +53,9 @@ and whether it is **full-funnel** (`funnel: "full_funnel"`). See
   it is the inverse of ROI). `get_model_overview` tells you which; when unsure,
   let the model's native objective apply rather than forcing one.
   `use_kpi=false` on a KPI-only model is refused (`objective_not_available`): omit
-  `use_kpi`, or set it true — there a `target_roas`/`target_mroas` figure is a cost
-  per KPI.
+  `use_kpi`, or set it true — there a `target_roas`/`target_mroas` `target_value` is a cost
+  per extra conversion (lower is stricter), never a ROAS. Under the revenue objective
+  it is a return per dollar; with `use_kpi` omitted it follows `has_revenue_per_kpi`.
 - **Revenue metrics are conditional; CPIK is universal.** `roi`/`marginal_roi`
   exist only for revenue-capable models — requesting them on a KPI-only model
   returns `metric_not_supported`. `cpik`/`marginal_cpik` are valid on every model.

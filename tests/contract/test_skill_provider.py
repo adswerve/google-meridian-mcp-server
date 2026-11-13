@@ -82,3 +82,24 @@ async def test_skill_says_roi_exists_only_over_a_window():
         assert "do not build a weekly ROI series out of one-week windows" in flat
         assert "one call per window" in flat
         assert "shown as two series and not divided" in flat
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "skill://meridian-analyst/references/budget-optimization.md",
+        "skill://meridian-analyst/references/consultation.md",
+    ],
+)
+async def test_skill_says_what_a_target_value_means_under_each_objective(uri):
+    """`target_value` is a cost per extra conversion under the KPI objective, and
+    only a return per dollar under the revenue objective."""
+    mcp = create_server()
+    async with Client(mcp) as client:
+        flat = " ".join((await client.read_resource(uri))[0].text.split())
+        assert "cost per extra conversion" in flat
+        assert "return per dollar" in flat
+        assert "has_revenue_per_kpi" in flat
+        assert "ever call a cost per extra conversion a ROAS" in flat
+        assert "stricter" in flat

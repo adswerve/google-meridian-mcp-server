@@ -158,11 +158,24 @@ enum names below are for your routing, not for the user.
 
 - **`fixed_budget`** — total budget is held (or set explicitly) and the module
   finds the best split. Default for allocation/reallocation and add/cut questions.
-- **`target_roas`** — find the allocation that reaches a target overall ROAS. On a
-  KPI-only model the same knob is interpreted as a CPIK target.
+- **`target_roas`** — find the allocation that reaches a target overall return. What
+  `target_value` means depends on the run's objective (see **What `target_value`
+  means** below).
 - **`target_mroas`** — spend up to the point where the *next* dollar still clears a
   marginal-ROI hurdle; use it for "how much can each channel absorb before it stops
   paying off."
+
+**What `target_value` means.** The run's objective decides, not the scenario name:
+
+- **KPI objective** (`use_kpi` true): a **cost per extra conversion** (CPIK). The
+  service inverts it. A *lower* figure is a *stricter* cap.
+- **Revenue objective** (`use_kpi` false): a **return per dollar** (ROAS).
+- **Model default** (`use_kpi` omitted): a return per dollar if the model has revenue
+  per KPI, else a cost per extra conversion. Read `has_revenue_per_kpi` from
+  `get_model_overview` before you word the figure; until you know, claim neither.
+
+Never call a cost per extra conversion a ROAS, in the plan you propose or the answer
+you give.
 
 Both `target_*` scenarios are **flexible-budget**: to hit the target the module may
 recommend spending *more or less overall*, so total spend can change — unlike

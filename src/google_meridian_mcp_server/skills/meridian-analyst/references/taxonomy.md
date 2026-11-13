@@ -59,8 +59,9 @@ overview is authoritative over any assumption from this document.
 ## Optimization objective follows the same axis
 
 `run_optimization` picks its objective from the same revenue capability: revenue
-models optimize ROAS, KPI-only models optimize CPIK. A ROAS-style target given
-against a KPI-only model is interpreted as a CPIK target automatically. Normally
+models optimize ROAS, KPI-only models optimize CPIK. A `target_roas`/`target_mroas`
+`target_value` given against a KPI objective (including a KPI-only model with `use_kpi`
+omitted) is a cost per extra conversion, inverted by the service, not a ROAS. Normally
 let the model's native objective apply; override only with a clear reason. On a
 full-funnel model the objective is the total (direct + indirect) effect. Full
 workflow: `budget-optimization.md`.
