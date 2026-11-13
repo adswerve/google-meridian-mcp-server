@@ -167,8 +167,8 @@ enum names below are for your routing, not for the user.
 
 **What `target_value` means.** The run's objective decides, not the scenario name:
 
-- **KPI objective** (`use_kpi` true): a **cost per extra conversion** (CPIK). The
-  service inverts it. A *lower* figure is a *stricter* cap.
+- **KPI objective** (`use_kpi` true): a **cost per extra conversion** (CPIK; a
+  *marginal* one for `target_mroas`). The service inverts it. A *lower* figure is a *stricter* cap.
 - **Revenue objective** (`use_kpi` false): a **return per dollar** (ROAS).
 - **Model default** (`use_kpi` omitted): a return per dollar if the model has revenue
   per KPI, else a cost per extra conversion. Read `has_revenue_per_kpi` from

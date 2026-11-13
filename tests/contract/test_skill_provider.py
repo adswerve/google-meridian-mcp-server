@@ -88,18 +88,39 @@ async def test_skill_says_roi_exists_only_over_a_window():
 @pytest.mark.parametrize(
     "uri",
     [
+        "skill://meridian-analyst/SKILL.md",
         "skill://meridian-analyst/references/budget-optimization.md",
         "skill://meridian-analyst/references/consultation.md",
     ],
 )
 async def test_skill_says_what_a_target_value_means_under_each_objective(uri):
-    """`target_value` is a cost per extra conversion under the KPI objective, and
-    only a return per dollar under the revenue objective."""
+    """`target_value` is a cost per extra conversion under the KPI objective and a
+    return per dollar under the revenue objective, each tied to its own arm."""
     mcp = create_server()
     async with Client(mcp) as client:
         flat = " ".join((await client.read_resource(uri))[0].text.split())
-        assert "cost per extra conversion" in flat
-        assert "return per dollar" in flat
         assert "has_revenue_per_kpi" in flat
-        assert "ever call a cost per extra conversion a ROAS" in flat
-        assert "stricter" in flat
+        assert "ever call a cost per extra conversion a ROAS" in flat or (
+            "never a ROAS" in flat
+        )
+        if uri.endswith("SKILL.md"):
+            assert (
+                "Under the KPI objective a `target_roas`/`target_mroas` "
+                "`target_value` is a cost per extra conversion"
+            ) in flat
+            assert "Under the revenue objective it is a return per dollar" in flat
+        elif uri.endswith("budget-optimization.md"):
+            assert (
+                "**KPI objective** (`use_kpi` true): a **cost per extra conversion**"
+                in flat
+            )
+            assert (
+                "**Revenue objective** (`use_kpi` false): a **return per dollar**"
+                in flat
+            )
+            assert "A *lower* figure is a *stricter* cap" in flat
+        else:
+            assert (
+                "is a return per dollar under the revenue objective and a cost per extra conversion under the KPI objective"
+                in flat
+            )

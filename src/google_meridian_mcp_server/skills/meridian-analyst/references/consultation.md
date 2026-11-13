@@ -103,12 +103,6 @@ an assumption you are making**, before the run.
 | "Hit a 3x return on spend" (revenue objective) | `scenario: {type: "target_roas", target_value: 3.0}` |
 | "Keep pushing spend as long as the next dollar still returns at least 1.5x" (revenue objective) | `scenario: {type: "target_mroas", target_value: 1.5}` |
 | "Hit a $40 cost per extra conversion" (KPI objective) | `scenario: {type: "target_roas", target_value: 40}` — a cost, not a return; lower is stricter |
-
-`target_value` is a return per dollar under the revenue objective and a cost per extra
-conversion under the KPI objective (or when the model has no revenue per KPI and
-`use_kpi` is omitted). Check `has_revenue_per_kpi` in `get_model_overview` before
-proposing a figure, and never call a cost per extra conversion a ROAS. Detail:
-`budget-optimization.md`.
 | "Don't let any channel move more than 20%" | `constraint: {mode: "global", pct: 0.2}` |
 | "We're locked into our search contract, it can't change" | `constraint: {mode: "per_channel", bounds: {Search: {lower_pct: 0, upper_pct: 0}, ...}}` |
 | "Pause / stop channel X entirely next quarter" | `run_future_optimization`, `future.excluded_channels: ["X"]`. X's spend is forced to 0 and its budget is spent across the remaining channels ("pause TV, spend it elsewhere") — total budget unchanged. Do **not** use `planned_allocation`/`cost_multipliers` (reject `0`) or `0/0` constraint bounds (those **freeze X at its current spend**, they do not pause it). Historical `run_optimization` cannot fully exclude a channel — only future runs can. |
@@ -120,6 +114,12 @@ proposing a figure, and never call a cost per extra conversion a ROAS. Detail:
 | "Just use whatever we've been spending most recently as the baseline" | `future.reference: {mode: "trailing"}` (the default) |
 | "Our recent data is noisy — use a normal, stable baseline" | `future.reference: {mode: "full_history_average"}` |
 | "We're planning to put 40% into TV and 35% into Search" | `future.planned_allocation: {"TV": 0.4, "Search": 0.35}` |
+
+`target_value` is a return per dollar under the revenue objective and a cost per extra
+conversion under the KPI objective (or when the model has no revenue per KPI and
+`use_kpi` is omitted). Check `has_revenue_per_kpi` in `get_model_overview` before
+proposing a figure, and never call a cost per extra conversion a ROAS. Detail:
+`budget-optimization.md`.
 
 ## Say it in plain terms (speaking back to the user)
 
