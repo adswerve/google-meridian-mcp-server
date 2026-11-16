@@ -9,7 +9,7 @@ the result, and handles forward-looking planning. It does **not** restate
 `run_optimization`'s input schema — call the tool for field types, defaults, and
 validation; the names below are for routing and interpretation only.
 
-Before anything here, complete the golden path (`list_models` →
+Before anything here, complete the golden path (settle the model, then open its
 `get_model_overview`) and read `available_tool_options`: it lists the legal
 channels and geos for this model. Never optimize over a channel or geo it does not
 list.

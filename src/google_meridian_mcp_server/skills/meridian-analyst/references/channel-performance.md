@@ -7,7 +7,7 @@ single-channel spend what-ifs, and whether the model can be trusted. For
 ROAS/mROAS), stop and use `budget-optimization.md` instead — that is a
 different (asynchronous) tool.
 
-Before anything here, complete the golden path (`list_models` →
+Before anything here, complete the golden path (settle the model, then open its
 `get_model_overview`) and read `available_tool_options`: it is authoritative over
 this file for which tools/metrics are legal on **this** model. If a tool or metric
 is not listed there, do not call it. Revenue-vs-KPI and RF gating are summarized in

@@ -19,12 +19,17 @@ numbers correctly — uncertainty included.
 
 ## Golden path — always start here
 
-1. `list_models` — pick the `model_id`.
-2. `get_model_overview` — your map of the model. Before calling anything else,
-   read its `available_tool_options`: it lists exactly which tools and metrics
-   are **legal for this specific model**, computed from the model's real
-   capabilities. Treat it as ground truth; never call a tool or metric it does
-   not list.
+1. **Settle the `model_id` without browsing.** If the request names a
+   `model_id`, or the user has one selected, use it — don't list or open other
+   models to choose. If none is given, call `list_models` once: one listed, use
+   it; more, ask the user which model (offer the display names), then continue
+   on their answer.
+2. `get_model_overview` for **that** model only — your map of the model. Open
+   another model's overview only when the user asks to switch or compare.
+   Before calling anything else, read its `available_tool_options`: it lists
+   exactly which tools and metrics are **legal for this specific model**,
+   computed from the model's real capabilities. Treat it as ground truth; never
+   call a tool or metric it does not list.
 
 The overview also gives you the three facts that drive every downstream choice:
 whether the model is **national or geo**, whether it **can measure revenue**,
@@ -33,6 +38,8 @@ and whether it is **full-funnel** (`funnel: "full_funnel"`). See
 
 ## Cardinal rules
 
+- **Batch independent reads.** Several channels or metrics that do not depend
+  on each other go in one step as parallel tool calls, not one call per turn.
 - **Optimization is asynchronous.** Both `run_optimization` (historical window)
   and `run_future_optimization` (a future window, under supplied assumptions)
   return a `run_id`, not an answer. Poll `get_optimization_status` until status

@@ -139,7 +139,7 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
     @_guarded(wrap_result=True)
     async def list_models(ctx: Context) -> list[dict[str, Any]] | dict[str, Any]:
-        """List all available Meridian marketing-mix models. Call this first to get model_id values needed by every other tool. Returns id, display_name, format, last_modified, funnel ('single' or 'full_funnel'), mediators (brand-mediator names for full-funnel models) and model_version for each model."""
+        """List all available Meridian marketing-mix models. Use it to find a `model_id` when the request does not already give one. Returns id, display_name, format, last_modified, funnel ('single' or 'full_funnel'), mediators (brand-mediator names for full-funnel models) and model_version for each model."""
         # F6: list_models does discovery I/O (local fs walk or GCS list) synchronously;
         # offload to a thread so a slow/degraded backend can't stall the event loop
         # (and therefore every other in-flight tool call) while this resolves.
@@ -158,7 +158,7 @@ def register_tools(mcp: FastMCP) -> None:
         ],
         ctx: Context,
     ) -> dict[str, Any]:
-        """Get full model metadata including time range, geos, channels, and the valid parameter values for every other tool. Call this after list_models and before analysis tools. The response includes an 'available_tool_options' section that maps each tool name to its accepted 'output_type' or 'dataset' enum values."""
+        """Get full model metadata including time range, geos, channels, and the valid parameter values for every other tool. Call this once for the model in use, before analysis tools. The response includes an 'available_tool_options' section that maps each tool name to its accepted 'output_type' or 'dataset' enum values."""
         return await _analysis_service(ctx).get_model_overview(model_id)
 
     @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
